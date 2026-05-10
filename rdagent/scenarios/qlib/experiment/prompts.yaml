@@ -1,0 +1,153 @@
+qlib_factor_background: |-
+  因子是量化投资中用于解释或预测组合/单个资产收益与风险的特征变量。因子帮助投资者识别和利用超额收益来源，是量化投资策略的核心组成部分。
+  因子表中的每个数值表示某只股票在某个交易日上的一个数值型特征。
+  后续系统会使用这些因子值训练模型，预测未来若干日收益。
+  一个因子通常由以下部分定义：
+  1. Name：因子英文名，必须使用英文和下划线。
+  2. Description：因子描述，必须使用中文解释。
+  3. Formulation：因子公式，可使用 LaTeX 和必要英文变量名。
+  4. Variables：公式中变量或函数的中文解释。
+  因子可能不包含以上所有部分，但你必须尽量补全窗口长度、回看期、阈值、排序方向等关键参数。同一类因子如果参数不同，应视为不同因子，例如 10 日动量和 20 日动量是两个不同因子。
+  除因子名、字段名、公式符号、Python 标识符等必要英文外，所有解释性输出必须使用中文。
+
+  {% if runtime_environment is not none %}
+  ====== 运行环境 ======
+  你将使用以下环境运行代码：
+  {{ runtime_environment }}
+  {% endif %}
+
+qlib_factor_interface: |-
+  你的 Python 代码必须遵循系统接口，便于用户自动执行。
+  代码应包含 import 部分、函数部分和 main 部分。主函数命名为 "calculate_{function_name}"，并在 "if __name__ == __main__" 中调用。不要在代码里写 try-except，系统会捕获异常并反馈给你。
+  用户会把你的 Python 代码写入文件，并直接使用 "python {your_file_name}.py" 执行。你需要计算因子值，并把结果保存为同目录下名为 "result.h5" 的 HDF5 文件。该文件必须包含一个 pandas DataFrame，index 为 "datetime" 和 "instrument"，只能有一列，列名是因子名，值是因子值。
+
+qlib_factor_strategy: |-
+  每一步数据处理都要用中文注释清楚说明数据格式，包括 index 结构、列含义和形状变化。
+  每个转换或计算都应解释数据结构，尤其是是否使用 MultiIndex、如何访问列或 index level，以及 `reset_index()`、`groupby()`、`merge()` 等会改变数据形状的操作。
+  示例：
+  1. **从 MultiIndex 开始**：
+    ```python
+    # 初始 DataFrame 使用 MultiIndex，index level 包含 'datetime' 和 'instrument'。
+    # 如需访问 'datetime'，使用 df.index.get_level_values('datetime')。
+    datetime_values = df.index.get_level_values('datetime')
+    ```
+ 
+  2. **必要时重置 index**：
+    ```python
+    # reset_index 会把 'datetime' 和 'instrument' 从 index 变成普通列。
+    # 该操作会展开 MultiIndex 结构。
+    df = df.reset_index()
+    ```
+ 
+  3. **执行 groupby 操作**：
+    ```python
+    # 按 'datetime' 和 'instrument' 分组聚合数据。
+    # groupby 后的结果应继续保持 ['datetime', 'instrument'] 作为 MultiIndex。
+    df_grouped = df.groupby(['datetime', 'instrument']).sum()
+    ```
+ 
+  4. **确保 datetime 格式一致**：
+    ```python
+    # merge 前应确保两个 DataFrame 的 'datetime' 列格式一致。
+    # 必要时转换为 datetime 类型。
+    df['datetime'] = pd.to_datetime(df['datetime'])
+    other_df['datetime'] = pd.to_datetime(other_df['datetime'])
+    ```
+ 
+  5. **merge 操作**：
+    ```python
+    # 合并 DataFrame 时，应同时基于 'datetime' 和 'instrument'。
+    # 如果它们仍在 index 中，需要先 reset_index。
+    merged_df = pd.merge(df, other_df, on=['datetime', 'instrument'], how='inner')
+    ```
+
+qlib_factor_output_format: |-
+  你的输出应为 pandas DataFrame，结构类似以下示例：
+  <class 'pandas.core.frame.DataFrame'>
+  MultiIndex: 40914 entries, (Timestamp('2020-01-02 00:00:00'), 'SH600000') to (Timestamp('2021-12-31 00:00:00'), 'SZ300059')
+  Data columns (total 1 columns):
+  #   Column            Non-Null Count  Dtype  
+  ---  ------            --------------  -----  
+  0   your factor name  40914 non-null  float64
+  dtypes: float64(1)
+  memory usage: <ignore>
+  注意：非空值数量可以少于总样本数，因为部分股票在部分日期可能没有因子值。
+  `result.h5` 中一种可能的格式如下：
+  datetime    instrument
+  2020-01-02  SZ000001     -0.001796
+              SZ000166      0.005780
+              SZ000686      0.004228
+              SZ000712      0.001298
+              SZ000728      0.005330
+                              ...
+  2021-12-31  SZ000750      0.000000
+              SZ000776      0.002459
+
+qlib_factor_simulator: |-
+  因子会被送入 Qlib，用于训练模型并基于过去因子值预测未来若干日收益。
+  Qlib 是面向量化投资的研究与回测平台，支持从因子表构造、模型训练、组合构建到绩效评估的流程。
+  用户会使用 Qlib 自动完成：
+  1. 基于因子值生成新的因子表。
+  2. 使用 LightGBM 等模型预测未来收益。
+  3. 基于预测收益构建投资组合。
+  4. 评估收益、Sharpe、最大回撤等指标。
+
+qlib_factor_rich_style_description : |-
+  ### paper_factor：研报因子抽取与自动复现
+
+  #### [概览](#_summary)
+
+  本流程展示从金融研报中抽取因子、生成实现代码、执行计算和回测评估的过程。
+
+  #### [自动研发流程](#_rdloops)
+
+  - **[R (Research)](#_research)**
+    - 从研报和历史反馈中形成因子假设。
+    - 维护并利用领域知识库。
+
+  - **[D (Development)](#_development)**
+    - 自动生成因子实现代码。
+    - 自动执行、检查并记录因子结果。
+
+  #### [目标](#_summary)
+
+  从研报中持续沉淀可复现、可评估的量化因子。
+
+qlib_factor_from_report_rich_style_description : |-
+  ### paper_factor：金融研报因子抽取与复现
+
+  #### [概览](#_summary)
+
+  本流程用于从金融研报中抽取因子，生成因子代码，在本地数据上计算，并通过 Qlib 回测分析表现，从而扩展和修正因子库。
+
+  #### [自动研发流程](#_rdloops)
+
+  - **[R (Research)](#_research)**
+    - 从金融研报中生成因子假设。
+    - 持续构建和使用领域知识。
+
+  - **[D (Development)](#_development)**
+    - 自动抽取因子并生成代码。
+    - 自动执行、测试和记录因子结果。
+
+  #### [目标](#_summary)
+
+  <table border="1" style="width:100%; border-collapse: collapse;">
+    <tr>
+      <td>💡 <strong>创新</strong></td>
+      <td>快速从研报中抽取并验证因子。</td>
+    </tr>
+    <tr>
+      <td>⚡ <strong>效率</strong></td>
+      <td>从大量研报中快速识别有价值的因子。</td>
+    </tr>
+    <tr>
+      <td>🗃️ <strong>输出</strong></td>
+      <td>扩展和修正因子库，支持后续研究。</td>
+    </tr>
+  </table>
+
+qlib_factor_experiment_setting: |-
+  | 数据集 📊 | 模型 🤖    | 因子 🌟       | 数据切分  🧮                                   |
+  |---------|----------|---------------|-------------------------------------------------|
+  | CSI300  | LGBModel | Alpha158 Plus | 训练集：{{ train_start }} 至 {{ train_end }} <br> 验证集：{{ valid_start }} 至 {{ valid_end }} <br> 测试集：{{ test_start }} 至 {{ test_end }} |

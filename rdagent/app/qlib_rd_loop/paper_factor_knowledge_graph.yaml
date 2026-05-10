@@ -1,0 +1,151 @@
+nodes:
+  stock_code_normalization:
+    title: 股票代码规范化
+    aliases:
+      - 股票代码
+      - 证券代码
+      - instrument
+      - 688
+      - 科创板
+      - star market
+    requires: []
+    content: |-
+      市场板块判断以六位 A 股证券代码为准。常见代码形态包括纯六位代码、带交易所后缀的代码、带交易所前缀的代码。
+      若六位证券代码以 688 开头，本地 paper_factor 默认按科创板处理；其他代码默认按非科创板处理。
+
+  limit_up_rule:
+    title: 中国 A 股涨停规则
+    aliases:
+      - 涨停
+      - 涨停价
+      - 涨停板
+      - 涨跌幅
+      - 封板
+      - limit up
+      - limit-up
+      - price limit
+    requires:
+      - stock_code_normalization
+    content: |-
+      “涨停”指交易所规定的、相对于前一交易日收盘价的当日最高涨幅限制，不等同于任意较大的正收益。
+      当前本地复现先忽略 ST/*ST 状态和上市初期无涨跌幅限制阶段。
+      若任务涉及涨停价或涨停日，默认使用可由证券代码判断的简化规则：科创板 688 使用 20%，其他股票使用 10%。不要因为缺少 ST 状态而直接跳过涨停价类因子。
+      涨停价由前一交易日收盘价和对应涨跌幅上限决定。
+
+  one_line_board:
+    title: 一字板与非一字板
+    aliases:
+      - 一字板
+      - 非一字板
+      - 封死
+      - 炸板
+      - 回封
+      - 开板
+      - one-line limit
+      - limit-up board
+    requires:
+      - limit_up_rule
+    content: |-
+      “一字板”指股票全天被封在涨停价附近，日线价量数据中通常可近似理解为开盘价、最高价、最低价、收盘价都等于涨停价。
+      “非一字板”指股票收盘涨停，但盘中并非全天封死涨停。日线价量数据中通常可近似理解为收盘价等于涨停价，而开盘价、最高价、最低价中至少有一个价格不等于涨停价。
+      精确判断封单强度、排队量、炸板次数、回封时间等细节，需要盘口、逐笔成交、委托队列或足够细的分钟级字段。如果本地数据没有这些字段，不要编造这些信息。
+
+  first_board_day:
+    title: 首板日
+    aliases:
+      - 首板
+      - 首板日
+      - 一板
+      - 首板涨停
+      - 首个涨停
+      - 涨停后
+      - first board
+      - first-board
+    requires:
+      - one_line_board
+      - limit_up_rule
+    content: |-
+      “首板日”指某股票在当前连板序列中的第一个涨停交易日。
+      本地复现默认口径：当日为非一字板涨停，且前一交易日不是涨停。
+      如果研报明确给出更长的观察窗口，例如过去 5 日、10 日或 20 日未涨停，则优先使用研报给出的窗口；不要自行选择窗口。
+      “首板日”只是事件锚点。因子如果写作 T-2 首板日，则表示 T-2 必须满足首板日条件；不满足时，T 日因子值应为 NaN。
+
+  pullback_confirm_day:
+    title: 回调确认日
+    aliases:
+      - 回调
+      - 回调日
+      - 回调确认
+      - 涨停次日
+      - 首个回调日
+      - pullback
+      - pull-back
+    requires:
+      - limit_up_rule
+    content: |-
+      “回调确认日”在不同研报中可能有不同定义，必须优先使用研报原文给出的规则。
+      若研报没有给出更精确规则，本地复现默认口径：T-1 日未涨停，且 T-1 收盘价低于 T-2 收盘价。
+      不要自行额外加入“收阴线”“未跌破实体中点”“收盘位置阈值”等条件，除非研报或本知识图谱明确要求。
+      “回调确认日”只是事件锚点。因子如果写作 T-1 回调确认日，则表示 T-1 必须满足回调确认条件；不满足时，T 日因子值应为 NaN。
+
+  first_board_pullback_anchor:
+    title: 首板回调策略时间锚点
+    aliases:
+      - T-2
+      - T-1
+      - T日
+      - 信号日
+      - 输出日期
+      - 首板回调
+      - 首板后回调
+      - 涨停后首个回调
+      - event anchor
+    requires:
+      - first_board_day
+      - pullback_confirm_day
+    content: |-
+      T 日固定表示因子值输出日期或信号日期。
+      若因子属于首板回调策略，并写作 T-2 首板、T-1 回调、T 日信号，则只有 T-2 满足首板日条件且 T-1 满足回调确认日条件时，T 日才输出因子值；否则 T 日输出 NaN。
+      同一篇研报中的多个因子如果共享“首板日”“回调确认日”等事件锚点，必须使用同一套事件口径，不要每个因子重新定义一套。
+
+  close_position_formula:
+    title: 收盘位置因子公式
+    aliases:
+      - close_position
+      - close position
+      - ClosePosition
+      - 收盘位置
+      - 相对位置
+      - 收盘价在当日价格区间
+      - 价格区间
+    requires:
+      - first_board_pullback_anchor
+    content: |-
+      对首板回调策略中的 close_position，T 日输出基于 T-1 日（回调确认日）的收盘价在当日价格区间内的相对位置。
+      若 T-2 满足首板日条件且 T-1 满足回调确认日条件：
+      - 若 High_{T-1} == Low_{T-1}，ClosePosition_T = 0.5。
+      - 否则 ClosePosition_T = (Close_{T-1} - Low_{T-1}) / (High_{T-1} - Low_{T-1})。
+      若事件条件不满足，T 日因子值为 NaN。
+      该因子需要日频开盘价、最高价、最低价、收盘价以及前一交易日收盘价，用于定义收盘位置、涨停、非一字板涨停和未涨停条件。
+
+  local_data_discipline:
+    title: 本地数据使用纪律
+    aliases:
+      - 基本面
+      - 财务
+      - 财报
+      - 市值
+      - 总股本
+      - 流通股
+      - 行业
+      - 分析师
+      - 盘口
+      - 逐笔
+      - order book
+      - tick
+      - market cap
+      - industry
+    requires: []
+    content: |-
+      当前 paper_factor 本地数据主要是日频和分钟频价量数据。除非任务的数据描述中明确列出，否则不能假设存在基本面、财务报表、市值、总股本、流通股本、行业分类、分析师预测、盘口队列、逐笔成交等数据。
+      当论文因子依赖本地不存在的数据时，正确做法是跳过该因子并报告缺失的数据，而不是用无关代理变量替代。

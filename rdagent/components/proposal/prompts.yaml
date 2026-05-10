@@ -1,0 +1,81 @@
+hypothesis_gen:
+  system_prompt: |-
+    用户正在数据驱动研发流程中，为 {{ targets }} 生成新的研究假设。
+    {{ targets }} 用于以下场景：
+    {{ scenario }}
+
+    {% if user_instruction %}
+    **用户的总体指令：**
+    {{ user_instruction }}
+    {% endif %}
+
+    用户已经提出过若干假设并完成了评估，相关信息会提供给你。你的任务是分析历史实验，复盘每次实验的决策，判断成功实验为什么成功、失败实验为什么失败，并据此提出进一步改进方向：可以优化已有方向，也可以探索全新方向。
+    如果反馈中已有新假设且你认同，可以采用；如果不认同，请生成更合理的版本。
+    {% if hypothesis_specification %}
+    为帮助你制定新假设，用户提供了以下补充要求：
+    {{ hypothesis_specification }}
+    **重要：**如果 hypothesis_specification 规定了下一步要求，你必须遵守。
+    {% endif %}
+    除 JSON key、因子英文名、公式符号、代码标识符等必要英文外，所有解释性内容必须使用中文。
+    请按以下格式和规范输出：
+    {{ hypothesis_output_format }}
+
+  user_prompt: |-
+    {% if hypothesis_and_feedback|length == 0 %}
+    这是第一轮假设生成，用户在该场景下还没有历史假设。
+    {% else %}
+    历史假设及其对应反馈如下：
+    {{ hypothesis_and_feedback }}
+    {% endif %}
+    {% if last_hypothesis_and_feedback %}
+    上一次实验的假设和反馈如下。反馈中的新假设仅供参考，你需要基于完整实验链路判断是否采用，或提出更合适的假设：
+    {{ last_hypothesis_and_feedback }}
+    {% endif %}
+    {% if sota_hypothesis_and_feedback != "" %}
+    当前 SOTA 实验的假设和反馈如下：
+    {{ sota_hypothesis_and_feedback }}
+    {% endif %}
+    {% if RAG %}
+    为帮助你生成新的 {{ targets }}，这里提供额外信息：{{ RAG }}。
+    {% endif %}
+
+hypothesis2experiment:
+  system_prompt: |-
+    用户希望基于上一步生成的假设，进一步生成新的 {{ targets }}。
+    {{ targets }} 所属场景如下：
+    {{ scenario }}
+    用户会用你生成的 {{ targets }} 进行实验，并会向你提供：
+    1. 需要展开为 {{ targets }} 的目标假设。
+    2. 过去生成的假设及其反馈。
+    3. 相似假设下曾经提出过的 {{ targets }}。
+    4. 帮助生成新 {{ targets }} 的补充信息。
+    除 JSON key、因子英文名、公式符号、代码标识符等必要英文外，所有解释性内容必须使用中文。
+    请严格按照以下格式输出：
+    {{ experiment_output_format }}
+    
+  user_prompt: |-
+    用户已经在该场景下提出并评估过若干假设。
+    当前需要展开为 {{ targets }} 的目标假设如下：
+    {{ target_hypothesis }}
+    {% if hypothesis_and_feedback %}
+    历史假设及其对应反馈如下：
+    {{ hypothesis_and_feedback }}
+    {% endif %}
+    {% if last_hypothesis_and_feedback %}
+    最新一轮假设及其对应反馈如下：
+    {{ last_hypothesis_and_feedback }}
+    {% endif %}
+    {% if sota_hypothesis_and_feedback %}
+    当前 SOTA 假设及其对应反馈如下：
+    {{ sota_hypothesis_and_feedback }}
+    {% endif %}
+    {% if target_list %}
+    以下 {{ targets }} 已经存在或已经导出。不要重复生成，包括改名后的等价别名：
+    {{ target_list }}
+    {% endif %}
+    {% if RAG %}
+    补充指导：
+    {{ RAG }}
+    {% endif %}
+
+    请基于以上信息生成新的 {{ targets }}。

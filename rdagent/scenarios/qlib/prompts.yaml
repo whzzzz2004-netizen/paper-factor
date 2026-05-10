@@ -1,0 +1,178 @@
+hypothesis_and_feedback: |-
+  =========================================================
+  {% for experiment, feedback in trace.hist %}
+  # 第 {{ loop.index }} 轮:
+  ## 假设
+  {{ experiment.hypothesis }}
+  ## 具体任务:
+  {% for task in experiment.sub_tasks %}
+  {% if task is not none and task.get_task_brief_information is defined %}
+  {{ task.get_task_brief_information() }}
+  {% endif %}
+  {% endfor %}
+  ## 回测分析与反馈:
+  {% if experiment.result is not none %}
+  回测结果: {{ experiment.result.loc[["IC", "1day.excess_return_without_cost.annualized_return", "1day.excess_return_without_cost.max_drawdown"]] }}
+  {% endif %}
+  观察: {{ feedback.observations }}
+  假设评价: {{ feedback.hypothesis_evaluation }}
+  判断（该假设是否成功）: {{ feedback.decision }}
+  =========================================================
+  {% endfor %}
+
+last_hypothesis_and_feedback: |-
+  ## 假设
+  {{ experiment.hypothesis }}
+  ## 具体任务:
+  {% for task in experiment.sub_tasks %}
+  {% if task is not none and task.get_task_brief_information is defined %}
+  {{ task.get_task_brief_information() }}
+  {% endif %}
+  {% endfor %}
+  ## 回测分析与反馈:
+  {% if experiment.result is not none %}
+  回测结果: {{ experiment.result.loc[["IC", "1day.excess_return_without_cost.annualized_return", "1day.excess_return_without_cost.max_drawdown"]] }}
+  {% endif %}
+  训练日志:
+  这里需要重点分析训练过程是否存在问题。如果发现问题，下一轮必须修正，并在假设中清楚说明将如何修改。
+  {{ experiment.stdout }} 
+  观察: {{ feedback.observations }}
+  评价: {{ feedback.hypothesis_evaluation }}
+  判断（本次实验是否为 SOTA）: {{ feedback.decision }}
+  新假设（反馈阶段给出，仅供下一轮参考，可采纳也可拒绝）: {{ feedback.new_hypothesis }}
+  推理依据（新假设的理由）: {{ feedback.reason }}
+
+sota_hypothesis_and_feedback: |-
+  ## 假设
+  {{ experiment.hypothesis }}
+  ## 具体任务:
+  {% for task in experiment.sub_tasks %}
+  {% if task is not none and task.get_task_brief_information is defined %}
+  {{ task.get_task_brief_information() }}
+  {% endif %}
+  {% endfor %}
+  ## 回测分析与反馈:
+  {% if experiment.result is not none %}
+  回测结果: {{ experiment.result.loc[["IC", "1day.excess_return_without_cost.annualized_return", "1day.excess_return_without_cost.max_drawdown"]] }}
+  {% endif %}
+  训练日志: {{ experiment.stdout }}
+  观察: {{ feedback.observations }}
+  评价: {{ feedback.hypothesis_evaluation }}
+  判断（本次实验是否为 SOTA）: {{ feedback.decision }}
+
+hypothesis_output_format: |-
+  输出必须是 JSON 格式。schema 如下：
+  {
+  "hypothesis": "基于历史实验轨迹分析提出的精确、可测试且有创新性的假设。避免过于笼统，需明确具体方法和预期性能提升，用两到三句话表达。",
+  "reason": "用清晰、合逻辑的中文说明提出该假设的理由，依据可以来自实验轨迹或领域原则。理由不超过两句话。",
+  }
+
+factor_hypothesis_output_format: |-
+  输出必须是 JSON 格式。schema 如下：
+  {
+  "hypothesis": "基于已给信息生成的新假设，限制在两到三句话内。",
+  "reason": "说明为什么生成该假设，要求完整且合逻辑，并覆盖下方关键要求后做适度展开，限制在两到三句话内。",
+  }
+
+factor_hypothesis_specification: |-
+  1. **每轮生成 1-5 个因子：**
+    - 确保每轮生成 1-5 个因子。
+    - 在简单性和复杂性之间保持平衡，逐步构建稳健的因子库。
+    - 充分利用已提供的金融数据，不要只盯住单一字段。
+  2. **优先提出简单有效的因子：**
+    - 从简单、容易实现且可能有效的因子开始。
+    - 简洁说明这些因子为什么可能有效。
+    - 初期避免复杂因子或组合因子。
+  3. **逐步提高复杂度：**
+    - 随着实验结果积累，再引入更复杂的因子，例如机器学习因子、多维原始数据因子等。
+    - 只有在简单因子经过测试和验证后，才考虑组合因子。
+  4. **新方向与优化：**
+    - 如果连续多轮都没有产生超过 SOTA 的因子，考虑切换到新方向，并可重新从简单因子开始。
+    - 如果在优化某一类因子，应从简单到复杂推进。
+  5. 注意事项
+    - 已超过 SOTA 的因子会进入因子库，避免重复实现。
+    - 无论计划生成多少因子，只回复一组 hypothesis 和 reason；hypothesis 可以同时包含多个因子的提案。
+
+factor_experiment_output_format: |-
+  输出必须是 JSON 格式。schema 如下：
+  {
+      "factor name 1": {
+          "description": "因子 1 的中文描述，以类型开头，例如 [动量因子]",
+          "formulation": "因子 1 的 LaTeX 公式",
+          "variables": {
+              "变量或函数名 1": "变量或函数 1 的中文说明",
+              "变量或函数名 2": "变量或函数 2 的中文说明"
+          }
+      },
+      "factor name 2": {
+          "description": "因子 2 的中文描述，以类型开头，例如 [机器学习因子]",
+          "formulation": "因子 2 的 LaTeX 公式",
+          "variables": {
+              "变量或函数名 1": "变量或函数 1 的中文说明",
+              "变量或函数名 2": "变量或函数 2 的中文说明"
+          }
+      }
+      # 不要添加省略号 (...) 或任何可能导致 JSON 解析错误的占位文本！
+  }
+
+factor_feedback_generation:
+  system: |-
+    你是数据驱动研发中的专业金融结果分析助手。
+    任务场景如下：
+
+    {{ scenario }}
+    
+    你会收到一个假设、多个因子任务及其结果，以及当前 SOTA 结果。
+    你的反馈需要说明当前结果支持还是反驳该假设，并与之前的 SOTA 结果比较，然后提出改进建议或新方向。
+    
+    请先理解以下运行逻辑，再给出适合该场景的反馈：
+      1. 逻辑说明：
+        a) 之前尝试中超过 SOTA 的所有因子都会进入 SOTA 因子库。
+        b) 新实验会生成新因子，并与 SOTA 因子库中的因子组合。
+        c) 组合后的因子会被回测，并与当前 SOTA 比较，以支持持续迭代。
+      2. 研发方向：
+        a) 新方向：提出新的因子方向用于探索和开发。
+        b) 既有方向优化：
+          - 建议进一步改进该因子，包括继续优化该因子，或提出更适合与该因子组合的方向。
+          - 避免重新实现历史因子，因为超过 SOTA 的因子已经在因子库中，并会在每次运行中使用。
+      3. 最终目标：持续积累超过每轮结果的因子，以维持最佳 SOTA。
+    
+    判断结果时：
+      1. 任何小幅改进都应考虑纳入 SOTA（将 `Replace Best Result` 设为 yes）。
+      2. 如果新因子带来了年化收益提升，建议替换当前最佳结果。
+      3. 只要年化收益提升，其他指标的小幅波动可以接受。
+
+    当结果与 SOTA 差距明显时，考虑切换方向：
+      - 如果新结果明显弱于 SOTA，考虑探索新方向（编写新类型因子）。
+      - 避免重新实现历史因子，因为超过 SOTA 的因子已经在因子库中，并会在每次运行中使用。
+
+    请为后续探索提供详细且建设性的中文反馈。
+    用 JSON 格式回答。结果分析的示例 JSON 结构如下：
+    {
+      "Observations": "这里填写总体中文观察",
+      "Feedback for Hypothesis": "这里填写与假设相关的中文观察",
+      "New Hypothesis": "这里填写新的中文假设",
+      "Reasoning": "这里填写新假设的中文推理依据",
+      "Replace Best Result": "yes or no"
+    }
+  user: |-
+    目标假设:
+    {{ hypothesis_text }}
+    任务与因子:
+    {% for task in task_details %}
+      - {{ task.factor_name }}: {{ task.factor_description }}
+        - 因子公式: {{ task.factor_formulation }}
+        - 变量: {{ task.variables }}
+        - 是否已实现因子: {{ task.factor_implementation }}
+        {% if task.factor_implementation == "False" %}
+        **注意：该因子未在当前实验中实现。只有已实现因子的假设才能在本轮验证。**
+        {% endif %}
+    {% endfor %}
+    组合结果:
+    {{ combined_result }}
+    
+    请从以下角度分析组合结果：
+    1. 是否支持或反驳假设。
+    2. 与 SOTA 实验相比是改进还是退化。
+    
+    注意：只有“是否已实现因子”为 True 的因子才在本次实验中实现并测试。如果“是否已实现因子”为 False，该因子的假设无法在本轮验证。

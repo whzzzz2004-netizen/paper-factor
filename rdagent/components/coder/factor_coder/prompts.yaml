@@ -1,0 +1,270 @@
+
+evaluator_code_feedback_v1_system: |-
+  用户正在以下场景中实现因子：
+  {{ scenario }}
+  用户会提供目标因子的相关信息。
+
+  你的任务是检查用户生成的代码是否与目标因子定义和当前场景一致。
+  用户会提供 Python 源代码；如果代码执行失败，也会提供执行错误信息。
+  用户也可能提供标准答案代码，供你进行审查。你不能以任何形式泄露标准答案代码，但可以利用它来判断用户代码的问题。
+
+  用户也可能已经比较了用户代码和标准答案代码计算出的因子值，并提供两个输出之间的分析结果。你可以根据这些结果判断代码中导致差异的问题。
+
+  如果提供了标准答案代码，你的审查应只关注用户代码是否与标准答案代码一致，因为标准答案代码被视为正确。
+  如果没有提供标准答案代码，你的审查应关注用户代码是否与因子描述、变量含义、公式定义以及可用数据源大体一致。
+
+  注意：你的审查意见不是给用户手动调试用的，而是发给写代码 agent 用来修正代码。因此不要写“请用户检查第 XXX 行”这类需要用户操作的建议。
+
+  你的建议不应包含任何代码，只给出清晰、简短的修改意见。只有当代码明确违反因子描述、误解变量定义、遗漏事件条件、使用不可用数据、引入未来信息，或无法合理地产生目标因子时，才提出审查意见。忽略轻微的实现风格问题。如果没有发现重大问题，可以回复 "No critics found"。
+  
+  你应该为每条问题给出对应建议，帮助写代码 agent 修正代码。请按以下格式回复：
+  critic 1: 第 1 条审查意见
+  critic 2: 第 2 条审查意见
+
+evaluator_code_feedback_v1_user: |-
+  --------------因子信息：---------------
+  {{ factor_information }}
+  --------------Python 代码：---------------
+  {{ code }}
+  --------------执行反馈：---------------
+  {{ execution_feedback }}
+  {% if value_feedback is not none %}
+  --------------因子值反馈：---------------
+  {{ value_feedback }}
+  {% endif %}
+  {% if gt_code is not none %}
+  --------------标准答案 Python 代码：---------------
+  {{ gt_code }}
+  {% endif %}
+
+evolving_strategy_factor_implementation_v1_system: |-
+  用户正在以下场景中实现因子：
+  {{ scenario }}
+  你生成的代码必须严格符合该场景和目标因子定义，用户需要用你的代码得到符合预期的因子值。
+
+  为了帮助你写出正确代码，用户可能会提供多种参考信息：
+  1. 用户可能会提供相似因子的正确代码。你应该学习这些代码的实现方式，写出当前因子的正确代码。
+  2. 用户可能会提供之前失败的代码以及对应反馈。反馈可能包含执行错误、代码问题和因子值问题。你应该分析这些反馈，并修正最新代码。
+  3. 用户可能会提供对最近失败代码的修改建议，以及一些“失败代码 -> 成功代码”的相似错误修复样例。你应该学习这些建议和样例，写出正确代码。
+
+  如果下面提供了你之前的最新尝试，其中包含旧代码和反馈，你必须认真阅读，并在此基础上修改。旧代码中已经正确的部分不要随意改动。
+
+  注意：你的回复只能是指定 JSON 格式，不要在 JSON 前后添加任何解释文字。
+
+  {% if queried_former_failed_knowledge|length != 0 %}
+  --------------你之前的最新尝试：---------------
+  =====之前实现的代码=====
+  {{ queried_former_failed_knowledge[-1].implementation.all_codes }}
+  =====之前实现的反馈=====
+  {{ queried_former_failed_knowledge[-1].feedback }}
+  {% endif %}
+
+  --------------正确代码模板（请遵循这个结构）：---------------
+  ```python
+  import pandas as pd
+  import numpy as np
+  import os
+  from pathlib import Path
+
+  DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or ".")
+
+  def calculate_<Factor_Name>():
+      # 从共享数据目录读取合适的数据文件，所有数据文件都使用 key="data"
+      # 示例：
+      #   daily_pv.h5           -> 日频 OHLCV 数据
+      #   minute_pv.h5          -> 分钟 bar 数据
+      df = pd.read_hdf(DATA_DIR / "daily_pv.h5", key="data")
+
+      # 在这里计算因子
+      # 对 MultiIndex 日频数据做滚动计算时：
+      # df['FACTOR_NAME'] = df.groupby(level='instrument')['$close'].pct_change(10)
+      # df['FACTOR_NAME'] = df.groupby(level='instrument')['$turnover_rate'].transform(
+      #     lambda x: x.rolling(window=20, min_periods=1).mean()
+      # )
+      #
+      # 对分钟数据聚合到日频时：
+      # minute_df = df.reset_index()
+      # minute_df['date'] = minute_df['datetime'].dt.normalize()
+      # daily_factor = minute_df.groupby(['date', 'instrument'])['$volume'].sum().reset_index()
+      # daily_factor = daily_factor.rename(columns={'date': 'datetime', '$volume': 'FACTOR_NAME'})
+      # df = daily_factor.set_index(['datetime', 'instrument'])
+
+      # 处理缺失值和无穷值
+      df['<factor_column>'] = df['<factor_column>'].replace([np.inf, -np.inf], np.nan)
+
+      # 重要：保存时必须保留 MultiIndex
+      # 只选择因子列并保存
+      result_df = df[['<factor_column>']].copy()
+      result_df.columns = ['<Factor_Name>']
+
+      # 保存到 HDF5，MultiIndex ['datetime', 'instrument'] 会被保留
+      result_df.to_hdf("result.h5", key="data")
+
+  if __name__ == '__main__':
+      calculate_<Factor_Name>()
+  ```
+
+  重要规则：
+  1. 对 MultiIndex 日频数据做滚动计算时，优先使用 groupby(level='instrument')
+  2. 对分钟数据聚合到日频时，先 reset_index()，创建 date 列，再按 ['date', 'instrument'] 分组
+  3. 除非已经先 reset_index()，否则不要创建名为 'datetime' 或 'instrument' 的列
+  4. 分钟数据聚合到日频后，只能执行一次 date -> datetime 的重命名，然后 set_index(['datetime', 'instrument'])
+  5. 除非绝对必要，不要使用 unstack()；如果使用，保存前必须恢复最终 MultiIndex ['datetime', 'instrument']
+  6. 必须把 np.inf 和 -np.inf 替换为 np.nan
+  7. 结果必须使用 MultiIndex ['datetime', 'instrument']
+  8. 结果只能有一列，列名必须是因子名
+  9. 因子值必须是数值型。不要输出字符串、类别名或中文标签；如果因子是类别/阶段状态，必须先映射为数值编码，例如 Ice/冰点=0、Recovery/复苏=1、Expansion/扩张=2、Climax/高潮=3、Decline/衰退=-1，并在代码注释中说明映射
+  10. 严禁使用未来信息，例如 shift(-1)、pct_change(-n)、diff(-n)、居中滚动窗口或 backward fill
+  11. 可以使用日频或分钟级源文件，但最终输出必须是日频：每个交易日、每只股票一个因子值
+  12. 只能使用场景数据描述中明确列出的文件和字段。不要假设存在额外表、额外字段、基本面、财务报表、分析师预期、行业标签、市值或任何隐藏数据
+  13. 如果因子明确需要本地没有的数据，并且不能从本地已有数据计算，不要用猜测字段、无关代理变量或自创公式硬凑。应生成代码，打印 `DATA_UNAVAILABLE: <具体缺失数据原因>`，然后退出且不要写入 result.h5
+  14. 日频滚动窗口必须使用整数交易日窗口，例如 20、60、120。不要在 pandas rolling 中使用 pd.DateOffset(months=1)、"30D" 或其他非固定交易日窗口
+  15. 变量说明是强约束，不是可选注释。如果变量写着 `T-2日（涨停日）`、`limit-up day` 或类似表述，实现时必须识别该事件日；当事件条件不满足时，因子值必须设为 NaN
+  16. 每个因子必须独立实现，不要假设其他因子的输出文件或中间结果已经存在。如果任务里出现 `Stage_t_raw`、`Stage_smooth`、`回调确认日`、`首板日` 等中间概念，只能使用因子信息或其中附带的 paper_factor 知识库给出的定义；不要根据常识临时发明另一套判定规则。若定义缺失，输出 `DATA_UNAVAILABLE`
+  17. 严格遵守因子信息中的数据频率和时间逻辑。T 日固定表示因子输出/信号日期；如果描述写明 T-2 首板涨停、T-1 回调，则必须在 T 日输出因子值，且只有 T-2 与 T-1 条件满足时才输出数值，否则输出 NaN。不要把 T 日误当作首板日或回调日
+  18. 不要实现含糊阈值。如果因子信息里出现“合理设定”“自行设定”“参照图表但不给数值”“根据情况调整”等没有具体数值或确定公式的阈值/分段/打分规则，必须输出 `DATA_UNAVAILABLE: 缺少可执行的阈值或分段规则定义`，不要自己猜参数
+  19. 所有用于事件判定的布尔序列在经过 `shift()` 之后，都必须先处理缺失值再做逻辑运算；推荐写法是 `series.shift(1).fillna(False)`。禁止对含 `NaN` 的布尔序列直接使用 `~`、`&`、`|`，否则会在 pandas 中触发 float/object 类型错误
+
+  请按以下 JSON 格式返回代码。JSON 输出结构示例：
+  {
+      "code": "Python 代码字符串"
+  }
+
+evolving_strategy_factor_implementation_v2_user: |-
+  --------------目标因子信息：---------------
+  {{ factor_information_str }}
+
+  {% if prev_task_feedback is not none %}
+  --------------你上一轮实现的反馈，请先修复这些问题---------------
+  {{ prev_task_feedback }}
+  {% endif %}
+
+  {% if queried_similar_error_knowledge|length != 0 %}
+  {% if error_summary_critics is none %}
+  回顾你上一次失败：你的实现遇到了一些错误。
+  在其他任务中，你曾遇到过相似错误并最终解决。下面是一些示例：
+  {% for error_content, similar_error_knowledge in queried_similar_error_knowledge %} 
+  --------------相似错误对应的因子信息（{{error_content}}）：---------------
+  {{ similar_error_knowledge[0].target_task.get_task_information() }}
+  =====出现相似错误的代码（{{error_content}}）：=====
+  {{ similar_error_knowledge[0].implementation.all_codes }}
+  =====修复相似错误后的成功代码（{{error_content}}）：=====
+  {{ similar_error_knowledge[1].implementation.all_codes }}
+  {% endfor %}
+  {% else %}
+  回顾你上一次失败：你的实现遇到了一些错误。
+  在查看相似错误和对应解决方案后，下面是用于修正代码的建议：
+  {{error_summary_critics}}
+  {% endif %}
+  {% endif %}
+  {% if latest_attempt_to_latest_successful_execution is not none %}
+  你曾尝试修正之前失败的代码，但仍然遇到错误。下面是从最近一次失败尝试到最近一次成功执行之间的上下文，请避免在新代码中重复相同错误：
+  =====你的最新尝试=====
+  {{ latest_attempt_to_latest_successful_execution.implementation.all_codes }}
+  =====你的最新尝试对应的反馈=====
+  {{ latest_attempt_to_latest_successful_execution.feedback }}
+  {% endif %}
+
+evolving_strategy_error_summary_v2_system: |-
+  用户正在以下场景中实现一些因子：
+  {{ scenario }}
+  用户正在执行以下任务：
+  {{factor_information_str}}
+
+  你已经写了一些代码，但遇到了如下错误：
+  {{code_and_feedback}}
+
+  用户找到了曾遇到相似错误的任务，以及这些任务最终正确的解决方案。
+  请参考这些相似错误和解决方案，给出清晰、简短、准确的中文审查意见，帮助修正当前代码问题。
+
+  建议中不要包含代码，只给出清晰简短的中文建议。请指出非常关键的问题，忽略不重要的问题以避免干扰。如果没有发现重大问题，请回复 `No critics found`（保留该英文短语）。
+
+  [NOTE]
+  1. 处理数据时，必须避免时间泄漏。
+
+  请按以下格式输出审查意见。示例结构如下：
+  critic 1: 第 1 条中文审查意见
+  critic 2: 第 2 条中文审查意见
+  
+evolving_strategy_error_summary_v2_user: |-
+  {% if queried_similar_error_knowledge|length != 0 %}
+  {% for error_content, similar_error_knowledge in queried_similar_error_knowledge %} 
+  --------------相似错误对应的因子信息（{{error_content}}）---------------
+  {{ similar_error_knowledge[0].target_task.get_task_information() }}
+  =====出现相似错误的代码（{{error_content}}）=====
+  {{ similar_error_knowledge[0].implementation.all_codes }}
+  =====修复该相似错误后的成功代码（{{error_content}}）=====
+  {{ similar_error_knowledge[1].implementation.all_codes }}
+  {% endfor %}
+  {% endif %}
+
+
+select_implementable_factor_system: |-
+  用户正在以下场景中实现一些因子：
+  {{ scenario }}
+  你的任务是帮助用户选择最容易实现的因子。有些因子可能因为信息不足或复杂度过高而难以实现。用户会提供需要选择的因子数量，以及每个因子的描述、公式和变量说明。
+  用户还会提供之前实现该因子的尝试及反馈。你需要仔细审查之前的尝试；如果某些因子已经反复尝试但仍未成功，应考虑放弃这些因子。
+  请分析每个因子的实现难度并给出中文理由，然后以 JSON 格式返回被选中、可实现因子的索引。JSON 输出示例结构如下：
+  {
+      "Analysis": "逐个分析因子实现难度，并说明每个因子为什么可以或不可以实现。",
+      "selected_factor": "被选中因子在列表中的索引，例如 [0, 2, 3]。长度应等于过滤后剩余的因子数量。",
+  }
+
+select_implementable_factor_user: |-
+  需要选择的因子数量：{{ factor_num }}
+  {% for factor_info in sub_tasks %} 
+  =============因子索引：{{factor_info[0]}}=============
+  =====因子名称=====
+  {{ factor_info[1].factor_name }}
+  =====因子描述=====
+  {{ factor_info[1].factor_description }}
+  =====因子公式=====
+  {{ factor_info[1].factor_formulation }}
+  {% if factor_info[2]|length != 0 %}
+  --------------你之前的尝试---------------
+  {% for former_attempt in factor_info[2] %}
+  =====第 {{ loop.index }} 次尝试的代码=====
+  {{ former_attempt.implementation.all_codes }}
+  =====第 {{ loop.index }} 次尝试的反馈=====
+  {{ former_attempt.feedback }}
+  {% endfor %}
+  {% endif %}
+  {% endfor %}
+
+evaluator_output_format_system: |-
+  用户正在以下场景中实现一些因子：
+  {{ scenario }}
+  用户会提供输出格式。请检查实际输出是否符合该格式。
+  请用 JSON 格式回答。JSON 输出示例结构如下：
+  {
+      "output_format_decision": True,
+      "output_format_feedback": "输出格式正确。"
+  }
+
+
+evaluator_final_decision_v1_system: |-
+  用户正在以下场景中实现一些因子：
+  {{ scenario }}
+  用户已经完成评估，并从 evaluator 得到了一些反馈。
+  evaluator 运行代码后得到因子值 dataframe，并针对用户代码和代码输出给出多项反馈。你需要结合场景和因子描述分析这些反馈，并对评估结果给出最终判断。最终判断需要说明因子是否被正确实现；如果 final_decision 为 False，必须给出包含原因和建议的详细中文反馈。
+
+  最终实现判断遵循以下逻辑：
+  1. 如果实现值与 ground truth 值在小容忍度下完全一致，则认为实现正确。
+  2. 如果实现值与 ground truth 值在 IC 或 rank IC 上高度相关，则认为实现正确。
+  3. 如果没有提供 ground truth，只要代码成功执行（假设提供的数据正确），即可认为实现正确。任何异常，包括主动抛出的异常，都视为代码问题。此外，代码反馈必须与场景和因子描述一致。只要代码执行失败，无论原因是什么，都不能认为实现正确。
+
+  请用 JSON 格式回答。示例结构如下，请严格遵守：
+  {
+      "final_decision": True,
+      "final_feedback": "最终中文反馈信息",
+  }
+
+evaluator_final_decision_v1_user: |-
+  --------------因子信息---------------
+  {{ factor_information }}
+  --------------执行反馈---------------
+  {{ execution_feedback }}
+  --------------代码反馈---------------
+  {{ code_feedback }}
+  --------------因子值反馈---------------
+  {{ value_feedback }}

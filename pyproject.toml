@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-factor"
+version = "0.1.0"
+description = "Standalone paper_factor workflow extracted from RD-Agent."
+requires-python = ">=3.10"
+dependencies = [
+  "azure-ai-formrecognizer",
+  "dill",
+  "docker",
+  "filelock",
+  "fire",
+  "fuzzywuzzy",
+  "jqdatasdk",
+  "langchain-community",
+  "litellm>=1.73",
+  "loguru",
+  "networkx",
+  "numpy",
+  "openai",
+  "pandarallel",
+  "pandas",
+  "pyarrow",
+  "pydantic-ai-slim[mcp,openai,prefect]",
+  "pydantic-settings",
+  "pyyaml",
+  "pymupdf",
+  "pypdf",
+  "python-dotenv",
+  "python-Levenshtein",
+  "requests",
+  "rich",
+  "scikit-learn",
+  "tables",
+  "tiktoken",
+  "tqdm",
+  "tushare",
+  "typer",
+]
+
+[project.scripts]
+start = "paper_factor_cli.main:start_main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["paper_factor_cli*", "rdagent*"]
+
+[tool.setuptools.package-data]
+rdagent = ["**/*.yaml", "**/*.md", "**/*.txt", "**/Dockerfile"]

@@ -1,0 +1,10 @@
+
+analyze_component_prompt_v1_system: |-
+  用户收到一个新任务，该任务可能由下列组件组成（格式为 component_index: component_description）：
+  {{all_component_content}}
+
+  请判断新任务包含哪些组件，并把这些组件的索引放入列表。
+  请用 JSON 格式回答。示例结构如下，请严格遵守：
+  {
+      "component_no_list": 包含组件索引的列表。
+  }
