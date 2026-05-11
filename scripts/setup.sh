@@ -5,18 +5,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SKIP_DOCKER=false
-SKIP_DATA=false
 FORCE=false
 
 usage() {
   cat <<EOF
 Usage: bash scripts/setup.sh [OPTIONS]
 
-One-command setup — everything you need to run paper-factor.
+One-command setup - everything you need to run paper-factor.
 
 Options:
   --skip-docker   Skip Docker image build
-  --skip-data     Skip market data download
   --force         Rebuild Docker image / re-download data
   -h, --help      Show this help
 EOF
@@ -25,7 +23,6 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-docker) SKIP_DOCKER=true; shift ;;
-    --skip-data)   SKIP_DATA=true; shift ;;
     --force)       FORCE=true; shift ;;
     -h|--help)     usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage >&2; exit 2 ;;
@@ -53,7 +50,7 @@ for cmd in python3 pip docker git; do
   if command -v "$cmd" >/dev/null 2>&1; then
     ok "$cmd"
   else
-    fail "$cmd — please install it first"
+    fail "$cmd - please install it first"
     ERRS=$((ERRS+1))
   fi
 done
@@ -89,17 +86,15 @@ else
 fi
 
 echo ""
-echo "  IMPORTANT: Edit .env and fill in at minimum:"
-echo "    CHAT_MODEL=          (e.g. deepseek-chat)"
-echo "    OPENAI_API_KEY=      (your API key)"
-echo "    OPENAI_API_BASE=     (your API endpoint URL)"
-echo ""
-echo "  With Tushare token you can auto-download market data (Step 4)."
-echo "  Get one free at: https://tushare.pro"
+echo "  Edit .env and fill in:"
+echo "    CHAT_MODEL=       (model name, e.g. deepseek-chat)"
+echo "    OPENAI_API_KEY=   (your API key)"
+echo "    OPENAI_API_BASE=  (API endpoint URL)"
+echo "    TUSHARE_TOKEN=    (free token from https://tushare.pro)"
 
 # ---- Step 4: Build Docker image ----
 echo ""
-echo "[4/4] Building Docker image (this takes ~3 minutes) ..."
+echo "[4/4] Building Docker image (takes ~3 minutes) ..."
 
 if $SKIP_DOCKER; then
   echo "  Skipped (--skip-docker)."
@@ -108,22 +103,19 @@ else
   if docker image inspect "$IMAGE" >/dev/null 2>&1 && ! $FORCE; then
     ok "Docker image already exists"
   else
-    echo "  Building local_factor_exec:latest from Dockerfile ..."
+    echo "  Building from Dockerfile ..."
     docker build --build-arg USE_CHINA_MIRROR=true -t "$IMAGE" "$PROJECT_ROOT/rdagent/components/coder/factor_coder/docker"
     ok "Docker image built"
   fi
 fi
 
-# ---- Step 5: Initialize data (optional) ----
+# ---- Step 5: Initialize workspace data ----
 echo ""
-echo "[Extra] Initialize market data ..."
-if $SKIP_DATA; then
-  echo "  Skipped (--skip-data)."
-else
-  FORCE_FLAG=""
-  if $FORCE; then FORCE_FLAG="--force"; fi
-  python -m paper_factor_cli.main init $FORCE_FLAG 2>&1 | tail -3
-fi
+echo "  Initializing workspace and market data ..."
+
+FORCE_FLAG=""
+if $FORCE; then FORCE_FLAG="--force"; fi
+python -m paper_factor_cli.main init $FORCE_FLAG 2>&1 | tail -3
 
 # ---- Done ----
 echo ""
