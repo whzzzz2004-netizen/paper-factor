@@ -19,6 +19,7 @@ from rdagent.components.coder.factor_coder.factor import FactorExperiment, Facto
 from rdagent.components.document_reader.document_reader import (
     extract_first_page_screenshot_from_pdf,
     load_and_process_pdfs_by_langchain,
+    load_and_process_pdfs_by_pymupdf,
 )
 from rdagent.core.conf import RD_AGENT_SETTINGS
 from rdagent.core.proposal import Hypothesis, HypothesisFeedback
@@ -817,49 +818,10 @@ def _adapt_report_task_for_available_data(task: FactorTask) -> FactorTask:
     available_daily_columns = ", ".join(data_profile.get("daily_columns") or []) or "unknown"
     available_minute_columns = ", ".join(data_profile.get("minute_columns") or []) or "unknown"
     adaptation_note = (
-    "\n\n本次 paper_factor 任务的数据实现约束如下：\n"
-
-    f"- 本地数据源：{data_profile.get('source')}。\n"
-    f"- 当前可用股票数量：约 {data_profile.get('stock_count')} 只。\n"
-    f"- 当前可用历史区间：{data_profile.get('start_date')} 至 "
-    f"{data_profile.get('end_date')}（约 {data_profile.get('years')} 年）。\n"
-
-    f"- 可用日频字段：{available_daily_columns}。\n"
-    f"- 可用分钟频字段：{available_minute_columns}。\n\n"
-
-    "【硬性数据约束】\n"
-    "- 只能使用上面明确列出的数据源与字段。\n"
-    "- 如果论文因子依赖未提供的数据字段或数据源，只有在研报原文或知识库已经给出口径且上述字段足以计算时才允许推导。"
-    "如果实在无法计算得出，禁止使用其他字段近似替代。\n"
-    "- 若数据缺失导致无法实现，请输出：\n"
-    "  DATA_UNAVAILABLE: 缺失原因\n"
-    "  然后直接退出，且不要生成 result.h5。\n\n"
-
-    "【禁止事项】\n"
-    "- 禁止使用价格成交量数据替代：\n"
-    "  财务报表、基本面、市值、行业分类、分析师预期、订单簿、tick数据等不存在的数据。\n"
-    "- 禁止通过构造 proxy 的方式伪造论文原始字段。\n"
-    "- 禁止引入未来信息（future leakage）。\n\n"
-
-    "【允许的自适应简化】\n"
-    "- 可以根据本地数据规模，对论文中的训练窗口、滚动周期、样本规模、模型复杂度进行合理简化。\n"
-    "- 如果论文使用的历史长度超过本地数据长度，应使用当前最大可用历史，而不是直接失败。\n"
-    "- 如果论文使用的股票池大于当前股票数量，应直接在当前股票池上实现。\n"
-    "- 如果论文采用复杂滚动训练（例如 GRU/TCN + rolling retraining），"
-    "可改为更简单但不泄露未来信息的训练方式。\n"
-    "- 当数据不足以支持年度滚动训练时，可改为 expanding window 或单次 train/valid/test 划分。\n"
-    "- 在多种实现方式均可成立时，应优先选择：\n"
-    "  1. 最符合当前字段条件\n"
-    "  2. 最稳健\n"
-    "  3. 最不容易未来泄露\n"
-    "  的实现方式。\n\n"
-
-    "【核心目标】\n"
-    "- 保留论文方法的核心思想。\n"
-    "- 允许根据本地数据规模调整实现细节。\n"
-    "- 最终必须输出“日频因子 DataFrame”。\n"
-    "- 不要因为本地数据规模小于论文设定而直接放弃实现。\n"
-)
+        f"\n\n本地可用数据：{data_profile.get('source')}，约{data_profile.get('stock_count')}只股票，"
+        f"{data_profile.get('start_date')}至{data_profile.get('end_date')}。"
+        f"日频字段：{available_daily_columns}。分钟频字段：{available_minute_columns}。"
+    )
     if domain_knowledge:
         adaptation_note += f"\n\npaper_factor retrieved knowledge relevant to this factor:\n{domain_knowledge}"
     adapted_task.description = f"{adapted_task.factor_description}{adaptation_note}"
@@ -976,7 +938,7 @@ def extract_hypothesis_and_exp_from_reports(
         if cached_exp is not None:
             return cached_exp
 
-    docs_dict = load_and_process_pdfs_by_langchain(report_file_path)
+    docs_dict = load_and_process_pdfs_by_pymupdf(report_file_path)
     loader = FactorExperimentLoaderFromPDFfiles()
     exp = loader.load_from_docs_dict(
         docs_dict,

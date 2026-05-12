@@ -3,6 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
+from dotenv import load_dotenv
+
+# Load .env once at import time so all downstream settings classes
+# can read values from os.environ without relying on pydantic env_file.
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
+
 from pydantic_settings import (
     BaseSettings,
     EnvSettingsSource,

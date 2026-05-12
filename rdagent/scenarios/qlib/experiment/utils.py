@@ -1,4 +1,3 @@
-import random
 import re
 import shutil
 import os
@@ -13,6 +12,37 @@ from rdagent.utils.env import QTDockerEnv
 
 REAL_MINUTE_PV_FILENAME = "minute_pv.h5"
 REAL_MINUTE_QUOTE_FILENAME = "minute_quote.h5"
+
+DAILY_COLUMN_GROUPS: dict[str, dict[str, str]] = {
+    "价格": {"$open": "开盘价", "$high": "最高价", "$low": "最低价", "$close": "收盘价", "$pre_close": "前收盘价"},
+    "涨跌": {"$change": "涨跌额", "$pct_chg": "涨跌幅"},
+    "成交量额": {"$volume": "成交量(股)", "$amount": "成交额(元)"},
+    "换手": {"$turnover_rate": "换手率", "$turnover_rate_f": "换手率(自由流通股本)", "$turnover": "换手率(别名)", "$volume_ratio": "量比"},
+    "估值": {"$pe": "市盈率", "$pe_ttm": "市盈率(TTM)", "$pb": "市净率", "$ps": "市销率", "$ps_ttm": "市销率(TTM)"},
+    "股息": {"$dv_ratio": "股息率", "$dv_ttm": "股息率(TTM)"},
+    "市值股本": {"$total_mv": "总市值", "$circ_mv": "流通市值", "$total_share": "总股本", "$float_share": "流通股本", "$free_share": "自由流通股本"},
+    "复权": {"$factor": "复权因子"},
+    "期货": {"$pre_settle": "前结算价", "$settle": "结算价", "$change1": "涨跌1", "$change2": "涨跌2", "$open_interest": "持仓量", "$open_interest_chg": "持仓量变化"},
+    "元信息": {"$symbol": "股票代码", "$name": "股票名称", "$area": "地区", "$industry": "行业", "$market": "市场", "$list_date": "上市日期", "$asset_type": "资产类型"},
+}
+
+MINUTE_COLUMN_GROUPS: dict[str, dict[str, str]] = {
+    "价格": {"$open": "分钟开盘价", "$close": "分钟收盘价", "$high": "分钟最高价", "$low": "分钟最低价"},
+    "成交": {"$volume": "分钟成交量", "$vwap": "分钟均价"},
+}
+
+
+def _format_column_groups(groups: dict[str, dict[str, str]], available_columns: list[str]) -> str:
+    """Format column groups into a compact, readable description, skipping empty groups."""
+    available = set(available_columns)
+    lines = []
+    for category, cols in groups.items():
+        present = {k: v for k, v in cols.items() if k in available}
+        if not present:
+            continue
+        items = ", ".join(f"{k}({v})" for k, v in present.items())
+        lines.append(f"  {category}: {items}")
+    return "\n".join(lines)
 
 
 def _minute_day_count(path: Path) -> int:
@@ -214,30 +244,17 @@ def get_file_desc(p: Path, variable_list=[]) -> str:
         )
 
         df_info += "\n### Columns\n"
-        columns = df.dtypes.to_dict()
-        grouped_columns = {}
+        available_columns = list(df.columns)
 
-        for col in columns:
-            if col.startswith("$"):
-                prefix = col.split("_")[0] if "_" in col else col
-                grouped_columns.setdefault(prefix, []).append(col)
-            else:
-                grouped_columns.setdefault("other", []).append(col)
+        column_groups = DAILY_COLUMN_GROUPS
+        if "minute_pv" in p.name.lower():
+            column_groups = MINUTE_COLUMN_GROUPS
 
-        if variable_list:
-            df_info += "#### Relevant Columns:\n"
-            relevant_line = ", ".join(f"{col}: {columns[col]}" for col in variable_list if col in columns)
-            df_info += relevant_line + "\n"
-        else:
-            df_info += "#### All Columns:\n"
-            grouped_items = list(grouped_columns.items())
-            random.shuffle(grouped_items)
-            for prefix, cols in grouped_items:
-                header = "Other Columns" if prefix == "other" else f"{prefix} Related Columns"
-                df_info += f"\n#### {header}:\n"
-                random.shuffle(cols)
-                line = ", ".join(f"{col}: {columns[col]}" for col in cols)
-                df_info += line + "\n"
+        df_info += _format_column_groups(column_groups, available_columns)
+
+        unknown = [c for c in available_columns if not any(c in g for g in column_groups.values())]
+        if unknown:
+            df_info += "\n  其他: " + ", ".join(unknown) + "\n"
 
         if "REPORT_PERIOD" in df.columns:
             one_instrument = df.index.get_level_values("instrument")[0]
@@ -351,45 +368,31 @@ def get_compact_data_folder_intro() -> str:
     mode = resolve_factor_data_mode()
     data_folder = Path(FACTOR_COSTEER_SETTINGS.data_folder_debug)
 
-    def file_line(file_name: str, fallback_columns: list[str], description: str) -> str:
+    def _h5_columns(file_name: str) -> list[str]:
         path = data_folder / file_name
-        columns = fallback_columns
         if path.exists():
             try:
-                columns = list(pd.read_hdf(path, key="data").columns)
+                return list(pd.read_hdf(path, key="data").columns)
             except Exception:  # noqa: BLE001
-                columns = fallback_columns
-        return (
-            f"- {file_name}: {description} with MultiIndex ['datetime', 'instrument'] and columns "
-            f"{columns}."
+                pass
+        return []
+
+    def _daily_intro() -> str:
+        cols = _h5_columns("daily_pv.h5")
+        if not cols:
+            return "- daily_pv.h5: 日线数据，字段不可用"
+        return "- daily_pv.h5: 日线数据，MultiIndex ['datetime', 'instrument']\n" + _format_column_groups(
+            DAILY_COLUMN_GROUPS, cols
         )
 
-    daily_line = file_line(
-        "daily_pv.h5",
-        ["$open", "$close", "$high", "$low", "$volume", "$factor", "$turnover", "$turnover_rate"],
-        "daily stock/future data",
-    )
-    minute_pv_line = file_line(
-        "minute_pv.h5",
-        ["$open", "$close", "$high", "$low", "$volume", "$amount", "$open_interest"],
-        "Tushare minute bar data",
-    )
-    compact_desc = {
-        "daily": (
-            "Available source files:\n"
-            f"{daily_line}\n"
-            "- README.md: brief schema reference."
-        ),
-        "minute": (
-            "Available source files:\n"
-            f"{minute_pv_line}\n"
-            "- README.md: brief schema reference."
-        ),
-        "all": (
-            "Available source files:\n"
-            f"{daily_line}\n"
-            f"{minute_pv_line}\n"
-            "- README.md: brief schema reference."
-        ),
-    }
-    return factor_mode_instruction(mode) + "\n\n" + compact_desc[mode]
+    def _minute_intro() -> str:
+        cols = _h5_columns("minute_pv.h5")
+        if not cols:
+            return "- minute_pv.h5: 分钟数据，字段不可用"
+        return "- minute_pv.h5: 分钟数据，MultiIndex ['datetime', 'instrument']\n" + _format_column_groups(
+            MINUTE_COLUMN_GROUPS, cols
+        )
+
+    file_intros = {"daily": _daily_intro, "minute": _minute_intro, "all": lambda: f"{_daily_intro()}\n{_minute_intro()}"}
+
+    return factor_mode_instruction(mode) + "\n\nAvailable source files:\n" + file_intros[mode]()

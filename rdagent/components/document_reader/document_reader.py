@@ -64,6 +64,24 @@ def load_and_process_pdfs_by_langchain(path: str) -> dict[str, str]:
     return process_documents_by_langchain(load_documents_by_langchain(path))
 
 
+def load_and_process_pdfs_by_pymupdf(path: str) -> dict[str, str]:
+    ab_path = Path(path).resolve()
+    content_dict: dict[str, str] = {}
+    pdf_paths: list[Path] = []
+    if ab_path.is_file() and ".pdf" in ab_path.suffixes:
+        pdf_paths = [ab_path]
+    elif ab_path.is_dir():
+        pdf_paths = sorted(ab_path.rglob("*.pdf"))
+    for file_path in pdf_paths:
+        try:
+            doc = fitz.open(file_path)
+            text_parts = [page.get_text() for page in doc]
+            content_dict[str(file_path)] = "\n".join(text_parts)
+        except Exception:
+            content_dict[str(file_path)] = ""
+    return content_dict
+
+
 def load_and_process_one_pdf_by_azure_document_intelligence(
     path: Path,
     key: str,

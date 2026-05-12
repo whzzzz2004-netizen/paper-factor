@@ -59,71 +59,58 @@ evolving_strategy_factor_implementation_v1_system: |-
   {{ queried_former_failed_knowledge[-1].feedback }}
   {% endif %}
 
-  --------------正确代码模板（请遵循这个结构）：---------------
+  --------------代码模板（必须遵循的结构）：---------------
   ```python
-  import pandas as pd
-  import numpy as np
-  import os
-  from pathlib import Path
-
+  import pandas as pd; import numpy as np; from pathlib import Path; import os
   DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or ".")
-
   def calculate_<Factor_Name>():
-      # 从共享数据目录读取合适的数据文件，所有数据文件都使用 key="data"
-      # 示例：
-      #   daily_pv.h5           -> 日频 OHLCV 数据
-      #   minute_pv.h5          -> 分钟 bar 数据
-      df = pd.read_hdf(DATA_DIR / "daily_pv.h5", key="data")
-
-      # 在这里计算因子
-      # 对 MultiIndex 日频数据做滚动计算时：
-      # df['FACTOR_NAME'] = df.groupby(level='instrument')['$close'].pct_change(10)
-      # df['FACTOR_NAME'] = df.groupby(level='instrument')['$turnover_rate'].transform(
-      #     lambda x: x.rolling(window=20, min_periods=1).mean()
-      # )
-      #
-      # 对分钟数据聚合到日频时：
-      # minute_df = df.reset_index()
-      # minute_df['date'] = minute_df['datetime'].dt.normalize()
-      # daily_factor = minute_df.groupby(['date', 'instrument'])['$volume'].sum().reset_index()
-      # daily_factor = daily_factor.rename(columns={'date': 'datetime', '$volume': 'FACTOR_NAME'})
-      # df = daily_factor.set_index(['datetime', 'instrument'])
-
-      # 处理缺失值和无穷值
+      df = pd.read_hdf(DATA_DIR / "daily_pv.h5", key="data")  # MultiIndex: ['datetime','instrument']
+      # 在此实现因子逻辑 (详见下方规则)
       df['<factor_column>'] = df['<factor_column>'].replace([np.inf, -np.inf], np.nan)
-
-      # 重要：保存时必须保留 MultiIndex
-      # 只选择因子列并保存
       result_df = df[['<factor_column>']].copy()
       result_df.columns = ['<Factor_Name>']
-
-      # 保存到 HDF5，MultiIndex ['datetime', 'instrument'] 会被保留
       result_df.to_hdf("result.h5", key="data")
-
   if __name__ == '__main__':
       calculate_<Factor_Name>()
   ```
 
-  重要规则：
-  1. 对 MultiIndex 日频数据做滚动计算时，优先使用 groupby(level='instrument')
-  2. 对分钟数据聚合到日频时，先 reset_index()，创建 date 列，再按 ['date', 'instrument'] 分组
-  3. 除非已经先 reset_index()，否则不要创建名为 'datetime' 或 'instrument' 的列
-  4. 分钟数据聚合到日频后，只能执行一次 date -> datetime 的重命名，然后 set_index(['datetime', 'instrument'])
-  5. 除非绝对必要，不要使用 unstack()；如果使用，保存前必须恢复最终 MultiIndex ['datetime', 'instrument']
-  6. 必须把 np.inf 和 -np.inf 替换为 np.nan
-  7. 结果必须使用 MultiIndex ['datetime', 'instrument']
-  8. 结果只能有一列，列名必须是因子名
-  9. 因子值必须是数值型。不要输出字符串、类别名或中文标签；如果因子是类别/阶段状态，必须先映射为数值编码，例如 Ice/冰点=0、Recovery/复苏=1、Expansion/扩张=2、Climax/高潮=3、Decline/衰退=-1，并在代码注释中说明映射
-  10. 严禁使用未来信息，例如 shift(-1)、pct_change(-n)、diff(-n)、居中滚动窗口或 backward fill
-  11. 可以使用日频或分钟级源文件，但最终输出必须是日频：每个交易日、每只股票一个因子值
-  12. 只能使用场景数据描述中明确列出的文件和字段。不要假设存在额外表、额外字段、基本面、财务报表、分析师预期、行业标签、市值或任何隐藏数据
-  13. 如果因子明确需要本地没有的数据，并且不能从本地已有数据计算，不要用猜测字段、无关代理变量或自创公式硬凑。应生成代码，打印 `DATA_UNAVAILABLE: <具体缺失数据原因>`，然后退出且不要写入 result.h5
-  14. 日频滚动窗口必须使用整数交易日窗口，例如 20、60、120。不要在 pandas rolling 中使用 pd.DateOffset(months=1)、"30D" 或其他非固定交易日窗口
-  15. 变量说明是强约束，不是可选注释。如果变量写着 `T-2日（涨停日）`、`limit-up day` 或类似表述，实现时必须识别该事件日；当事件条件不满足时，因子值必须设为 NaN
-  16. 每个因子必须独立实现，不要假设其他因子的输出文件或中间结果已经存在。如果任务里出现 `Stage_t_raw`、`Stage_smooth`、`回调确认日`、`首板日` 等中间概念，只能使用因子信息或其中附带的 paper_factor 知识库给出的定义；不要根据常识临时发明另一套判定规则。若定义缺失，输出 `DATA_UNAVAILABLE`
-  17. 严格遵守因子信息中的数据频率和时间逻辑。T 日固定表示因子输出/信号日期；如果描述写明 T-2 首板涨停、T-1 回调，则必须在 T 日输出因子值，且只有 T-2 与 T-1 条件满足时才输出数值，否则输出 NaN。不要把 T 日误当作首板日或回调日
-  18. 不要实现含糊阈值。如果因子信息里出现“合理设定”“自行设定”“参照图表但不给数值”“根据情况调整”等没有具体数值或确定公式的阈值/分段/打分规则，必须输出 `DATA_UNAVAILABLE: 缺少可执行的阈值或分段规则定义`，不要自己猜参数
-  19. 所有用于事件判定的布尔序列在经过 `shift()` 之后，都必须先处理缺失值再做逻辑运算；推荐写法是 `series.shift(1).fillna(False)`。禁止对含 `NaN` 的布尔序列直接使用 `~`、`&`、`|`，否则会在 pandas 中触发 float/object 类型错误
+    重要规则 —— 数据类型与索引（必读，否则极易写出隐性 bug）：
+
+  1. 从 HDF5 读取的数据是 MultiIndex DataFrame，索引为 ['datetime', 'instrument']。每只股票在每个交易日有一行。
+  2. 从 MultiIndex DataFrame 取出的单列（如 df['$close']）是普通 pandas Series，其索引保持 MultiIndex。⚠️ 对其做 .shift()、.diff()、.pct_change() 等涉及前后行运算时，必须用 groupby(level='instrument') 包裹，否则会跨越 instrument 边界，把 A 股票的数据移到 B 股票上。示例：df.groupby(level='instrument')['$close'].shift(2)。
+  3. 对 MultiIndex 日频数据做跨股票计算（rolling、expanding、累计等）时，用 groupby(level='instrument')；做横截面操作时，用 groupby(level='datetime')。
+  4. 不要对 MultiIndex 数据做 reset_index() 除非绝对必要。如果 reset_index 了，最终必须 set_index(['datetime', 'instrument']) 恢复。
+  5. 除非绝对必要，不要使用 unstack()；如果使用，保存前必须恢复 MultiIndex。
+  6. 不要创建名为 'datetime' 或 'instrument' 的普通列（除非已 reset_index 并会在之后 set_index 回来）。
+  7. 分钟数据聚合到日频：先 reset_index() → 创建 date 列 → groupby(['date', 'instrument']) → rename date 为 datetime → set_index(['datetime', 'instrument'])。
+
+  ⚠️ 重要规则 —— numpy 与 pandas 混用（极易出错！最常见的 bug 来源）：
+
+  8. pd.cut() 和 pd.qcut() 返回的是 pandas Series，其索引是整数位置 [0, 1, 2, ...]，不是数据的 MultiIndex。
+  9. np.sqrt()、np.where()、np.arctan2() 等 numpy 函数返回的是 numpy ndarray（无索引）。
+  10. 当 numpy ndarray 和 pandas Series 做算术运算时（例如 np_arr + pd_series * 50），pandas 按索引对齐，结果是一个索引为 [0, 1, 2, ...] 的 Series。
+  11. 如果后续用这个 [0,1,2,...] 索引的 Series 去创建以 instrument 名称为索引的新 Series（例如 pd.Series(result, index=df.index.get_level_values('instrument'))），索引完全对不上 → 结果全是 NaN，不报错！
+  12. 解决方案：涉及 numpy 和 pandas 混算的表达式，在最后加 .values 转为 numpy array。例如：region_code = (numpy_arr + (pd_cut_result - 1) * 50).values
+  13. 或者全程只用一种类型：全 numpy（所有变量都加 .values）或全 pandas（显式管理每个 Series 的索引）。
+
+  重要规则 —— 因子值与输出格式：
+
+  14. 必须把 np.inf 和 -np.inf 替换为 np.nan。
+  15. 结果 DataFrame 必须使用 MultiIndex ['datetime', 'instrument']，且只能有一列，列名必须是因子名。
+  16. 因子值必须是数值型。不要输出字符串、类别名或中文标签。如果因子是类别/阶段状态，必须先映射为数值编码（如 0,1,2,-1），并在注释中说明映射。
+  17. **核心约束：T 日的因子值只能由 T 日及以前（≤T）的数据计算，不得使用任何 T 日之后的信息。** 构建查表（lookup table）时用 shift(-N) 计算历史 label 是合法的，只要查询时仅使用 ≤T 的历史数据、不将未来信息带入最终因子值。
+  18. 最终输出必须是日频：每个交易日、每只股票一个因子值。
+  19. 只能使用场景数据描述中明确列出的文件和字段。不要假设存在额外表、字段或隐藏数据。
+  20. 如果因子需要的数据不可用且无法从已有数据计算：打印 `DATA_UNAVAILABLE: <原因>`，退出且不写 result.h5。
+  21. 日频窗口必须是整数交易日数（如 20、60、120），不能用 pd.DateOffset 或 “30D”。
+
+  重要规则 —— 因子定义与事件逻辑：
+
+  22. 变量说明是强约束。如果写着 T-2日（涨停日）、limit-up day 等，必须识别该事件日；条件不满足时因子值设为 NaN。
+  23. 不要用常识发明判定规则。中间概念只能使用因子信息或 paper_factor 知识库的定义。缺失时输出 `DATA_UNAVAILABLE`。
+  24. 严格遵守频率和时间逻辑。T 日=信号日期，不是事件日。只有条件满足时输出数值，否则 NaN。
+  25. 不要自创阈值。含糊描述（如”合理设定””自行设定”）→ 输出 `DATA_UNAVAILABLE: 缺少可执行的阈值定义`。
+  26. 布尔序列 shift() 后必须 fillna(False)。禁止对含 NaN 的布尔序列直接使用 ~、&、|。
 
   请按以下 JSON 格式返回代码。JSON 输出结构示例：
   {
@@ -251,7 +238,8 @@ evaluator_final_decision_v1_system: |-
   最终实现判断遵循以下逻辑：
   1. 如果实现值与 ground truth 值在小容忍度下完全一致，则认为实现正确。
   2. 如果实现值与 ground truth 值在 IC 或 rank IC 上高度相关，则认为实现正确。
-  3. 如果没有提供 ground truth，只要代码成功执行（假设提供的数据正确），即可认为实现正确。任何异常，包括主动抛出的异常，都视为代码问题。此外，代码反馈必须与场景和因子描述一致。只要代码执行失败，无论原因是什么，都不能认为实现正确。
+  3. 如果没有提供 ground truth，代码成功执行只是基本要求，还必须满足：因子列有非 NaN 的有效数值、输出格式正确、没有未来信息泄漏。如果因子列全是 NaN 或全为常量，即使代码没有报错，也必须判为失败（final_decision=False）。
+  4. 任何异常，包括主动抛出的异常，都视为代码问题。只要代码执行失败，无论原因是什么，都不能认为实现正确。
 
   请用 JSON 格式回答。示例结构如下，请严格遵守：
   {

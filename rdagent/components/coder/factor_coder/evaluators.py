@@ -98,6 +98,12 @@ class FactorEvaluatorForCoder(CoSTEEREvaluator):
             if decision_from_value_check is True:
                 factor_feedback.final_decision = True
                 factor_feedback.final_feedback = "Value evaluation passed, accept the factor."
+            elif decision_from_value_check is False:
+                factor_feedback.final_decision = False
+                factor_feedback.final_feedback = (
+                    "Value evaluation found critical issues (e.g. all-NaN output, inf values, "
+                    "future data leakage, or wrong output format). Fix these issues before retrying."
+                )
             else:
                 factor_feedback.final_decision = True
                 factor_feedback.final_feedback = (

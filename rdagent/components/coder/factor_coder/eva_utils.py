@@ -1,11 +1,12 @@
 import io
 import json
+import math
 import os
-import re
 from pathlib import Path
 from abc import abstractmethod
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple
 
+import numpy as np
 import pandas as pd
 
 from rdagent.components.coder.factor_coder.config import FACTOR_COSTEER_SETTINGS
@@ -79,11 +80,6 @@ class FactorCodeEvaluator(FactorEvaluator):
     ):
         factor_information = target_task.get_task_information()
         code = implementation.all_codes
-        leakage_feedback, _ = FactorFutureLeakageEvaluator(self.scen).evaluate(
-            implementation=implementation,
-            gt_implementation=gt_implementation,
-        )
-
         system_prompt = T(".prompts:evaluator_code_feedback_v1_system").r(
             scenario=(
                 self.scen.get_scenario_all_desc(
@@ -120,8 +116,6 @@ class FactorCodeEvaluator(FactorEvaluator):
             system_prompt=system_prompt,
             json_mode=False,
         )
-        if leakage_feedback:
-            critic_response = f"{leakage_feedback}\n{critic_response}"
 
         return critic_response, None
 
@@ -184,7 +178,7 @@ class FactorNumericValueEvaluator(FactorEvaluator):
         factor = gen_df.iloc[:, 0]
         non_null_count = int(factor.notna().sum())
         if non_null_count == 0:
-            return "The factor column has no non-null values; numeric dtype check is skipped.", True
+            return "The factor column has no non-null values. All values are NaN — this is a critical failure. The code must produce valid numeric factor values.", False
 
         numeric_factor = pd.to_numeric(factor, errors="coerce")
         invalid_count = int(factor.notna().sum() - numeric_factor.notna().sum())
@@ -313,42 +307,6 @@ class FactorDatetimeDailyEvaluator(FactorEvaluator):
         )
 
 
-class FactorFutureLeakageEvaluator(FactorEvaluator):
-    _PATTERNS = [
-        (
-            re.compile(r"\.shift\(\s*-\d+", re.IGNORECASE),
-            "critic 1: The code uses a negative shift, which is a direct future-information leak. Only use current or past observations.",
-        ),
-        (
-            re.compile(r"\.pct_change\(\s*-\d+|periods\s*=\s*-\d+", re.IGNORECASE),
-            "critic 2: The code computes returns with a negative lookback, which leaks future prices into the factor.",
-        ),
-        (
-            re.compile(r"\.diff\(\s*-\d+", re.IGNORECASE),
-            "critic 3: The code uses negative diff periods, which relies on future rows and causes time leakage.",
-        ),
-        (
-            re.compile(r"center\s*=\s*True", re.IGNORECASE),
-            "critic 4: The code uses centered rolling windows, which mix future observations into the current timestamp.",
-        ),
-        (
-            re.compile(r"\.bfill\(|fillna\(\s*method\s*=\s*[\"']bfill[\"']", re.IGNORECASE),
-            "critic 5: The code backward-fills missing values, which can propagate future information to earlier timestamps.",
-        ),
-    ]
-
-    def evaluate(
-        self,
-        implementation: Workspace,
-        gt_implementation: Workspace = None,
-    ) -> Tuple[str, object]:
-        code = implementation.all_codes or ""
-        critics = [message for pattern, message in self._PATTERNS if pattern.search(code)]
-        if critics:
-            return "\n".join(critics), False
-        return "No obvious future-information leakage pattern was found in the code review.", True
-
-
 def _get_daily_label_from_data_folder(data_folder: Path) -> pd.Series:
     daily_path = data_folder / "daily_pv.h5"
     df = pd.read_hdf(daily_path, key="data").sort_index()
@@ -373,19 +331,248 @@ def _mean_cross_sectional_ic(factor_df: pd.DataFrame, label: pd.Series) -> float
     return float(daily_ic.mean())
 
 
-def evaluate_factor_ic_from_workspace(
-    implementation: Workspace,
+def _merge_factor_and_label(factor_df: pd.DataFrame, label: pd.Series) -> pd.DataFrame:
+    factor_series = pd.to_numeric(factor_df.iloc[:, 0], errors="coerce")
+    factor_series.name = "factor"
+    merged = pd.concat([factor_series, label], axis=1, join="inner").dropna()
+    return merged
+
+
+def _safe_float(x: float | None) -> float | None:
+    if x is None:
+        return None
+    try:
+        xf = float(x)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(xf, float) and (math.isnan(xf) or math.isinf(xf)):
+        return None
+    return xf
+
+
+def _compute_raw_factor_value_quality(gen_df: pd.DataFrame) -> dict[str, Any]:
+    """Cheap distributional checks on the generated factor column (before label merge)."""
+    out: dict[str, Any] = {}
+    if gen_df is None or gen_df.empty or gen_df.shape[1] < 1:
+        out["factor_quality_error"] = "empty_or_missing_factor_column"
+        return out
+    s = pd.to_numeric(gen_df.iloc[:, 0], errors="coerce")
+    n = int(len(s))
+    nn = int(s.notna().sum())
+    out["factor_non_null"] = nn
+    out["factor_nan_ratio"] = float(1.0 - nn / n) if n else 1.0
+    clean = s.dropna()
+    if clean.empty:
+        out["factor_std"] = None
+        out["factor_unique_pct"] = None
+        out["factor_quality_warnings"] = ["all_nan_values"]
+        return out
+    std = float(clean.std(ddof=1)) if len(clean) > 1 else 0.0
+    nuniq = int(clean.nunique())
+    out["factor_std"] = _safe_float(std)
+    out["factor_unique_pct"] = float(nuniq / len(clean)) if len(clean) else 0.0
+    warnings: list[str] = []
+    if out["factor_nan_ratio"] > 0.5:
+        warnings.append(f"high_nan_ratio_{out['factor_nan_ratio']:.1%}")
+    if std < 1e-10:
+        warnings.append("near_constant_std")
+    if out["factor_unique_pct"] < 0.01:
+        warnings.append(f"low_unique_value_fraction_{out['factor_unique_pct']:.4%}")
+    out["factor_quality_warnings"] = warnings or None
+    return out
+
+
+def _compute_extended_metrics(
+    merged: pd.DataFrame,
+    *,
+    top_frac: float = 0.2,
+    bottom_frac: float = 0.2,
+    periods_per_year: int = 252,
+) -> dict[str, Any]:
+    """Cross-sectional IC/RankIC, long-short quintiles, turnover, drawdown (label = forward return)."""
+    out: dict[str, Any] = {"subuniverse_ic": None, "subuniverse_note": "not configured (set FACTOR_EVAL_SUBUNIVERSE_COLUMN if needed)"}
+    if merged is None or merged.empty or len(merged) < 10:
+        out["error"] = "insufficient_merged_rows"
+        return out
+
+    if "datetime" not in merged.index.names:
+        out["error"] = "missing_datetime_index_level"
+        return out
+
+    dates = merged.index.get_level_values("datetime").unique().sort_values()
+    out["n_calendar_days"] = int(len(dates))
+    out["n_observations"] = int(len(merged))
+
+    daily_ic_pearson: list[float] = []
+    daily_ic_rank: list[float] = []
+    daily_ls: list[float] = []
+    turnover_churn: list[float] = []
+    prev_top: set[Any] | None = None
+
+    for dt in dates:
+        try:
+            slab = merged.loc[dt]
+        except KeyError:
+            continue
+        if isinstance(slab, pd.Series):
+            continue
+        g = slab.dropna(subset=["factor", "label_next_return"])
+        if len(g) < 3:
+            continue
+
+        ic_p = g["factor"].corr(g["label_next_return"])
+        daily_ic_pearson.append(float(ic_p) if pd.notna(ic_p) else float("nan"))
+
+        ic_r = g["factor"].corr(g["label_next_return"], method="spearman")
+        daily_ic_rank.append(float(ic_r) if pd.notna(ic_r) else float("nan"))
+
+        if len(g) >= 10:
+            rnk = g["factor"].rank(pct=True, method="average")
+            top_mask = rnk >= (1.0 - top_frac)
+            bot_mask = rnk <= bottom_frac
+            top_g = g.loc[top_mask, "label_next_return"]
+            bot_g = g.loc[bot_mask, "label_next_return"]
+            if len(top_g) > 0 and len(bot_g) > 0:
+                daily_ls.append(float(top_g.mean() - bot_g.mean()))
+            else:
+                daily_ls.append(float("nan"))
+
+            top_idx = set(g.index[top_mask])
+            if prev_top is not None and len(top_idx | prev_top) > 0:
+                churn = len(top_idx.symmetric_difference(prev_top)) / float(len(top_idx | prev_top))
+                turnover_churn.append(float(churn))
+            prev_top = top_idx
+        else:
+            daily_ls.append(float("nan"))
+
+    s_ic_p = pd.Series(daily_ic_pearson).replace([np.inf, -np.inf], np.nan).dropna()
+    s_ic_r = pd.Series(daily_ic_rank).replace([np.inf, -np.inf], np.nan).dropna()
+    s_ls = pd.Series(daily_ls).replace([np.inf, -np.inf], np.nan).dropna()
+
+    ic_mean = float(s_ic_p.mean()) if not s_ic_p.empty else float("nan")
+    ic_std = float(s_ic_p.std(ddof=1)) if len(s_ic_p) > 1 else float("nan")
+    icir = float(ic_mean / ic_std) if ic_std and not math.isnan(ic_std) and ic_std > 0 else float("nan")
+
+    rank_ic_mean = float(s_ic_r.mean()) if not s_ic_r.empty else float("nan")
+    rank_ic_std = float(s_ic_r.std(ddof=1)) if len(s_ic_r) > 1 else float("nan")
+    rank_icir = (
+        float(rank_ic_mean / rank_ic_std)
+        if rank_ic_std and not math.isnan(rank_ic_std) and rank_ic_std > 0
+        else float("nan")
+    )
+
+    out["ic_mean_pearson"] = _safe_float(ic_mean)
+    out["ic_std_pearson"] = _safe_float(ic_std)
+    out["icir_pearson"] = _safe_float(icir)
+    out["ic_days"] = int(len(s_ic_p))
+    out["ic_positive_hit_rate"] = (
+        float((s_ic_p > 0).mean()) if not s_ic_p.empty else None
+    )
+
+    out["rank_ic_mean"] = _safe_float(rank_ic_mean)
+    out["rank_ic_std"] = _safe_float(rank_ic_std)
+    out["rank_icir"] = _safe_float(rank_icir)
+    out["rank_ic_days"] = int(len(s_ic_r))
+
+    ls_mean = float(s_ls.mean()) if not s_ls.empty else float("nan")
+    ls_std = float(s_ls.std(ddof=1)) if len(s_ls) > 1 else float("nan")
+    ls_sharpe = (
+        float(ls_mean / ls_std * math.sqrt(periods_per_year))
+        if ls_std and not math.isnan(ls_std) and ls_std > 0
+        else float("nan")
+    )
+    out["ls_daily_mean"] = _safe_float(ls_mean)
+    out["ls_daily_std"] = _safe_float(ls_std)
+    out["ls_sharpe_annualized"] = _safe_float(ls_sharpe)
+    out["ls_trading_days"] = int(len(s_ls))
+
+    if not s_ls.empty:
+        r = s_ls.fillna(0.0)
+        wealth = float(np.prod(np.asarray(1.0 + r)) - 1.0)
+        out["ls_cumulative_return_compound"] = _safe_float(wealth)
+        n = len(r)
+        if n > 0:
+            ann = float((1.0 + wealth) ** (periods_per_year / n) - 1.0) if wealth > -1 else float("nan")
+            out["ls_annualized_return_approx"] = _safe_float(ann)
+        cum = (1.0 + r).cumprod()
+        roll_max = cum.cummax()
+        dd_series = cum / roll_max - 1.0
+        mdd = float(dd_series.min()) if len(dd_series) else float("nan")
+        out["ls_max_drawdown"] = _safe_float(mdd)
+    else:
+        out["ls_cumulative_return_compound"] = None
+        out["ls_annualized_return_approx"] = None
+        out["ls_max_drawdown"] = None
+
+    if turnover_churn:
+        out["top_bottom_turnover_mean"] = float(np.nanmean(turnover_churn))
+        out["top_bottom_turnover_note"] = (
+            f"mean symmetric churn of top {top_frac:.0%} vs prior day (equal-weight proxy)"
+        )
+    else:
+        out["top_bottom_turnover_mean"] = None
+        out["top_bottom_turnover_note"] = "insufficient consecutive days for turnover"
+
+    return out
+
+
+def _format_extended_metrics_feedback(metrics: dict[str, Any], *, threshold: float) -> str:
+    """Human-readable block appended to evaluation feedback."""
+    if metrics.get("error"):
+        extra = ""
+        if metrics.get("factor_non_null") is not None or metrics.get("factor_nan_ratio") is not None:
+            extra = (
+                f"\nFactor value quality (generated column): non_null={metrics.get('factor_non_null')}, "
+                f"nan_ratio={metrics.get('factor_nan_ratio')}, std={metrics.get('factor_std')}, "
+                f"unique_pct={metrics.get('factor_unique_pct')}, warnings={metrics.get('factor_quality_warnings')}"
+            )
+        return f"Extended metrics unavailable ({metrics.get('error')}).{extra}"
+
+    lines = [
+        "--- Extended evaluation (in-sample, forward return label from data folder) ---",
+        f"IC (Pearson, daily CS mean): {metrics.get('ic_mean_pearson')}",
+        f"IC std (daily): {metrics.get('ic_std_pearson')}",
+        f"ICIR (IC mean / IC std): {metrics.get('icir_pearson')}",
+        f"IC positive day hit rate: {metrics.get('ic_positive_hit_rate')}",
+        f"Rank IC (Spearman, daily CS mean): {metrics.get('rank_ic_mean')}",
+        f"Rank IC std: {metrics.get('rank_ic_std')}",
+        f"Rank ICIR: {metrics.get('rank_icir')}",
+        f"Long-short daily mean (top {metrics.get('top_frac', 0.2):.0%} long vs bottom {metrics.get('bottom_frac', 0.2):.0%} short by CS rank): {metrics.get('ls_daily_mean')}",
+        f"Long-short Sharpe (annualized, ~sqrt({252})): {metrics.get('ls_sharpe_annualized')}",
+        f"Long-short cumulative return (compound daily LS): {metrics.get('ls_cumulative_return_compound')}",
+        f"Long-short approx annualized return: {metrics.get('ls_annualized_return_approx')}",
+        f"Long-short max drawdown on compounded LS curve: {metrics.get('ls_max_drawdown')}",
+        f"Top cohort turnover (mean): {metrics.get('top_bottom_turnover_mean')} ({metrics.get('top_bottom_turnover_note', '')})",
+        f"Subuniverse IC: {metrics.get('subuniverse_ic')} ({metrics.get('subuniverse_note', '')})",
+        f"Factor value quality: non_null={metrics.get('factor_non_null')}, nan_ratio={metrics.get('factor_nan_ratio')}, "
+        f"std={metrics.get('factor_std')}, unique_pct={metrics.get('factor_unique_pct')}, "
+        f"warnings={metrics.get('factor_quality_warnings')}",
+        f"(Threshold check still uses |IC_pearson_mean| >= {threshold})",
+    ]
+    return "\n".join(lines)
+
+
+def evaluate_factor_metrics_bundle(
+    implementation: Workspace | None,
     *,
     data_type: str = "Debug",
     gen_df: pd.DataFrame | None = None,
-) -> tuple[str, float | None]:
+) -> tuple[str, float | None, dict[str, Any]]:
+    """
+    Full cross-sectional metrics + long-short proxy portfolio stats.
+    Primary scalar for legacy gates: IC Pearson daily mean (same as historical IC).
+    """
     if gen_df is None:
+        if implementation is None:
+            return "IC evaluation failed: no workspace and no dataframe.", None, {}
         try:
             _, gen_df = implementation.execute(data_type)
         except Exception as exc:  # noqa: BLE001
-            return f"IC evaluation failed because factor execution raised an exception: {exc}", None
+            return f"IC evaluation failed because factor execution raised an exception: {exc}", None, {}
     if gen_df is None or gen_df.empty:
-        return "IC evaluation skipped because no valid factor dataframe was generated.", None
+        return "IC evaluation skipped because no valid factor dataframe was generated.", None, {}
+
+    raw_quality = _compute_raw_factor_value_quality(gen_df)
 
     data_folder = (
         Path(FACTOR_COSTEER_SETTINGS.data_folder_debug)
@@ -394,31 +581,67 @@ def evaluate_factor_ic_from_workspace(
     )
     try:
         label = _get_daily_label_from_data_folder(data_folder)
-        ic = _mean_cross_sectional_ic(gen_df, label)
+        merged = _merge_factor_and_label(gen_df, label)
+        metrics = _compute_extended_metrics(merged)
+        metrics.update(raw_quality)
+        metrics["top_frac"] = 0.2
+        metrics["bottom_frac"] = 0.2
+        ic_mean = metrics.get("ic_mean_pearson")
     except Exception as exc:  # noqa: BLE001
-        return f"IC evaluation failed while preparing labels or computing correlation: {exc}", None
-
-    if pd.isna(ic):
+        merged_metrics = dict(raw_quality)
+        merged_metrics["error"] = f"label_merge_failed: {exc}"
+        qual = (
+            f" (Generated factor column: non_null={raw_quality.get('factor_non_null')}, "
+            f"nan_ratio={raw_quality.get('factor_nan_ratio')}, warnings={raw_quality.get('factor_quality_warnings')})"
+        )
         return (
-            "IC evaluation could not produce a valid value. The factor may have too few aligned daily observations "
-            "or no cross-sectional variation.",
+            f"IC evaluation failed while preparing labels or computing correlation: {exc}{qual}",
             None,
+            merged_metrics,
         )
 
     threshold = FACTOR_COSTEER_SETTINGS.min_abs_ic
-    if abs(ic) >= threshold:
-        return f"The factor has mean daily IC={ic:.6f}, which passes the minimum absolute IC threshold {threshold:.4f}.", ic
-    if os.environ.get("RDAGENT_PAPER_FACTOR_SKIP_LOW_IC_REPAIR", "").strip().lower() in {"1", "true", "yes", "on"}:
-        return (
-            f"The factor has mean daily IC={ic:.6f}, which is below the minimum absolute IC threshold {threshold:.4f}. "
-            "For paper-factor reproduction, treat this as a terminal rejected reproduction instead of revising the formula.",
-            ic,
+
+    if metrics.get("error") or ic_mean is None:
+        base = (
+            "IC evaluation could not produce a valid value. The factor may have too few aligned daily observations "
+            "or no cross-sectional variation."
         )
-    return (
-        f"The factor has mean daily IC={ic:.6f}, which is below the minimum absolute IC threshold {threshold:.4f}. "
-        "Revise the factor logic or aggregation method.",
-        ic,
+        return base + "\n" + _format_extended_metrics_feedback(metrics, threshold=threshold), None, metrics
+
+    ic_scalar = float(ic_mean)
+    ext_block = _format_extended_metrics_feedback(metrics, threshold=threshold)
+
+    if abs(ic_scalar) >= threshold:
+        base = (
+            f"The factor has mean daily IC={ic_scalar:.6f}, which passes the minimum absolute IC threshold {threshold:.4f}."
+        )
+        return base + "\n" + ext_block, ic_scalar, metrics
+    if os.environ.get("RDAGENT_PAPER_FACTOR_SKIP_LOW_IC_REPAIR", "").strip().lower() in {"1", "true", "yes", "on"}:
+        base = (
+            f"The factor has mean daily IC={ic_scalar:.6f}, which is below the minimum absolute IC threshold {threshold:.4f}. "
+            "For paper-factor reproduction, treat this as a terminal rejected reproduction instead of revising the formula."
+        )
+        return base + "\n" + ext_block, ic_scalar, metrics
+    base = (
+        f"The factor has mean daily IC={ic_scalar:.6f}, which is below the minimum absolute IC threshold {threshold:.4f}. "
+        "Revise the factor logic or aggregation method."
     )
+    return base + "\n" + ext_block, ic_scalar, metrics
+
+
+def evaluate_factor_ic_from_workspace(
+    implementation: Workspace,
+    *,
+    data_type: str = "Debug",
+    gen_df: pd.DataFrame | None = None,
+) -> tuple[str, float | None]:
+    feedback, ic, _metrics = evaluate_factor_metrics_bundle(
+        implementation,
+        data_type=data_type,
+        gen_df=gen_df,
+    )
+    return feedback, ic
 
 
 class FactorICEvaluator(FactorEvaluator):
@@ -614,11 +837,6 @@ class FactorValueEvaluator(FactorEvaluator):
         feedback_str, inf_evaluate_res = FactorInfEvaluator(self.scen).evaluate(implementation, gt_implementation)
         conclusions.append(feedback_str)
 
-        feedback_str, leakage_check_result = FactorFutureLeakageEvaluator(self.scen).evaluate(
-            implementation, gt_implementation
-        )
-        conclusions.append(feedback_str)
-
         if version == 1:
             feedback_str, ic_check_result = FactorICEvaluator(self.scen).evaluate(
                 implementation,
@@ -679,7 +897,6 @@ class FactorValueEvaluator(FactorEvaluator):
             or daily_check_result is False
             or numeric_check_result is False
             or inf_evaluate_res is False
-            or leakage_check_result is False
             or ic_check_result is False
         ):
             decision_from_value_check = False
