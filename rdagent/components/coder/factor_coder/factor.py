@@ -148,7 +148,6 @@ class FactorFBWorkspace(FBWorkspace):
     FB_OUTPUT_FILE_NOT_FOUND = "\nExpected output file not found."
     FB_OUTPUT_FILE_FOUND = "\nExpected output file found."
     EXPORTED_PARQUET_DIR = Path.cwd() / "git_ignore_folder" / "factor_outputs"
-    LEADERBOARD_PATH = EXPORTED_PARQUET_DIR / "leaderboard.csv"
     EXECUTION_LAUNCHER = "_rdagent_factor_launcher.py"
 
     def __init__(
@@ -321,106 +320,6 @@ class FactorFBWorkspace(FBWorkspace):
         code_path.write_text(code, encoding="utf-8")
         return code_path
 
-    def _update_factor_manifest(
-        self,
-        factor_name: str,
-        latest_path: Path,
-        df: pd.DataFrame,
-        factor_hash: str,
-        review_metadata: dict[str, Any] | None = None,
-    ) -> None:
-        manifest_path = self.EXPORTED_PARQUET_DIR / "manifest.csv"
-        metadata_path = latest_path.with_suffix(".meta.json")
-        code_path = latest_path.with_suffix(".code.py")
-        task = self.target_task if isinstance(self.target_task, FactorTask) else None
-        tags = self._infer_factor_tags(
-            task,
-            extra_tags=(review_metadata or {}).get("tags"),
-        )
-        row = pd.DataFrame(
-            [
-                {
-                    "factor_name": factor_name,
-                    "display_name": str(df.columns[0]),
-                    "hash": factor_hash,
-                    "rows": len(df),
-                    "non_null": int(df.iloc[:, 0].notna().sum()),
-                    "time_granularity": self._infer_time_granularity(df),
-                    "accepted": bool((review_metadata or {}).get("accepted", False)),
-                    "ic_score": (review_metadata or {}).get("ic_score"),
-                    "factor_description": task.factor_description if task is not None else None,
-                    "factor_formulation": task.factor_formulation if task is not None else None,
-                    "variables": json.dumps(task.variables, ensure_ascii=False)
-                    if task is not None and task.variables is not None
-                    else None,
-                    "logic_summary": (review_metadata or {}).get("logic_summary")
-                    or (
-                        task.factor_description if task is not None else ""
-                    ),
-                    "tags": json.dumps(tags, ensure_ascii=False),
-                    "source_type": (review_metadata or {}).get("source_type", "agent_generated"),
-                    "source_report_title": (review_metadata or {}).get("source_report_title"),
-                    "source_report_path": (review_metadata or {}).get("source_report_path"),
-                    "review_notes": (review_metadata or {}).get("review_notes"),
-                    "latest_path": str(latest_path),
-                    "metadata_path": str(metadata_path),
-                    "code_path": str(code_path) if code_path.exists() else None,
-                    "workspace_path": str(self.workspace_path),
-                    "updated_at": datetime.now().isoformat(timespec="seconds"),
-                }
-            ]
-        )
-        if manifest_path.exists():
-            manifest = pd.read_csv(manifest_path)
-            same_factor = manifest["factor_name"].astype(str) == factor_name
-            source_report_path = (review_metadata or {}).get("source_report_path")
-            if source_report_path and "source_report_path" in manifest.columns:
-                same_report = (
-                    manifest["source_report_path"].fillna("").astype(str).map(lambda p: str(Path(p).resolve()) if p else "")
-                    == str(Path(source_report_path).resolve())
-                )
-                manifest = manifest[~(same_factor & same_report)]
-            else:
-                manifest = manifest[~same_factor]
-            manifest = pd.concat([manifest, row], ignore_index=True)
-        else:
-            manifest = row
-        manifest.sort_values("factor_name").to_csv(manifest_path, index=False)
-        self._clear_rejected_marker(factor_name, review_metadata)
-        self._update_factor_leaderboard(manifest)
-
-    def _update_factor_leaderboard(self, manifest: pd.DataFrame) -> None:
-        if manifest.empty:
-            return
-        leaderboard = manifest.copy()
-        if "accepted" not in leaderboard.columns:
-            leaderboard["accepted"] = False
-        leaderboard["accepted"] = leaderboard["accepted"].fillna(False).astype(bool)
-        if "ic_score" in leaderboard.columns:
-            leaderboard["ic_score"] = pd.to_numeric(leaderboard["ic_score"], errors="coerce")
-        else:
-            leaderboard["ic_score"] = pd.NA
-        if "updated_at" in leaderboard.columns:
-            leaderboard["updated_at"] = pd.to_datetime(leaderboard["updated_at"], errors="coerce")
-        if "logic_summary" in leaderboard.columns:
-            leaderboard["logic_summary"] = leaderboard["logic_summary"].apply(self._compact_logic_summary)
-        preferred_columns = [
-            "rank",
-            "factor_name",
-            "ic_score",
-            "logic_summary",
-            "tags",
-        ]
-        leaderboard = leaderboard.sort_values(
-            by=["accepted", "ic_score", "updated_at", "factor_name"],
-            ascending=[False, False, False, True],
-            na_position="last",
-        ).reset_index(drop=True)
-        leaderboard.insert(0, "rank", leaderboard.index + 1)
-        existing_columns = [column for column in preferred_columns if column in leaderboard.columns]
-        leaderboard = leaderboard[existing_columns]
-        leaderboard.to_csv(self.LEADERBOARD_PATH, index=False)
-
     def _export_factor_dataframe(self, df: pd.DataFrame, review_metadata: dict[str, Any] | None = None) -> None:
         if df is None or df.empty:
             return
@@ -438,7 +337,7 @@ class FactorFBWorkspace(FBWorkspace):
                 if self._hash_factor_dataframe(existing_df) == current_hash:
                     self._write_factor_code_snapshot(latest_path)
                     self._write_factor_metadata(factor_name, latest_path, df, current_hash, review_metadata)
-                    self._update_factor_manifest(factor_name, latest_path, df, current_hash, review_metadata)
+                    self._clear_rejected_marker(factor_name, review_metadata)
                     refresh_factor_dashboard()
                     return
             except Exception:
@@ -448,7 +347,7 @@ class FactorFBWorkspace(FBWorkspace):
         df.to_parquet(latest_path, engine="pyarrow")
         self._write_factor_code_snapshot(latest_path)
         self._write_factor_metadata(factor_name, latest_path, df, current_hash, review_metadata)
-        self._update_factor_manifest(factor_name, latest_path, df, current_hash, review_metadata)
+        self._clear_rejected_marker(factor_name, review_metadata)
         refresh_factor_dashboard()
 
         if self._env_flag("FACTOR_EXPORT_KEEP_SNAPSHOTS"):

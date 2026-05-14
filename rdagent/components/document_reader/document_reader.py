@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -82,6 +83,40 @@ def load_and_process_pdfs_by_pymupdf(path: str) -> dict[str, str]:
     return content_dict
 
 
+def get_paper_factor_pdf_reader_mode() -> str:
+    """Return the effective paper-factor PDF reader mode."""
+    reader = os.environ.get("PAPER_FACTOR_PDF_READER", "pymupdf").strip().lower()
+    if reader not in {"pymupdf", "azure", "auto"}:
+        raise ValueError("PAPER_FACTOR_PDF_READER must be one of: pymupdf, azure, auto")
+
+    has_azure_config = bool(
+        RD_AGENT_SETTINGS.azure_document_intelligence_key.strip()
+        and RD_AGENT_SETTINGS.azure_document_intelligence_endpoint.strip()
+    )
+    if reader == "azure" or (reader == "auto" and has_azure_config):
+        if not has_azure_config:
+            raise ValueError(
+                "PAPER_FACTOR_PDF_READER=azure requires "
+                "AZURE_DOCUMENT_INTELLIGENCE_KEY and AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT."
+            )
+        return "azure"
+    return "pymupdf"
+
+
+def load_and_process_pdfs_for_paper_factor(path: str) -> dict[str, str]:
+    """Load paper-factor PDFs with a configurable reader.
+
+    PAPER_FACTOR_PDF_READER:
+    - pymupdf: fast text-layer extraction.
+    - azure: Azure Document Intelligence for OCR, tables, and layout-heavy PDFs.
+    - auto: use Azure when credentials are configured, otherwise PyMuPDF.
+    """
+    reader = get_paper_factor_pdf_reader_mode()
+    if reader == "azure":
+        return load_and_process_pdfs_by_azure_document_intelligence(Path(path))
+    return load_and_process_pdfs_by_pymupdf(path)
+
+
 def load_and_process_one_pdf_by_azure_document_intelligence(
     path: Path,
     key: str,
@@ -103,8 +138,10 @@ def load_and_process_one_pdf_by_azure_document_intelligence(
 
 
 def load_and_process_pdfs_by_azure_document_intelligence(path: Path) -> dict[str, str]:
-    assert RD_AGENT_SETTINGS.azure_document_intelligence_key is not None
-    assert RD_AGENT_SETTINGS.azure_document_intelligence_endpoint is not None
+    if not RD_AGENT_SETTINGS.azure_document_intelligence_key.strip():
+        raise ValueError("AZURE_DOCUMENT_INTELLIGENCE_KEY is required for Azure PDF reading.")
+    if not RD_AGENT_SETTINGS.azure_document_intelligence_endpoint.strip():
+        raise ValueError("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT is required for Azure PDF reading.")
 
     content_dict = {}
     ab_path = path.resolve()

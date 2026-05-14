@@ -5,17 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-import pandas as pd
-
-
 FACTOR_OUTPUT_DIR = Path.cwd() / "git_ignore_folder" / "factor_outputs"
 RESEARCH_STORE_DIR = Path.cwd() / "git_ignore_folder" / "research_store"
 KNOWLEDGE_V2_DIR = RESEARCH_STORE_DIR / "knowledge_v2"
 PAPER_IMPROVEMENT_DROPBOX = Path.cwd() / "papers" / "factor_improvement"
 
 IMPLEMENTATION_EXPERIENCE_KB_PATH = RESEARCH_STORE_DIR / "knowledge" / "costeer_knowledge_base.pkl"
-FACTOR_MANIFEST_PATH = FACTOR_OUTPUT_DIR / "manifest.csv"
-FACTOR_LEADERBOARD_PATH = FACTOR_OUTPUT_DIR / "leaderboard.csv"
 PAPER_IMPROVEMENT_SUMMARY_PATH = KNOWLEDGE_V2_DIR / "paper_improvement" / "paper_improvement_ideas.jsonl"
 ERROR_CASES_PATH = KNOWLEDGE_V2_DIR / "error_cases" / "factor_error_cases.jsonl"
 FAILED_FACTOR_SUMMARY_PATH = KNOWLEDGE_V2_DIR / "failed_factors" / "failed_factor_ideas.jsonl"
@@ -51,16 +46,6 @@ FACTOR_WORKFLOW_ROUTES: tuple[KnowledgeRoute, ...] = (
         purpose="提出新的因子方向时，优先参考已有强因子表现和因子改进文献摘要，避免重复想法。",
         sources=(
             KnowledgeSource(
-                name="factor_leaderboard",
-                path=FACTOR_LEADERBOARD_PATH,
-                description="已正式入库因子的 IC 排行榜和逻辑摘要。",
-            ),
-            KnowledgeSource(
-                name="factor_manifest",
-                path=FACTOR_MANIFEST_PATH,
-                description="所有已入库因子的元数据、标签、来源和路径。",
-            ),
-            KnowledgeSource(
                 name="failed_factor_ideas",
                 path=FAILED_FACTOR_SUMMARY_PATH,
                 description="历史失败因子的简要逻辑与失败原因，用于避免重复踩坑。",
@@ -76,11 +61,6 @@ FACTOR_WORKFLOW_ROUTES: tuple[KnowledgeRoute, ...] = (
         step="factor_experiment_expansion",
         purpose="把 hypothesis 展开为具体可实现因子时，参考已有强因子标签和文献摘要，控制方向和粒度。",
         sources=(
-            KnowledgeSource(
-                name="factor_leaderboard",
-                path=FACTOR_LEADERBOARD_PATH,
-                description="高 IC 因子及其逻辑摘要，用于避免重复和提供方向参考。",
-            ),
             KnowledgeSource(
                 name="failed_factor_ideas",
                 path=FAILED_FACTOR_SUMMARY_PATH,
@@ -111,19 +91,8 @@ FACTOR_WORKFLOW_ROUTES: tuple[KnowledgeRoute, ...] = (
     ),
     KnowledgeRoute(
         step="factor_selection_and_modeling",
-        purpose="选因子、组池、建模时，优先看因子排行榜、标签和来源，不直接看实现细节。",
-        sources=(
-            KnowledgeSource(
-                name="factor_leaderboard",
-                path=FACTOR_LEADERBOARD_PATH,
-                description="按 IC 排名的候选因子列表。",
-            ),
-            KnowledgeSource(
-                name="factor_manifest",
-                path=FACTOR_MANIFEST_PATH,
-                description="因子标签、来源、粒度和文件路径。",
-            ),
-        ),
+        purpose="选因子、组池、建模时，直接扫描因子 metadata 文件，不维护额外 CSV 索引。",
+        sources=(),
     ),
 )
 
@@ -160,23 +129,20 @@ def _load_jsonl(path: Path) -> list[dict]:
 
 
 def load_top_factor_records(limit: int = 8) -> list[dict]:
-    if not FACTOR_LEADERBOARD_PATH.exists():
+    if not FACTOR_OUTPUT_DIR.exists():
         return []
-    leaderboard = pd.read_csv(FACTOR_LEADERBOARD_PATH)
-    if leaderboard.empty:
-        return []
-    if "accepted" in leaderboard.columns:
-        accepted = leaderboard["accepted"]
-        if accepted.dtype == object:
-            accepted = accepted.astype(str).str.lower().isin({"1", "true", "yes", "y"})
-        leaderboard = leaderboard[accepted.fillna(False)]
-        if leaderboard.empty:
-            return []
-    if "ic_score" in leaderboard.columns:
-        leaderboard["ic_score"] = pd.to_numeric(leaderboard["ic_score"], errors="coerce")
-        leaderboard = leaderboard.sort_values("ic_score", ascending=False, na_position="last")
+    records: list[dict] = []
+    for path in FACTOR_OUTPUT_DIR.rglob("*.meta.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(record, dict) or not record.get("accepted"):
+            continue
+        records.append(record)
+    records.sort(key=lambda item: float(item.get("ic_score") or float("-inf")), reverse=True)
     result: list[dict] = []
-    for _, row in leaderboard.head(limit).iterrows():
+    for row in records[:limit]:
         result.append(
             {
                 "factor_name": row.get("factor_name"),

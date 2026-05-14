@@ -10,34 +10,8 @@ import pandas as pd
 
 
 FACTOR_OUTPUT_DIR = Path.cwd() / "git_ignore_folder" / "factor_outputs"
-FACTOR_MANIFEST_PATH = FACTOR_OUTPUT_DIR / "manifest.csv"
-FACTOR_LEADERBOARD_PATH = FACTOR_OUTPUT_DIR / "leaderboard.csv"
 FACTOR_DASHBOARD_DIR = FACTOR_OUTPUT_DIR / "dashboard"
 FACTOR_DASHBOARD_PATH = FACTOR_DASHBOARD_DIR / "index.html"
-MANIFEST_COLUMNS = [
-    "factor_name",
-    "display_name",
-    "hash",
-    "rows",
-    "non_null",
-    "time_granularity",
-    "accepted",
-    "ic_score",
-    "factor_description",
-    "factor_formulation",
-    "variables",
-    "logic_summary",
-    "tags",
-    "source_type",
-    "source_report_title",
-    "source_report_path",
-    "review_notes",
-    "latest_path",
-    "metadata_path",
-    "code_path",
-    "workspace_path",
-    "updated_at",
-]
 
 
 def _ensure_factor_output_dirs() -> None:
@@ -84,12 +58,29 @@ def _read_text(path_str: Any) -> str | None:
 
 
 def _load_manifest() -> pd.DataFrame:
-    if not FACTOR_MANIFEST_PATH.exists():
+    if not FACTOR_OUTPUT_DIR.exists():
         return pd.DataFrame()
-    try:
-        manifest = pd.read_csv(FACTOR_MANIFEST_PATH)
-    except Exception:
+    records: list[dict[str, Any]] = []
+    for metadata_path in FACTOR_OUTPUT_DIR.rglob("*.meta.json"):
+        if FACTOR_DASHBOARD_DIR in metadata_path.parents:
+            continue
+        try:
+            record = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(record, dict):
+            continue
+        record.setdefault("metadata_path", str(metadata_path))
+        latest_path = record.get("latest_path")
+        if not latest_path:
+            record["latest_path"] = str(metadata_path.with_suffix(".parquet"))
+        code_path = record.get("code_path")
+        if not code_path:
+            record["code_path"] = str(metadata_path.with_suffix(".code.py"))
+        records.append(record)
+    if not records:
         return pd.DataFrame()
+    manifest = pd.DataFrame(records)
     if manifest.empty:
         return manifest
     if "accepted" in manifest.columns:
@@ -106,22 +97,7 @@ def _load_manifest() -> pd.DataFrame:
 
 
 def rebuild_factor_leaderboard(manifest: pd.DataFrame | None = None) -> None:
-    _ensure_factor_output_dirs()
-    leaderboard = _load_manifest() if manifest is None else manifest.copy()
-    if leaderboard.empty:
-        pd.DataFrame(columns=["rank", "factor_name", "ic_score", "logic_summary", "tags"]).to_csv(
-            FACTOR_LEADERBOARD_PATH,
-            index=False,
-        )
-        return
-    leaderboard = leaderboard.sort_values(
-        by=["accepted", "ic_score", "updated_at", "factor_name"],
-        ascending=[False, False, False, True],
-        na_position="last",
-    ).reset_index(drop=True)
-    leaderboard.insert(0, "rank", leaderboard.index + 1)
-    preferred_columns = [col for col in ["rank", "factor_name", "ic_score", "logic_summary", "tags"] if col in leaderboard]
-    leaderboard[preferred_columns].to_csv(FACTOR_LEADERBOARD_PATH, index=False)
+    return None
 
 
 def _format_metric(value: Any, digits: int = 6) -> str:
@@ -703,7 +679,6 @@ def render_factor_dashboard(manifest: pd.DataFrame | None = None) -> str:
 def refresh_factor_dashboard() -> Path:
     _ensure_factor_output_dirs()
     manifest = _load_manifest()
-    rebuild_factor_leaderboard(manifest)
     FACTOR_DASHBOARD_PATH.write_text(render_factor_dashboard(manifest), encoding="utf-8")
     return FACTOR_DASHBOARD_PATH
 
@@ -726,13 +701,6 @@ def delete_factor_record(factor_name: str) -> dict[str, Any]:
         row.get("metadata_path"),
         row.get("code_path"),
     ]
-    manifest = manifest.loc[~matches].copy()
-    if manifest.empty:
-        pd.DataFrame(columns=MANIFEST_COLUMNS).to_csv(FACTOR_MANIFEST_PATH, index=False)
-    else:
-        manifest = manifest.sort_values("factor_name")
-        manifest.to_csv(FACTOR_MANIFEST_PATH, index=False)
-
     for path_str in paths_to_delete:
         if path_str is None or (isinstance(path_str, float) and pd.isna(path_str)):
             continue

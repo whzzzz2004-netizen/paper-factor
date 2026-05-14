@@ -18,8 +18,9 @@ from rdagent.components.coder.factor_coder.evaluators import FactorSingleFeedbac
 from rdagent.components.coder.factor_coder.factor import FactorExperiment, FactorFBWorkspace, FactorTask
 from rdagent.components.document_reader.document_reader import (
     extract_first_page_screenshot_from_pdf,
+    get_paper_factor_pdf_reader_mode,
     load_and_process_pdfs_by_langchain,
-    load_and_process_pdfs_by_pymupdf,
+    load_and_process_pdfs_for_paper_factor,
 )
 from rdagent.core.conf import RD_AGENT_SETTINGS
 from rdagent.core.proposal import Hypothesis, HypothesisFeedback
@@ -44,61 +45,40 @@ class PaperFactorExperiment(FactorExperiment[FactorTask, FactorFBWorkspace, Fact
 
 
 def _load_processed_report_paths() -> set[str]:
-    manifest_path = Path.cwd() / "git_ignore_folder" / "factor_outputs" / "manifest.csv"
-    if not manifest_path.exists():
+    report_folder = Path.cwd() / "papers" / "inbox"
+    if not report_folder.exists():
         return set()
-    try:
-        manifest = pd.read_csv(manifest_path)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"Failed to read factor manifest for processed report detection: {exc}")
-        return set()
-    if "source_report_path" not in manifest.columns:
-        return set()
-    if "source_type" in manifest.columns:
-        source_type = manifest["source_type"].astype(str).str.lower()
-        manifest = manifest[source_type == "literature_report"]
-    manifest = manifest[manifest["accepted"].astype(str).str.lower().isin(["true", "1"])] if "accepted" in manifest.columns else manifest
-    path_counts = manifest["source_report_path"].dropna().astype(str).map(lambda p: str(Path(p).resolve()))
-    processed_paths = {
-        path
-        for path, count in path_counts.value_counts().items()
-        if count >= FACTOR_FROM_REPORT_PROP_SETTING.max_factors_per_exp
-    }
-    return processed_paths
+    return {str(path.resolve()) for path in report_folder.rglob("*.pdf") if _report_fully_processed(path)}
 
 
 def _load_terminal_report_factor_names(report_path: str | Path) -> set[str]:
-    manifest_path = Path.cwd() / "git_ignore_folder" / "factor_outputs" / "manifest.csv"
-    if not manifest_path.exists():
+    preview_path = _extracted_factor_preview_path(report_path)
+    if not preview_path.exists():
         return set()
     try:
-        manifest = pd.read_csv(manifest_path)
+        payload = json.loads(preview_path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
-        logger.warning(f"Failed to read factor manifest for exported factor detection: {exc}")
+        logger.warning(f"Failed to read extracted factor cache for terminal detection: {exc}")
         return set()
-    required_columns = {"factor_name", "source_report_path"}
-    if not required_columns.issubset(manifest.columns):
+
+    factors = payload.get("factors") or {}
+    if not isinstance(factors, dict):
         return set()
-    if "source_type" in manifest.columns:
-        source_type = manifest["source_type"].astype(str).str.lower()
-        manifest = manifest[source_type == "literature_report"]
-    resolved_report_path = str(Path(report_path).resolve())
-    source_paths = manifest["source_report_path"].fillna("").astype(str).map(lambda p: str(Path(p).resolve()) if p else "")
-    report_manifest = manifest[source_paths == resolved_report_path]
-    if "accepted" in report_manifest.columns:
-        accepted = report_manifest["accepted"].fillna(False).astype(str).str.lower().isin(["true", "1"])
-        rejected_notes = report_manifest["review_notes"].fillna("").astype(str) if "review_notes" in report_manifest.columns else ""
-        old_limit_up_unavailable = rejected_notes.str.contains(
-            "limit-up threshold|P_limit_up|涨停价|涨停日",
-            case=False,
-            regex=True,
-        )
-        report_manifest = report_manifest[accepted | (~old_limit_up_unavailable & rejected_notes.str.contains("DATA_UNAVAILABLE", case=False, regex=False))]
-    return {
-        str(name).strip()
-        for name in report_manifest["factor_name"].dropna().astype(str).tolist()
-        if str(name).strip()
-    }
+
+    report_title = Path(report_path).resolve().stem
+    report_dir = (
+        Path.cwd()
+        / "git_ignore_folder"
+        / "factor_outputs"
+        / "literature_reports"
+        / FactorFBWorkspace._sanitize_factor_name(report_title)
+    )
+    terminal_names: set[str] = set()
+    for factor_name in factors:
+        safe_name = FactorFBWorkspace._sanitize_factor_name(str(factor_name))
+        if (report_dir / f"{safe_name}.parquet").exists() or (report_dir / f"SKIPPED__{safe_name}.md").exists():
+            terminal_names.add(str(factor_name))
+    return terminal_names
 
 
 def _record_rejected_report_factor(task, feedback, source_report_path: str | None, source_report_title: str | None) -> None:
@@ -106,7 +86,6 @@ def _record_rejected_report_factor(task, feedback, source_report_path: str | Non
         return
     output_dir = Path.cwd() / "git_ignore_folder" / "factor_outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = output_dir / "manifest.csv"
     factor_name = str(getattr(task, "factor_name", "") or "").strip()
     if not factor_name:
         return
@@ -181,48 +160,6 @@ def _record_rejected_report_factor(task, feedback, source_report_path: str | Non
         ]
     kept_lines.append(summary_line)
     summary_path.write_text("\n".join(kept_lines).rstrip() + "\n", encoding="utf-8")
-    row = pd.DataFrame(
-        [
-            {
-                "factor_name": factor_name,
-                "display_name": factor_name,
-                "hash": None,
-                "rows": 0,
-                "non_null": 0,
-                "time_granularity": "daily",
-                "accepted": False,
-                "ic_score": None,
-                "factor_description": getattr(task, "factor_description", None),
-                "factor_formulation": getattr(task, "factor_formulation", None),
-                "variables": json.dumps(getattr(task, "variables", None), ensure_ascii=False),
-                "logic_summary": getattr(task, "factor_description", None),
-                "tags": json.dumps(["literature_factor", "report_extracted", "rejected"], ensure_ascii=False),
-                "source_type": "literature_report",
-                "source_report_title": source_report_title,
-                "source_report_path": source_report_path,
-                "review_notes": review_notes or "paper_factor 复现阶段未通过，但没有返回更具体的失败信息。",
-                "latest_path": None,
-                "metadata_path": None,
-                "code_path": None,
-                "workspace_path": None,
-                "updated_at": datetime.now().isoformat(timespec="seconds"),
-            }
-        ]
-    )
-    if manifest_path.exists():
-        manifest = pd.read_csv(manifest_path)
-        same_factor = manifest["factor_name"].astype(str) == factor_name if "factor_name" in manifest.columns else False
-        same_report = (
-            manifest["source_report_path"].fillna("").astype(str).map(lambda p: str(Path(p).resolve()) if p else "")
-            == str(Path(source_report_path).resolve())
-            if "source_report_path" in manifest.columns
-            else False
-        )
-        manifest = manifest[~(same_factor & same_report)]
-        manifest = pd.concat([manifest, row], ignore_index=True)
-    else:
-        manifest = row
-    manifest.sort_values("factor_name").to_csv(manifest_path, index=False)
 
 
 def list_unprocessed_report_paths(report_folder: str | Path) -> list[Path]:
@@ -660,6 +597,48 @@ def _detect_unavailable_data_requirement(task: FactorTask, data_profile: dict[st
         str(column).lower()
         for column in (data_profile.get("daily_columns") or []) + (data_profile.get("minute_columns") or [])
     }
+    available_column_text = " ".join(available_columns)
+
+    turnover_factor_patterns = [
+        r"(?<![a-z0-9])bias_turn(?:_[0-9]+[a-z]+)?(?![a-z0-9])",
+        r"(?<![a-z0-9])std_turn(?:_[0-9]+[a-z]+)?(?![a-z0-9])",
+        r"(?<![a-z0-9])turn_[0-9]+[a-z]+(?![a-z0-9])",
+        r"(?<![a-z0-9])turnover(?![a-z0-9])",
+        r"换手率",
+        r"日均换手",
+    ]
+    turnover_available_terms = [
+        "turnover",
+        "$turnover",
+        "turn_rate",
+        "turnrate",
+        "换手",
+        "换手率",
+    ]
+    share_available_terms = [
+        "流通股",
+        "流通股本",
+        "总股本",
+        "float_share",
+        "float shares",
+        "floatshares",
+        "shares outstanding",
+        "share_outstanding",
+        "total_share",
+        "total shares",
+        "capitalization",
+        "market cap",
+    ]
+    if any(re.search(pattern, content) for pattern in turnover_factor_patterns):
+        has_turnover_field = any(term in available_column_text for term in turnover_available_terms)
+        has_share_field = any(term in available_column_text for term in share_available_terms)
+        if not has_turnover_field and not has_share_field:
+            return (
+                "DATA_UNAVAILABLE: 该因子需要换手率或可用于计算换手率的流通股本/总股本数据，"
+                "但当前本地 paper_factor 数据只包含"
+                f"日频字段 {data_profile.get('daily_columns') or []} 和分钟频字段 "
+                f"{data_profile.get('minute_columns') or []}，无法在不伪造字段的情况下复现。"
+            )
 
     unavailable_groups = [
         (
@@ -703,12 +682,83 @@ def _detect_unavailable_data_requirement(task: FactorTask, data_profile: dict[st
     ]
     for data_name, keywords in unavailable_groups:
         if any(keyword in content for keyword in keywords):
-            if not any(keyword in " ".join(available_columns) for keyword in keywords):
+            if not any(keyword in available_column_text for keyword in keywords):
                 return (
                     f"DATA_UNAVAILABLE: 该因子需要{data_name}，但当前本地 paper_factor 数据只包含"
                     f"日频字段 {data_profile.get('daily_columns') or []} 和分钟频字段 "
                     f"{data_profile.get('minute_columns') or []}，无法在不伪造字段的情况下复现。"
                 )
+    return None
+
+
+def _judge_factor_data_availability_with_llm(
+    task: FactorTask,
+    data_profile: dict[str, Any],
+    domain_knowledge: str,
+) -> str | None:
+    """Return DATA_UNAVAILABLE reason when the factor cannot be reproduced from local data."""
+    if os.environ.get("RDAGENT_PAPER_FACTOR_DISABLE_DATA_AVAILABILITY_JUDGE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return None
+
+    system_prompt = (
+        "你是金融工程因子复现前的数据可用性审查员。用户会给你一个从研报抽取出的因子定义、"
+        "当前本地可用数据字段和相关领域知识。你的任务只判断：仅依赖这些本地数据，是否能严格复现该因子。\n"
+        "判定规则：\n"
+        "1. 只能使用 local_data 中列出的字段，以及能由这些字段和 retrieved_knowledge 中确定性口径明确计算出的派生量；禁止假设隐藏表或额外字段。\n"
+        "2. 如果目标变量不是现成字段，但可由已有字段通过明确、无歧义、无未来信息的公式推导，则可以判定可复现，并在 reason 中说明推导路径。\n"
+        "3. 如果缺少必需原始数据、模型结构、标签定义、阈值、事件口径或训练目标，且不能由已有字段确定性推导，必须判定不可复现。\n"
+        "4. 不允许用无关代理变量近似。特别是 volume/成交量 不能替代 turnover/换手率；"
+        "缺少 turnover 字段或流通股本/总股本时，换手率类因子必须判定不可复现。\n"
+        "5. 只判断数据和定义是否足够，不要写代码，不要评价因子好坏。\n"
+        "6. 只返回 JSON，不要输出解释文字。"
+    )
+    user_prompt = json.dumps(
+        {
+            "factor": {
+                "factor_name": task.factor_name,
+                "description": task.factor_description,
+                "formulation": task.factor_formulation,
+                "variables": task.variables,
+            },
+            "local_data": {
+                "daily_columns": data_profile.get("daily_columns") or [],
+                "minute_columns": data_profile.get("minute_columns") or [],
+                "history_window": f"{data_profile.get('start_date')} to {data_profile.get('end_date')}",
+                "stock_count": data_profile.get("stock_count"),
+            },
+            "retrieved_knowledge": domain_knowledge,
+            "return_schema": {
+                "available": "boolean; true only if the factor can be strictly reproduced from local_data",
+                "reason": "中文理由；如果 available=false，必须说明缺少的字段、定义或参数",
+            },
+        },
+        ensure_ascii=False,
+    )
+    try:
+        response = APIBackend().build_messages_and_create_chat_completion(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            json_mode=True,
+            json_target_type=Dict[str, Any],
+        )
+        result = json.loads(response)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Failed to judge data availability for {task.factor_name}: {exc}")
+        return None
+
+    if not isinstance(result, dict):
+        return None
+    available = result.get("available")
+    if isinstance(available, str):
+        available = available.strip().lower() in {"true", "1", "yes"}
+    if available is False:
+        reason = str(result.get("reason") or "该因子所需数据或定义在当前本地环境中不可用。").strip()
+        return f"DATA_UNAVAILABLE: {reason}"
     return None
 
 
@@ -754,15 +804,17 @@ def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any],
         "1. 保留论文原意，不要发明新因子。\n"
         "2. description 不应只是金融含义解释，还要说明实际生成步骤，包括变量含义、时间偏移、输入字段、样本范围、过滤条件、中间状态/判定逻辑、缺失值和非满足条件样本处理。\n"
         "3. formulation、description、variables 中出现的变量，都要明确时间锚点、是否相对事件日定义、依赖的原始字段、具体计算口径和输出频率。\n"
-        "4. 因子任务必须自包含，不要假设其他因子已经提前算出。若引用 Stage_t_raw、Stage_smooth、市场情绪、回调确认、首板日、行业热度等中间概念，必须展开其生成逻辑；无法展开时明确缺少什么定义或数据。\n"
-        "5. rolling/window/groupby/rank/标准化/分层统计等操作，必须说明窗口长度、聚合方式、排序方向、分组维度，以及是否去极值、标准化或中性化。\n"
-        "6. 如果因子依赖事件或条件样本，例如涨停、炸板、首板、回调、放量、突破等，必须写清事件如何由本地行情数据或 retrieved_knowledge 口径计算、事件时间锚点、有效样本、非事件样本输出、多次事件冲突处理、是否需要历史窗口或未来确认。\n"
-        "7. 领域概念口径只能来自研报原文或 retrieved_knowledge。对于涨停、首板、回调、一字板、非一字板等概念，禁止根据常识临时发明新定义，也不要为不同因子生成不同口径。\n"
-        "8. 必须明确该因子使用的数据频率：日频、分钟频，或日频+分钟频。最终输出仍然必须是日频因子。\n"
-        "9. T 日固定表示因子值输出/信号对应的日期；若论文使用事件日、形成日、买入日、调仓日、预测区间等不同日期，必须保留论文原始时间关系，不要混用。\n"
-        "10. 如果因子包含阈值、分段、打分映射、状态判定、分位数边界、窗口长度等参数，必须给出具体数值或确定性公式。禁止写“合理设定”“自行设定”“参照图表但不给数值”“根据情况调整”等不可执行描述。\n"
-        "11. 如果论文定义不完整或本地数据无法支持完整复现，不要擅自补全；请明确指出缺少字段、缺少规则、近似实现部分和逻辑歧义。\n"
-        "12. 只返回 JSON，不要输出解释文字。"
+        "4. 因子任务必须自包含，不要假设其他因子已经提前算出。后续代码生成只能看到当前因子的 description、formulation、variables，不能再查看研报原文或其他因子定义。若引用 Stage_t_raw、Stage_smooth、市场情绪、回调确认、首板日、行业热度等中间概念，必须展开其生成逻辑；无法展开时明确缺少什么定义或数据。\n"
+        "5. 禁止写“同 XXX 因子”“同上”“其他参数同”“具体架构见研报”“参考前文”“见表 X/图 X”等外部引用式描述。若当前因子与另一个因子共享模型结构、输入字段、标准化方式、标签定义、训练目标、窗口设置、阈值或事件口径，必须在当前因子的 description/formulation/variables 中完整重复展开。如果研报没有给出可展开细节，要明确写缺少哪些参数或定义。\n"
+        "6. 对机器学习/深度学习因子，必须定义好模型结构和训练目标，包括输入字段、输入窗口、预测 horizon、标签定义、样本构造、标准化/去极值方式、模型类型、层数、隐藏维度、loss、训练/验证切分、随机种子或复现实验需要的固定参数。不得用“newloss”“seed3”“GRU_2_day60”等名称暗示参数而不解释；名称中的信息也必须显式展开。若研报没有给出可复现的模型结构、loss 或训练细节，必须明确标记缺少哪些信息。\n"
+        "7. rolling/window/groupby/rank/标准化/分层统计等操作，必须说明窗口长度、聚合方式、排序方向、分组维度，以及是否去极值、标准化或中性化。\n"
+        "8. 如果因子依赖事件或条件样本，例如涨停、炸板、首板、回调、放量、突破等，必须写清事件如何由本地行情数据或 retrieved_knowledge 口径计算、事件时间锚点、有效样本、非事件样本输出、多次事件冲突处理、是否需要历史窗口或未来确认。\n"
+        "9. 领域概念口径只能来自研报原文或 retrieved_knowledge。对于涨停、首板、回调、一字板、非一字板等概念，禁止根据常识临时发明新定义，也不要为不同因子生成不同口径。\n"
+        "10. 必须明确该因子使用的数据频率：日频、分钟频，或日频+分钟频。最终输出仍然必须是日频因子。\n"
+        "11. T 日固定表示因子值输出/信号对应的日期；若论文使用事件日、形成日、买入日、调仓日、预测区间等不同日期，必须保留论文原始时间关系，不要混用。\n"
+        "12. 如果因子包含阈值、分段、打分映射、状态判定、分位数边界、窗口长度等参数，必须给出具体数值或确定性公式。禁止写“合理设定”“自行设定”“参照图表但不给数值”“根据情况调整”等不可执行描述。\n"
+        "13. 如果论文定义不完整或本地数据无法支持完整复现，不要擅自补全；请明确指出缺少字段、缺少规则、近似实现部分和逻辑歧义。\n"
+        "14. 只返回 JSON，不要输出解释文字。"
     )
     user_prompt = json.dumps(
         {
@@ -781,9 +833,9 @@ def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any],
             "retrieved_knowledge": domain_knowledge,
             "return_schema": {
                 "factor_name": "English snake_case factor name",
-                "description": "完整中文任务描述，必须包含数据频率、T日输出/信号日期定义、事件锚点、有效样本条件、非事件样本输出、具体阈值/参数、缺失数据或缺失定义说明",
-                "formulation": "自包含、可复现的公式；必须统一T日时间逻辑，必要时加入条件事件或 indicator，并展开中间概念、阈值、分段和打分映射的计算定义",
-                "variables": {"变量名": "完整变量解释，包含数据频率、时间偏移、条件事件、输入字段、中间概念判定规则和具体阈值/参数"},
+                "description": "完整中文任务描述，必须包含数据频率、T日输出/信号日期定义、事件锚点、有效样本条件、非事件样本输出、具体阈值/参数、共享设定的完整展开、ML/DL模型结构与训练目标、缺失数据或缺失定义说明；禁止同上/同某因子/见研报等引用式描述",
+                "formulation": "自包含、可复现的公式；必须统一T日时间逻辑，必要时加入条件事件或 indicator，并展开中间概念、阈值、分段、打分映射、模型输入输出、标签和训练目标的计算定义；禁止外部引用式描述",
+                "variables": {"变量名": "完整变量解释，包含数据频率、时间偏移、条件事件、输入字段、中间概念判定规则、具体阈值/参数、ML/DL模型参数和缺失定义说明"},
             },
         },
         ensure_ascii=False,
@@ -842,6 +894,7 @@ def _persist_extracted_factor_preview(
         "report_file_path": str(report_path),
         "report_title": report_path.stem,
         "minimal_mode": minimal_mode,
+        "pdf_reader": get_paper_factor_pdf_reader_mode(),
         "factor_count": len(factor_result),
         "factor_names": list(factor_result.keys()),
         "factors": factor_result,
@@ -874,8 +927,6 @@ def _load_extracted_factor_count(report_file_path: str | Path) -> int | None:
 
 def _report_fully_processed(report_path: str | Path) -> bool:
     resolved_report_path = Path(report_path).resolve()
-    if str(resolved_report_path) in _load_processed_report_paths():
-        return True
     extracted_factor_count = _load_extracted_factor_count(resolved_report_path)
     if extracted_factor_count is None:
         return False
@@ -893,6 +944,14 @@ def _load_exp_from_extracted_factor_preview(report_file_path: str, *, minimal_mo
         logger.warning(f"Failed to read extracted factor cache {preview_path}: {exc}")
         return None
     if str(payload.get("report_file_path") or "") != str(Path(report_file_path).resolve()):
+        return None
+    current_pdf_reader = get_paper_factor_pdf_reader_mode()
+    cached_pdf_reader = str(payload.get("pdf_reader") or "pymupdf").strip().lower()
+    if cached_pdf_reader != current_pdf_reader:
+        logger.info(
+            f"Ignore extracted factor cache because PDF reader changed: "
+            f"cached={cached_pdf_reader}, current={current_pdf_reader}."
+        )
         return None
     factors = payload.get("factors") or {}
     if not isinstance(factors, dict) or not factors:
@@ -938,7 +997,7 @@ def extract_hypothesis_and_exp_from_reports(
         if cached_exp is not None:
             return cached_exp
 
-    docs_dict = load_and_process_pdfs_by_pymupdf(report_file_path)
+    docs_dict = load_and_process_pdfs_for_paper_factor(report_file_path)
     loader = FactorExperimentLoaderFromPDFfiles()
     exp = loader.load_from_docs_dict(
         docs_dict,
@@ -1008,7 +1067,7 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
             self.coder.settings.v2_knowledge_sampler = 0.0
             self.coder.with_knowledge = True
             self.coder.knowledge_self_gen = False
-            self.coder.max_loop = 3
+            self.coder.max_loop = 5
             self.coder.stop_eval_chain_on_fail = True
         processed_report_paths = _load_processed_report_paths()
         if report_paths is not None:
@@ -1105,8 +1164,13 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
         single_exp = deepcopy(source_exp)
         data_profile = _load_local_factor_data_profile()
         source_task = source_exp.sub_tasks[factor_idx]
-        adapted_task = _adapt_report_task_for_available_data(source_task)
         skip_reason = _detect_unavailable_data_requirement(source_task, data_profile)
+        domain_knowledge = "" if skip_reason is not None else _load_paper_factor_domain_knowledge(source_task)
+        if skip_reason is None:
+            skip_reason = _judge_factor_data_availability_with_llm(source_task, data_profile, domain_knowledge)
+        adapted_task = deepcopy(source_task) if skip_reason is not None else _adapt_report_task_for_available_data(source_task)
+        if skip_reason is None:
+            skip_reason = _detect_unavailable_data_requirement(adapted_task, data_profile)
         single_exp.sub_tasks = [adapted_task]
         if skip_reason is not None:
             single_exp.paper_factor_skip_reason = skip_reason
@@ -1118,11 +1182,18 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
             "Scheduling report factor "
             f"{factor_idx + 1}/{self.pending_report_factor_total}: {single_exp.sub_tasks[0].factor_name}"
         )
-        print(
-            "paper_factor: coding "
-            f"{factor_idx + 1}/{self.pending_report_factor_total} {single_exp.sub_tasks[0].factor_name}",
-            flush=True,
-        )
+        if skip_reason is not None:
+            print(
+                "paper_factor: skip-before-coding "
+                f"{factor_idx + 1}/{self.pending_report_factor_total} {single_exp.sub_tasks[0].factor_name}",
+                flush=True,
+            )
+        else:
+            print(
+                "paper_factor: coding "
+                f"{factor_idx + 1}/{self.pending_report_factor_total} {single_exp.sub_tasks[0].factor_name}",
+                flush=True,
+            )
         return single_exp
 
     def coding(self, prev_out: dict[str, Any]):
