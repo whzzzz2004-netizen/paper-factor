@@ -8,7 +8,7 @@ __pycache__/
 build/
 dist/
 git_ignore_folder/
-log/
+/log/
 logs/
 workspace_cache/
 release_assets/

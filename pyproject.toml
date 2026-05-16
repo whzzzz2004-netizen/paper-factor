@@ -27,6 +27,7 @@ dependencies = [
   "pydantic-ai-slim[mcp,openai,prefect]",
   "pydantic-settings",
   "pyyaml",
+  "psutil",
   "pymupdf",
   "pypdf",
   "python-dotenv",
