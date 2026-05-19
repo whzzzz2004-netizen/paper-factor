@@ -173,21 +173,26 @@ def check_workspace_files() -> None:
 
 def health_check(
     check_env: bool = True,
-    check_docker: bool = True,
+    check_docker: bool | None = None,
     check_ports: bool = True,
     check_workspace: bool = True,
 ):
     """
     Run the RD-Agent health check:
-    - Check if Docker is available
+    - Check if Docker is available (only when execution backend requires it)
     - Check that the default ports are not occupied
     - (Optional) Check that the API Key and model are configured correctly.
 
     Args:
         check_env (bool): Whether to check API Key and model configuration.
-        check_docker (bool): Checks if Docker is installed and running.
+        check_docker (bool | None): Checks if Docker is installed and running.
+            If None, auto-detects based on FACTOR_CoSTEER_EXECUTION_BACKEND.
         check_ports (bool): Whether to check if the default port (19899) is occupied.
     """
+    if check_docker is None:
+        backend = os.environ.get("FACTOR_CoSTEER_EXECUTION_BACKEND", "local").strip().lower()
+        check_docker = backend in ("docker", "auto")
+
     check_any = False
 
     if check_env:

@@ -315,7 +315,6 @@ def start_paper_factor(
 ) -> None:
     with _temporary_env(
         DS_CODER_COSTEER_ENV_TYPE="docker",
-        FACTOR_CoSTEER_EXECUTION_BACKEND="docker",
     ):
         run_paper_factor(
             report_folder=report_folder,
