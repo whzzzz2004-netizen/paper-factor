@@ -1010,8 +1010,6 @@ def extract_hypothesis_and_exp_from_reports(
 
 class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
     def __init__(self, report_folder: str = None, minimal_mode: bool = True, report_paths: list[str] | None = None):
-        import threading
-        self._coding_lock = threading.Lock()
         super().__init__(PROP_SETTING=FACTOR_FROM_REPORT_PROP_SETTING)
         os.environ.setdefault("RDAGENT_PAPER_FACTOR_SKIP_LOW_IC_REPAIR", "1")
         os.environ.setdefault("RDAGENT_PAPER_FACTOR_FAST", "1")
@@ -1206,8 +1204,7 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
             logger.info(f"paper_factor: skipped {task_name} before coding. {skip_reason}")
             print(f"paper_factor: skipped {task_name} ({skip_reason})", flush=True)
             return direct_exp
-        with self._coding_lock:
-            exp = self.coder.develop(direct_exp)
+        exp = self.coder.develop(direct_exp)
         logger.log_object(exp.sub_workspace_list, tag="coder result")
         return exp
 

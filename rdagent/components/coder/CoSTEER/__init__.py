@@ -73,8 +73,8 @@ class CoSTEER(Developer[Experiment]):
         """
         return None
 
-    def _get_last_fb(self) -> CoSTEERMultiFeedback:
-        fb = self.evolve_agent.evolving_trace[-1].feedback
+    def _get_last_fb(self, evolve_agent) -> CoSTEERMultiFeedback:
+        fb = evolve_agent.evolving_trace[-1].feedback
         assert fb is not None, "feedback is None"
         assert isinstance(fb, CoSTEERMultiFeedback), "feedback must be of type CoSTEERMultiFeedback"
         return fb
@@ -96,7 +96,7 @@ class CoSTEER(Developer[Experiment]):
         max_seconds = self.get_develop_max_seconds()
         evo_exp = EvolvingItem.from_experiment(exp)
 
-        self.evolve_agent = RAGEvoAgent[EvolvingItem](
+        evolve_agent = RAGEvoAgent[EvolvingItem](
             max_loop=self.max_loop,
             evolving_strategy=self.evolving_strategy,
             rag=self.rag,
@@ -114,9 +114,9 @@ class CoSTEER(Developer[Experiment]):
         reached_max_seconds = False
 
         evo_fb = None
-        for evo_exp in self.evolve_agent.multistep_evolve(evo_exp, self.evaluator):
+        for evo_exp in evolve_agent.multistep_evolve(evo_exp, self.evaluator):
             assert isinstance(evo_exp, Experiment)  # multiple inheritance
-            evo_fb = self._get_last_fb()
+            evo_fb = self._get_last_fb(evolve_agent)
             update_fallback = self.should_use_new_evo(
                 base_fb=fallback_evo_fb,
                 new_fb=evo_fb,
@@ -152,6 +152,7 @@ class CoSTEER(Developer[Experiment]):
 
         exp.sub_workspace_list = evo_exp.sub_workspace_list
         exp.experiment_workspace = evo_exp.experiment_workspace
+        exp._evolving_trace = evolve_agent.evolving_trace
         return exp
 
     def _exp_postprocess_by_feedback(self, evo: Experiment, feedback: CoSTEERMultiFeedback) -> Experiment:
