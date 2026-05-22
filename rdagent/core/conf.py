@@ -106,7 +106,7 @@ class RDAgentSettings(ExtendedBaseSettings):
     subproc_step: bool = False
 
     def is_force_subproc(self) -> bool:
-        return self.subproc_step or self.get_max_parallel() > 1
+        return self.subproc_step or self.multi_proc_n > 1
 
     # Template:
     app_tpl: str | None = None  # for application to override the default template, example: "app/fintune/tpl"

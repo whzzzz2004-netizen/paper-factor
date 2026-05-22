@@ -125,12 +125,17 @@ def classify_report_from_dict(
 def __extract_core_factors_from_content(
     content: str,
 ) -> dict[str, dict[str, dict[str, str] | str]]:
-    response = APIBackend().build_messages_and_create_chat_completion(
-        system_prompt=T(".prompts:extract_core_factors_system").r(),
-        user_prompt=T(".prompts:extract_core_factors_user").r(report_content=content),
-        json_mode=True,
-    )
-    result = json.loads(response)
+    try:
+        response = APIBackend(use_chat_cache=False).build_messages_and_create_chat_completion(
+            system_prompt=T(".prompts:extract_core_factors_system").r(),
+            user_prompt=T(".prompts:extract_core_factors_user").r(report_content=content),
+            json_mode=True,
+            add_json_in_prompt=True,
+        )
+        result = json.loads(response)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Failed to extract core factors as json; skip this report chunk. Error: {exc}")
+        return {"summary": "", "factors": {}}
     return result if isinstance(result, dict) else {"summary": "", "factors": {}}
 
 

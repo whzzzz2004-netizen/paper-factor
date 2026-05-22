@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -491,9 +492,78 @@ def _ensure_env_file(force: bool = False) -> str:
     return "Skipped env file creation because .env.example is missing."
 
 
+def _convert_remote_data_if_available(force: bool = False) -> list[str] | None:
+    """Check for /mnt/remote_e/ market data and convert if available.
+
+    Returns a list of messages if conversion was performed, None if remote
+    data is not available.
+
+    Priority:
+    1. If remote_data_meta.json exists and data is valid, reuse it (even if mount is gone).
+    2. If mount is available and data needs (re)conversion, run the conversion script.
+    3. If mount is not available and no prior conversion exists, return None (fall through).
+    """
+    remote_meta = FACTOR_DATA_DIR / "remote_data_meta.json"
+    remote_daily = Path("/mnt/remote_e/market_daily_daily_new")
+
+    # Check if we already have valid remote-converted data
+    has_valid_remote_data = (
+        remote_meta.exists()
+        and _is_valid_daily_factor_file(FACTOR_DATA_DIR / "daily_pv.h5")
+        and (FACTOR_DATA_DIR / "minute_pv.h5").exists()
+        and _is_valid_daily_factor_file(FACTOR_DATA_DEBUG_DIR / "daily_pv.h5")
+        and (FACTOR_DATA_DEBUG_DIR / "minute_pv.h5").exists()
+    )
+
+    if has_valid_remote_data and not force:
+        return ["Using existing remote_e factor source data."]
+
+    # If mount is not available, we can't convert
+    if not remote_daily.exists():
+        if has_valid_remote_data:
+            # Data was previously converted but mount is gone; still use it
+            return ["Using previously converted remote_e data (mount not currently available)."]
+        return None
+
+    # Mount is available - convert (or re-convert if force=True)
+    script = ROOT / "scripts" / "convert_remote_data.py"
+    if not script.exists():
+        raise RuntimeError(f"Remote data found at {remote_daily} but conversion script missing: {script}")
+
+    import subprocess
+
+    logger.info("Converting /mnt/remote_e/ market data to H5 format ...")
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        timeout=1800,  # 30 minutes max
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Remote data conversion script failed (exit {result.returncode}):\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    logger.info("Remote data conversion completed successfully.")
+    return [
+        "Converted /mnt/remote_e/ market data to H5 format.",
+        f"  Daily: {FACTOR_DATA_DIR / 'daily_pv.h5'}",
+        f"  Minute: {FACTOR_DATA_DIR / 'minute_pv.h5'}",
+        f"  Debug daily: {FACTOR_DATA_DEBUG_DIR / 'daily_pv.h5'}",
+        f"  Debug minute: {FACTOR_DATA_DEBUG_DIR / 'minute_pv.h5'}",
+    ]
+
+
 def _ensure_factor_data(force: bool = False) -> list[str]:
     _ensure_dir(FACTOR_DATA_DIR)
     _ensure_dir(FACTOR_DATA_DEBUG_DIR)
+
+    # Highest priority: /mnt/remote_e/ local market data
+    remote_result = _convert_remote_data_if_available(force=force)
+    if remote_result is not None:
+        return remote_result
+
     from rdagent.app.utils.tushare_data import auto_update_tushare_data_if_configured
 
     tushare_message = auto_update_tushare_data_if_configured(force=force)

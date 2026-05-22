@@ -240,8 +240,9 @@ class LoopBase:
                         if asyncio.iscoroutinefunction(func):
                             result = await func(self.loop_prev_out[li])
                         else:
-                            # Default: run sync function directly
-                            result = func(self.loop_prev_out[li])
+                            # Use thread executor for sync functions to avoid blocking the event loop
+                            curr_loop = asyncio.get_running_loop()
+                            result = await curr_loop.run_in_executor(None, func, self.loop_prev_out[li])
                     # Store result in the nested dictionary
                     self.loop_prev_out[li][name] = result
                 except Exception as e:

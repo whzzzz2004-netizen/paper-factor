@@ -29,6 +29,11 @@ from rdagent.oai.llm_utils import APIBackend, md5_hash
 from rdagent.scenarios.qlib.factor_experiment_loader.pdf_loader import (
     FactorExperimentLoaderFromPDFfiles,
 )
+from rdagent.scenarios.qlib.experiment.data_schema import (
+    filter_field_schema,
+    format_field_schema_for_prompt,
+    load_factor_field_schema,
+)
 from rdagent.utils.agent.tpl import T
 from rdagent.utils.workflow import LoopMeta
 
@@ -52,19 +57,6 @@ def _load_processed_report_paths() -> set[str]:
 
 
 def _load_terminal_report_factor_names(report_path: str | Path) -> set[str]:
-    preview_path = _extracted_factor_preview_path(report_path)
-    if not preview_path.exists():
-        return set()
-    try:
-        payload = json.loads(preview_path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"Failed to read extracted factor cache for terminal detection: {exc}")
-        return set()
-
-    factors = payload.get("factors") or {}
-    if not isinstance(factors, dict):
-        return set()
-
     report_title = Path(report_path).resolve().stem
     report_dir = (
         Path.cwd()
@@ -73,11 +65,41 @@ def _load_terminal_report_factor_names(report_path: str | Path) -> set[str]:
         / "literature_reports"
         / FactorFBWorkspace._sanitize_factor_name(report_title)
     )
+
+    # 从缓存中获取因子列表
+    preview_path = _extracted_factor_preview_path(report_path)
+    factors = {}
+    if preview_path.exists():
+        try:
+            payload = json.loads(preview_path.read_text(encoding="utf-8"))
+            factors = payload.get("factors") or {}
+            if not isinstance(factors, dict):
+                factors = {}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Failed to read extracted factor cache for terminal detection: {exc}")
+
     terminal_names: set[str] = set()
-    for factor_name in factors:
-        safe_name = FactorFBWorkspace._sanitize_factor_name(str(factor_name))
-        if (report_dir / f"{safe_name}.parquet").exists() or (report_dir / f"SKIPPED__{safe_name}.md").exists():
-            terminal_names.add(str(factor_name))
+
+    # 从缓存因子列表中检查终端状态
+    if factors:
+        for factor_name in factors:
+            safe_name = FactorFBWorkspace._sanitize_factor_name(str(factor_name))
+            if (report_dir / f"{safe_name}.parquet").exists() or (report_dir / f"SKIPPED__{safe_name}.md").exists():
+                terminal_names.add(str(factor_name))
+    else:
+        # 缓存为空时，扫描目录中的实际文件来发现终端因子
+        if report_dir.exists():
+            for f in report_dir.glob("*.parquet"):
+                terminal_names.add(f.stem)
+            for f in report_dir.glob("SKIPPED__*.md"):
+                name = f.stem.removeprefix("SKIPPED__")
+                terminal_names.add(name)
+        if terminal_names:
+            logger.info(
+                f"Found {len(terminal_names)} terminal factor(s) from directory scan "
+                f"(cache was empty): {sorted(terminal_names)}"
+            )
+
     return terminal_names
 
 
@@ -259,6 +281,9 @@ def _load_local_factor_data_profile() -> dict[str, Any]:
             profile[field_name] = list(df.columns)
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"Failed to inspect available columns from {data_path}: {exc}")
+    field_schema = filter_field_schema(load_factor_field_schema(base_dir), profile["daily_columns"])
+    profile["daily_column_schema"] = field_schema
+    profile["daily_column_schema_text"] = format_field_schema_for_prompt(field_schema)
     return profile
 
 
@@ -584,119 +609,17 @@ def _load_paper_factor_domain_knowledge(task: FactorTask | None = None, *, top_k
     )
 
 
-def _detect_unavailable_data_requirement(task: FactorTask, data_profile: dict[str, Any]) -> str | None:
-    content = " ".join(
-        [
-            getattr(task, "factor_name", "") or "",
-            getattr(task, "factor_description", "") or "",
-            getattr(task, "factor_formulation", "") or "",
-            json.dumps(getattr(task, "variables", {}) or {}, ensure_ascii=False),
-        ]
-    ).lower()
-    available_columns = {
-        str(column).lower()
-        for column in (data_profile.get("daily_columns") or []) + (data_profile.get("minute_columns") or [])
-    }
-    available_column_text = " ".join(available_columns)
-
-    turnover_factor_patterns = [
-        r"(?<![a-z0-9])bias_turn(?:_[0-9]+[a-z]+)?(?![a-z0-9])",
-        r"(?<![a-z0-9])std_turn(?:_[0-9]+[a-z]+)?(?![a-z0-9])",
-        r"(?<![a-z0-9])turn_[0-9]+[a-z]+(?![a-z0-9])",
-        r"(?<![a-z0-9])turnover(?![a-z0-9])",
-        r"换手率",
-        r"日均换手",
-    ]
-    turnover_available_terms = [
-        "turnover",
-        "$turnover",
-        "turn_rate",
-        "turnrate",
-        "换手",
-        "换手率",
-    ]
-    share_available_terms = [
-        "流通股",
-        "流通股本",
-        "总股本",
-        "float_share",
-        "float shares",
-        "floatshares",
-        "shares outstanding",
-        "share_outstanding",
-        "total_share",
-        "total shares",
-        "capitalization",
-        "market cap",
-    ]
-    if any(re.search(pattern, content) for pattern in turnover_factor_patterns):
-        has_turnover_field = any(term in available_column_text for term in turnover_available_terms)
-        has_share_field = any(term in available_column_text for term in share_available_terms)
-        if not has_turnover_field and not has_share_field:
-            return (
-                "DATA_UNAVAILABLE: 该因子需要换手率或可用于计算换手率的流通股本/总股本数据，"
-                "但当前本地 paper_factor 数据只包含"
-                f"日频字段 {data_profile.get('daily_columns') or []} 和分钟频字段 "
-                f"{data_profile.get('minute_columns') or []}，无法在不伪造字段的情况下复现。"
-            )
-
-    unavailable_groups = [
-        (
-            "基本面或财务报表数据",
-            [
-                "基本面",
-                "财务",
-                "财报",
-                "资产负债",
-                "利润表",
-                "现金流",
-                "roe",
-                "roa",
-                "eps",
-                "book value",
-                "net profit",
-                "revenue",
-                "cash flow",
-                "balance sheet",
-                "income statement",
-                "financial statement",
-                "fundamental",
-            ],
-        ),
-        (
-            "市值、总股本或流通股本数据",
-            ["市值", "总股本", "流通股", "market cap", "capitalization", "shares outstanding", "float shares"],
-        ),
-        (
-            "行业或板块分类数据",
-            ["行业", "申万", "中信行业", "industry", "sector", "gics", "sw industry"],
-        ),
-        (
-            "分析师预测或评级数据",
-            ["分析师", "一致预期", "盈利预测", "评级", "analyst", "forecast", "consensus", "rating"],
-        ),
-        (
-            "盘口、订单簿、tick 或逐笔成交数据",
-            ["盘口", "委托", "逐笔", "订单簿", "买一", "卖一", "order book", "level2", "l2", "tick data"],
-        ),
-    ]
-    for data_name, keywords in unavailable_groups:
-        if any(keyword in content for keyword in keywords):
-            if not any(keyword in available_column_text for keyword in keywords):
-                return (
-                    f"DATA_UNAVAILABLE: 该因子需要{data_name}，但当前本地 paper_factor 数据只包含"
-                    f"日频字段 {data_profile.get('daily_columns') or []} 和分钟频字段 "
-                    f"{data_profile.get('minute_columns') or []}，无法在不伪造字段的情况下复现。"
-                )
-    return None
-
-
 def _judge_factor_data_availability_with_llm(
     task: FactorTask,
     data_profile: dict[str, Any],
     domain_knowledge: str,
 ) -> str | None:
-    """Return DATA_UNAVAILABLE reason when the factor cannot be reproduced from local data."""
+    """Return availability status string.
+
+    Returns None for AVAILABLE, "DATA_UNAVAILABLE: ..." when data is truly missing,
+    "DEFINITION_INCOMPLETE: ..." when definition is unclear but LLM can fill defaults.
+    Only DATA_UNAVAILABLE should skip the factor; DEFINITION_INCOMPLETE enters coding.
+    """
     if os.environ.get("RDAGENT_PAPER_FACTOR_DISABLE_DATA_AVAILABILITY_JUDGE", "").strip().lower() in {
         "1",
         "true",
@@ -707,15 +630,32 @@ def _judge_factor_data_availability_with_llm(
 
     system_prompt = (
         "你是金融工程因子复现前的数据可用性审查员。用户会给你一个从研报抽取出的因子定义、"
-        "当前本地可用数据字段和相关领域知识。你的任务只判断：仅依赖这些本地数据，是否能严格复现该因子。\n"
+        "当前本地可用数据字段、字段含义和相关领域知识。你的任务只判断：仅依赖这些本地数据，是否足以进入代码实现。\n"
         "判定规则：\n"
-        "1. 只能使用 local_data 中列出的字段，以及能由这些字段和 retrieved_knowledge 中确定性口径明确计算出的派生量；禁止假设隐藏表或额外字段。\n"
-        "2. 如果目标变量不是现成字段，但可由已有字段通过明确、无歧义、无未来信息的公式推导，则可以判定可复现，并在 reason 中说明推导路径。\n"
-        "3. 如果缺少必需原始数据、模型结构、标签定义、阈值、事件口径或训练目标，且不能由已有字段确定性推导，必须判定不可复现。\n"
-        "4. 不允许用无关代理变量近似。特别是 volume/成交量 不能替代 turnover/换手率；"
-        "缺少 turnover 字段或流通股本/总股本时，换手率类因子必须判定不可复现。\n"
-        "5. 只判断数据和定义是否足够，不要写代码，不要评价因子好坏。\n"
-        "6. 只返回 JSON，不要输出解释文字。"
+        "1. 只能使用 local_data 中列出的字段、字段说明，以及能由这些字段或 retrieved_knowledge 明确推导出的派生量；禁止假设隐藏表或额外字段。\n"
+        "2. local_data.daily_column_schema 包含每个日频字段的中文名、公式、英文名、来源等信息。很多字段使用抽象名称（如 $盈利因子1、$成长因子14），必须通过 schema 查看其实际含义来判断是否可用，不能仅凭列名就判定缺失。\n"
+        "3. 如果因子能由现成字段直接取得，或能由日频/分钟频字段通过明确公式、rolling、rank、聚合、标准化、训练过程得到，应判定 AVAILABLE。\n"
+        "4. 分钟数据中的 $vwap 可以通过加权平均聚合为日频均价，因此不要因为缺少日频vwap就判定不可用。\n"
+        "5. 日频基本面数据（如 $盈利因子1=毛利率、$成长因子1=营收同比增长率）虽然以日频存储，但包含季度变化点，可以据此推导TTM、季度环比、同比等口径。不要因为因子要求TTM或季度口径就判定日频基本面数据不可用。\n"
+        "6. 不允许用无关代理变量替代必需数据。例如没有 turnover/turnover_rate 或股本字段时，不能用 volume 代替换手率。\n"
+        "7. 只判断是否进入代码实现，不写代码，不评价因子好坏。只返回 JSON。\n"
+        "关于深度学习/机器学习因子的特别规则（极其重要）：\n"
+        "- 以下情况全部属于 DEFINITION_INCOMPLETE，不是 DATA_UNAVAILABLE：\n"
+        "  · 缺少预训练模型参数/权重（可以从头训练）\n"
+        "  · 缺少 hidden size、层数、dilation_base 等超参数（可以用常见默认值）\n"
+        "  · 缺少 loss 函数定义（可以用 MSE/MAE 等常见默认）\n"
+        "  · 缺少标准化/归一化方法（可以用 z-score 默认）\n"
+        "  · 缺少训练轮数、学习率等训练细节（可以用常见默认值）\n"
+        "  · 预测标签定义有歧义（如10日均价涨跌幅，可以用合理默认解释）\n"
+        "  · 周度/月度数据聚合口径未明确（可以从日频数据聚合）\n"
+        "- 只有以下情况才属于 DATA_UNAVAILABLE：\n"
+        "  · 输入字段本身不存在（如需要逐笔成交但只有分钟K线）\n"
+        "  · 需要的原始数据列在 local_data 中确实没有（如需要 $roe 但没有）\n"
+        "- 简单来说：只要输入字段（OHLCV、volume、turnover 等）存在，其他一切缺失都算 DEFINITION_INCOMPLETE。\n"
+        "返回状态说明：\n"
+        "- AVAILABLE：字段和定义都够，直接进入代码生成。\n"
+        "- DEFINITION_INCOMPLETE：因子定义不够清楚（如 DL 模型缺 hidden size、loss、标签、标准化方法），但大模型可以凭知识尝试补全，进入代码生成。\n"
+        "- DATA_UNAVAILABLE：真的缺输入字段（如需要逐笔成交但只有分钟K线，需要 $roe 但没有），无法实现，跳过。"
     )
     user_prompt = json.dumps(
         {
@@ -727,25 +667,36 @@ def _judge_factor_data_availability_with_llm(
             },
             "local_data": {
                 "daily_columns": data_profile.get("daily_columns") or [],
+                "daily_column_schema": data_profile.get("daily_column_schema") or {},
                 "minute_columns": data_profile.get("minute_columns") or [],
                 "history_window": f"{data_profile.get('start_date')} to {data_profile.get('end_date')}",
                 "stock_count": data_profile.get("stock_count"),
             },
             "retrieved_knowledge": domain_knowledge,
             "return_schema": {
-                "available": "boolean; true only if the factor can be strictly reproduced from local_data",
-                "reason": "中文理由；如果 available=false，必须说明缺少的字段、定义或参数",
+                "status": "AVAILABLE / DEFINITION_INCOMPLETE / DATA_UNAVAILABLE",
+                "reason": "中文理由；DATA_UNAVAILABLE 必须说明缺少的字段；DEFINITION_INCOMPLETE 必须说明哪些定义不清",
             },
         },
         ensure_ascii=False,
     )
+    judge_model = os.environ.get("RDAGENT_PAPER_FACTOR_AVAILABILITY_JUDGE_MODEL", "").strip()
     try:
-        response = APIBackend().build_messages_and_create_chat_completion(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            json_mode=True,
-            json_target_type=Dict[str, Any],
-        )
+        backend = APIBackend()
+        if judge_model:
+            from rdagent.oai.llm_conf import LLM_SETTINGS
+            original_model = LLM_SETTINGS.chat_model
+            LLM_SETTINGS.chat_model = judge_model
+        try:
+            response = backend.build_messages_and_create_chat_completion(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                json_mode=True,
+                json_target_type=Dict[str, Any],
+            )
+        finally:
+            if judge_model:
+                LLM_SETTINGS.chat_model = original_model
         result = json.loads(response)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"Failed to judge data availability for {task.factor_name}: {exc}")
@@ -753,12 +704,12 @@ def _judge_factor_data_availability_with_llm(
 
     if not isinstance(result, dict):
         return None
-    available = result.get("available")
-    if isinstance(available, str):
-        available = available.strip().lower() in {"true", "1", "yes"}
-    if available is False:
-        reason = str(result.get("reason") or "该因子所需数据或定义在当前本地环境中不可用。").strip()
-        return f"DATA_UNAVAILABLE: {reason}"
+    status = str(result.get("status") or "").strip().upper()
+    reason = str(result.get("reason") or "").strip()
+    if status == "DATA_UNAVAILABLE":
+        return f"DATA_UNAVAILABLE: {reason or '该因子所需数据在当前本地环境中不可用。'}"
+    if status == "DEFINITION_INCOMPLETE":
+        return f"DEFINITION_INCOMPLETE: {reason or '因子定义不够清楚，将由代码生成阶段补全默认实现。'}"
     return None
 
 
@@ -806,14 +757,14 @@ def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any],
         "3. formulation、description、variables 中出现的变量，都要明确时间锚点、是否相对事件日定义、依赖的原始字段、具体计算口径和输出频率。\n"
         "4. 因子任务必须自包含，不要假设其他因子已经提前算出。后续代码生成只能看到当前因子的 description、formulation、variables，不能再查看研报原文或其他因子定义。若引用 Stage_t_raw、Stage_smooth、市场情绪、回调确认、首板日、行业热度等中间概念，必须展开其生成逻辑；无法展开时明确缺少什么定义或数据。\n"
         "5. 禁止写“同 XXX 因子”“同上”“其他参数同”“具体架构见研报”“参考前文”“见表 X/图 X”等外部引用式描述。若当前因子与另一个因子共享模型结构、输入字段、标准化方式、标签定义、训练目标、窗口设置、阈值或事件口径，必须在当前因子的 description/formulation/variables 中完整重复展开。如果研报没有给出可展开细节，要明确写缺少哪些参数或定义。\n"
-        "6. 对机器学习/深度学习因子，必须定义好模型结构和训练目标，包括输入字段、输入窗口、预测 horizon、标签定义、样本构造、标准化/去极值方式、模型类型、层数、隐藏维度、loss、训练/验证切分、随机种子或复现实验需要的固定参数。不得用“newloss”“seed3”“GRU_2_day60”等名称暗示参数而不解释；名称中的信息也必须显式展开。若研报没有给出可复现的模型结构、loss 或训练细节，必须明确标记缺少哪些信息。\n"
+        "6. 对机器学习/深度学习因子，必须尽量定义好模型结构和训练目标，包括输入字段、输入窗口、预测 horizon、标签定义、样本构造、标准化方式、模型类型、层数、loss、随机种子等。名称中的信息必须显式展开。若研报没有给出 hidden size、训练轮数等工程细节，可以写明缺失并给出常见、简洁、可复现的默认实现建议；不要因此把任务改成不可实现。只有输入字段、标签或训练目标本身无法确定时，才标记定义不足。\n"
         "7. rolling/window/groupby/rank/标准化/分层统计等操作，必须说明窗口长度、聚合方式、排序方向、分组维度，以及是否去极值、标准化或中性化。\n"
         "8. 如果因子依赖事件或条件样本，例如涨停、炸板、首板、回调、放量、突破等，必须写清事件如何由本地行情数据或 retrieved_knowledge 口径计算、事件时间锚点、有效样本、非事件样本输出、多次事件冲突处理、是否需要历史窗口或未来确认。\n"
         "9. 领域概念口径只能来自研报原文或 retrieved_knowledge。对于涨停、首板、回调、一字板、非一字板等概念，禁止根据常识临时发明新定义，也不要为不同因子生成不同口径。\n"
         "10. 必须明确该因子使用的数据频率：日频、分钟频，或日频+分钟频。最终输出仍然必须是日频因子。\n"
         "11. T 日固定表示因子值输出/信号对应的日期；若论文使用事件日、形成日、买入日、调仓日、预测区间等不同日期，必须保留论文原始时间关系，不要混用。\n"
         "12. 如果因子包含阈值、分段、打分映射、状态判定、分位数边界、窗口长度等参数，必须给出具体数值或确定性公式。禁止写“合理设定”“自行设定”“参照图表但不给数值”“根据情况调整”等不可执行描述。\n"
-        "13. 如果论文定义不完整或本地数据无法支持完整复现，不要擅自补全；请明确指出缺少字段、缺少规则、近似实现部分和逻辑歧义。\n"
+        "13. 如果论文定义有小的工程细节缺失，应优先给出保守默认实现建议并明确标注；如果核心数据、核心标签或事件口径缺失到无法写代码，再指出缺少字段、缺少规则和逻辑歧义。\n"
         "14. 只返回 JSON，不要输出解释文字。"
     )
     user_prompt = json.dumps(
@@ -826,6 +777,7 @@ def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any],
             },
             "local_data": {
                 "daily_columns": data_profile.get("daily_columns") or [],
+                "daily_column_schema": data_profile.get("daily_column_schema") or {},
                 "minute_columns": data_profile.get("minute_columns") or [],
                 "history_window": f"{data_profile.get('start_date')} to {data_profile.get('end_date')}",
                 "stock_count": data_profile.get("stock_count"),
@@ -869,11 +821,14 @@ def _adapt_report_task_for_available_data(task: FactorTask) -> FactorTask:
     adapted_task = _refine_factor_task_with_llm(deepcopy(task), data_profile, domain_knowledge)
     available_daily_columns = ", ".join(data_profile.get("daily_columns") or []) or "unknown"
     available_minute_columns = ", ".join(data_profile.get("minute_columns") or []) or "unknown"
+    schema_text = data_profile.get("daily_column_schema_text") or ""
     adaptation_note = (
         f"\n\n本地可用数据：{data_profile.get('source')}，约{data_profile.get('stock_count')}只股票，"
         f"{data_profile.get('start_date')}至{data_profile.get('end_date')}。"
         f"日频字段：{available_daily_columns}。分钟频字段：{available_minute_columns}。"
     )
+    if schema_text:
+        adaptation_note += f"\n\n日频字段说明（含公式、英文名、来源）：\n{schema_text}"
     if domain_knowledge:
         adaptation_note += f"\n\npaper_factor retrieved knowledge relevant to this factor:\n{domain_knowledge}"
     adapted_task.description = f"{adapted_task.factor_description}{adaptation_note}"
@@ -927,11 +882,14 @@ def _load_extracted_factor_count(report_file_path: str | Path) -> int | None:
 
 def _report_fully_processed(report_path: str | Path) -> bool:
     resolved_report_path = Path(report_path).resolve()
-    extracted_factor_count = _load_extracted_factor_count(resolved_report_path)
-    if extracted_factor_count is None:
+    terminal_factor_names = _load_terminal_report_factor_names(resolved_report_path)
+    if not terminal_factor_names:
         return False
-    terminal_factor_count = len(_load_terminal_report_factor_names(resolved_report_path))
-    return terminal_factor_count >= extracted_factor_count > 0
+    extracted_factor_count = _load_extracted_factor_count(resolved_report_path)
+    if extracted_factor_count is None or extracted_factor_count == 0:
+        # 缓存因子数为 0 但有终端文件，说明之前的运行已处理完毕
+        return True
+    return len(terminal_factor_names) >= extracted_factor_count
 
 
 def _load_exp_from_extracted_factor_preview(report_file_path: str, *, minimal_mode: bool) -> PaperFactorExperiment | None:
@@ -1052,10 +1010,33 @@ def extract_hypothesis_and_exp_from_reports(
 
 class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
     def __init__(self, report_folder: str = None, minimal_mode: bool = True, report_paths: list[str] | None = None):
+        import threading
+        self._coding_lock = threading.Lock()
         super().__init__(PROP_SETTING=FACTOR_FROM_REPORT_PROP_SETTING)
         os.environ.setdefault("RDAGENT_PAPER_FACTOR_SKIP_LOW_IC_REPAIR", "1")
         os.environ.setdefault("RDAGENT_PAPER_FACTOR_FAST", "1")
         os.environ.setdefault("RDAGENT_FACTOR_MAX_CONSECUTIVE_OUTPUT_WITHOUT_ACCEPT", "0")
+        try:
+            self.parallel_factor_n = max(
+                1,
+                int(
+                    os.environ.get(
+                        "RDAGENT_PAPER_FACTOR_PARALLEL_FACTORS",
+                        str(FACTOR_FROM_REPORT_PROP_SETTING.max_factors_per_exp),
+                    )
+                ),
+            )
+        except ValueError:
+            self.parallel_factor_n = max(1, FACTOR_FROM_REPORT_PROP_SETTING.max_factors_per_exp)
+        if self.parallel_factor_n > 1:
+            RD_AGENT_SETTINGS.step_semaphore = {
+                "direct_exp_gen": 1,
+                "coding": self.parallel_factor_n,
+                "running": self.parallel_factor_n,
+                "feedback": 1,
+                "record": 1,
+            }
+            RD_AGENT_SETTINGS.multi_proc_n = 1
         self.minimal_mode = minimal_mode
         self.report_cursor = 0
         self.pending_report_exp: PaperFactorExperiment | None = None
@@ -1097,7 +1078,15 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
 
     async def direct_exp_gen(self, prev_out: dict[str, Any]):
         while True:
-            if self.get_unfinished_loop_cnt(self.loop_idx) == 0:
+            unfinished_loop_cnt = self.get_unfinished_loop_cnt(self.loop_idx)
+            current_report_dispatched = (
+                self.pending_report_exp is not None
+                and self.pending_report_factor_idx >= self.pending_report_factor_total
+            )
+            if current_report_dispatched and unfinished_loop_cnt > 0:
+                await asyncio.sleep(1)
+                continue
+            if unfinished_loop_cnt < self.parallel_factor_n:
                 exp = self._next_single_factor_exp()
                 exp.based_experiments = [PaperFactorExperiment(sub_tasks=[], hypothesis=exp.hypothesis)] + [
                     t[0] for t in self.trace.hist if t[1]
@@ -1145,15 +1134,18 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
                 len(exp.sub_tasks),
                 FACTOR_FROM_REPORT_PROP_SETTING.max_factors_per_exp,
             )
+            self.parallel_factor_n = min(self.parallel_factor_n, self.pending_report_factor_total)
             logger.info(
-                "Report factor serial coding plan: "
+                "Report factor parallel coding plan: "
                 f"extracted={self.pending_report_extracted_count}, "
                 f"scheduled={self.pending_report_factor_total}, "
+                f"parallel={self.parallel_factor_n}, "
                 f"max_per_exp={FACTOR_FROM_REPORT_PROP_SETTING.max_factors_per_exp}"
             )
             print(
                 "paper_factor: extracted "
-                f"{self.pending_report_extracted_count} factor(s), scheduled {self.pending_report_factor_total}.",
+                f"{self.pending_report_extracted_count} factor(s), scheduled {self.pending_report_factor_total}, "
+                f"parallel {self.parallel_factor_n}.",
                 flush=True,
             )
 
@@ -1164,13 +1156,10 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
         single_exp = deepcopy(source_exp)
         data_profile = _load_local_factor_data_profile()
         source_task = source_exp.sub_tasks[factor_idx]
-        skip_reason = _detect_unavailable_data_requirement(source_task, data_profile)
-        domain_knowledge = "" if skip_reason is not None else _load_paper_factor_domain_knowledge(source_task)
-        if skip_reason is None:
-            skip_reason = _judge_factor_data_availability_with_llm(source_task, data_profile, domain_knowledge)
+        domain_knowledge = _load_paper_factor_domain_knowledge(source_task)
+        availability = _judge_factor_data_availability_with_llm(source_task, data_profile, domain_knowledge)
+        skip_reason = availability if availability is not None and availability.startswith("DATA_UNAVAILABLE:") else None
         adapted_task = deepcopy(source_task) if skip_reason is not None else _adapt_report_task_for_available_data(source_task)
-        if skip_reason is None:
-            skip_reason = _detect_unavailable_data_requirement(adapted_task, data_profile)
         single_exp.sub_tasks = [adapted_task]
         if skip_reason is not None:
             single_exp.paper_factor_skip_reason = skip_reason
@@ -1217,7 +1206,8 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
             logger.info(f"paper_factor: skipped {task_name} before coding. {skip_reason}")
             print(f"paper_factor: skipped {task_name} ({skip_reason})", flush=True)
             return direct_exp
-        exp = self.coder.develop(direct_exp)
+        with self._coding_lock:
+            exp = self.coder.develop(direct_exp)
         logger.log_object(exp.sub_workspace_list, tag="coder result")
         return exp
 

@@ -24,11 +24,22 @@ DAILY_COLUMN_GROUPS: dict[str, dict[str, str]] = {
     "复权": {"$factor": "复权因子"},
     "期货": {"$pre_settle": "前结算价", "$settle": "结算价", "$change1": "涨跌1", "$change2": "涨跌2", "$open_interest": "持仓量", "$open_interest_chg": "持仓量变化"},
     "元信息": {"$symbol": "股票代码", "$name": "股票名称", "$area": "地区", "$industry": "行业", "$market": "市场", "$list_date": "上市日期", "$asset_type": "资产类型"},
+    "基本面-价值": {f"$价值因子{i}": f"价值因子{i}" for i in range(1, 13)},
+    "基本面-盈利": {f"$盈利因子{i}": f"盈利因子{i}" for i in range(1, 15)},
+    "基本面-成长": {f"$成长因子{i}": f"成长因子{i}" for i in range(1, 17)},
+    "基本面-杠杆": {f"$杠杆因子{i}": f"杠杆因子{i}" for i in range(1, 9)},
+    "基本面-现金流": {f"$现金流因子{i}": f"现金流因子{i}" for i in range(1, 10)},
+    "基本面-股本": {f"$股本因子{i}": f"股本因子{i}" for i in range(1, 6)},
+    "基本面-质量": {f"$质量因子{i}": f"质量因子{i}" for i in range(1, 16)},
+    "基本面-运营": {f"$运营因子{i}": f"运营因子{i}" for i in range(1, 23)},
+    "基本面-其他": {f"$其他因子{i}": f"其他因子{i}" for i in range(1, 14)},
 }
 
 MINUTE_COLUMN_GROUPS: dict[str, dict[str, str]] = {
     "价格": {"$open": "分钟开盘价", "$close": "分钟收盘价", "$high": "分钟最高价", "$low": "分钟最低价"},
     "成交": {"$volume": "分钟成交量", "$vwap": "分钟均价"},
+    "收益": {"$return": "分钟收益率"},
+    "复权": {"$factor": "复权因子"},
 }
 
 
