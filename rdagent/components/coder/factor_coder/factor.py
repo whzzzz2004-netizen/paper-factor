@@ -160,11 +160,15 @@ class FactorFBWorkspace(FBWorkspace):
         self.raise_exception = raise_exception
 
     def hash_func(self, data_type: str = "Debug") -> str:
-        return (
-            md5_hash(data_type + self.file_dict["factor.py"])
-            if ("factor.py" in self.file_dict and not self.raise_exception)
-            else None
-        )
+        if "factor.py" not in self.file_dict or self.raise_exception:
+            return None
+        # Include data file mtimes so cache invalidates when data changes
+        data_folder = Path(FACTOR_COSTEER_SETTINGS.data_folder_debug if data_type == "Debug" else FACTOR_COSTEER_SETTINGS.data_folder)
+        data_sig = ""
+        if data_folder.exists():
+            for f in sorted(data_folder.iterdir()):
+                data_sig += f"{f.name}:{f.stat().st_mtime_ns}"
+        return md5_hash(data_type + self.file_dict["factor.py"] + data_sig)
 
     @staticmethod
     def _sanitize_factor_name(name: str) -> str:
@@ -494,6 +498,7 @@ class FactorFBWorkspace(FBWorkspace):
             env={
                 "FACTOR_DATA_DIR": "/workspace/factor_data",
                 "RDAGENT_FACTOR_DATA_DIR": "/workspace/factor_data",
+                "HDF5_USE_FILE_LOCKING": "FALSE",
             },
             running_extra_volume={
                 str(source_data_path.resolve()): {

@@ -887,11 +887,20 @@ class QlibDockerConf(DockerConf):
 class DockerEnv(Env[DockerConf]):
     # TODO: Save the output into a specific file
 
+    # GPU probe cache — avoids spawning a container for nvidia-smi on every execution
+    _gpu_probe_cache: dict | None = None
+    _gpu_probe_done: bool = False
+
+    # Docker client cache — avoids repeated docker.from_env() connection setup
+    _docker_client: Any = None
+
     def prepare(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
         """
         Download image if it doesn't exist
         """
-        client = docker.from_env()
+        if DockerEnv._docker_client is None:
+            DockerEnv._docker_client = docker.from_env()
+        client = DockerEnv._docker_client
         if (
             self.conf.build_from_dockerfile
             and self.conf.dockerfile_folder_path is not None
@@ -971,9 +980,15 @@ class DockerEnv(Env[DockerConf]):
         Supports GPU selection via CUDA_VISIBLE_DEVICES environment variable.
         If set, only the specified GPUs will be available in the container.
         Example: CUDA_VISIBLE_DEVICES=0,1 will only expose GPU 0 and 1.
+
+        Results are cached at the class level to avoid spawning a probe container every time.
         """
         if not self.conf.enable_gpu:
             return {}
+
+        # Return cached result if available
+        if DockerEnv._gpu_probe_done:
+            return DockerEnv._gpu_probe_cache or {}
 
         # Check if specific GPUs are requested via CUDA_VISIBLE_DEVICES
         cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
@@ -1011,7 +1026,12 @@ class DockerEnv(Env[DockerConf]):
                 cleanup_container(container, context="GPU test")
             return gpu_kwargs
 
-        return _f()
+        result = _f()
+        # Only cache successful GPU probe (non-empty result means GPU is available)
+        if result:
+            DockerEnv._gpu_probe_cache = result
+            DockerEnv._gpu_probe_done = True
+        return result
 
     def _generate_log_header(self, entry: str | None = None) -> str:
         """
@@ -1150,7 +1170,9 @@ class DockerEnv(Env[DockerConf]):
         env["TF_CPP_MIN_LOG_LEVEL"] = "2"
         env["PYTHONUNBUFFERED"] = "1"
         env["TOKENIZERS_PARALLELISM"] = "false"  # Avoid tokenizer fork warning in multi-process training
-        client = docker.from_env()
+        if DockerEnv._docker_client is None:
+            DockerEnv._docker_client = docker.from_env()
+        client = DockerEnv._docker_client
 
         volumes = {}
         if local_path is not None:
@@ -1220,7 +1242,9 @@ class DockerEnv(Env[DockerConf]):
 
     def refresh_env(self) -> None:
         """Remove the Docker image associated with this environment."""
-        client = docker.from_env()
+        if DockerEnv._docker_client is None:
+            DockerEnv._docker_client = docker.from_env()
+        client = DockerEnv._docker_client
         try:
             # Remove the specific image
             client.images.remove(image=self.conf.image, force=True)

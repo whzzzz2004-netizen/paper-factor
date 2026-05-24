@@ -50,7 +50,7 @@ RUN python -m pip install --prefer-binary --retries 5 --timeout 120 \
 
 RUN python -m pip install --prefer-binary --retries 5 --timeout 120 \
     torch \
-    --index-url https://download.pytorch.org/whl/cpu \
+    --index-url https://download.pytorch.org/whl/cu121 \
     --trusted-host download.pytorch.org
 
 WORKDIR /workspace/factor_workspace

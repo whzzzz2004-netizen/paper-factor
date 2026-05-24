@@ -74,6 +74,21 @@ evolving_strategy_factor_implementation_v1_system: |-
       calculate_<Factor_Name>()
   ```
 
+  daily_pv.h5 可用列（⚠️ 这些列确实存在，直接使用即可）：
+  - $open, $close, $high, $low, $volume, $factor（复权因子）, $market_cap（总市值）, $industry_sw（申万行业）, $turnover（换手率）
+  - 索引：MultiIndex ['datetime', 'instrument']
+  minute_pv.h5 可用列：$open, $high, $low, $close, $volume, $vwap
+  - 索引：MultiIndex ['datetime', 'instrument']
+
+  GPU 使用说明（适用于深度学习因子）：
+  环境中已安装 PyTorch。如果因子需要使用深度学习模型（如神经网络、LSTM、Transformer、embedding 等），请自动检测 GPU 并使用：
+  1. 在代码开头设置设备：import torch; device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+  2. ⚠️ 训练和预测都必须分 batch（GPU 显存仅 4GB，禁止一次性送入全部数据）。使用 DataLoader 分 batch 训练，预测时也分 batch：preds=[]; with torch.no_grad(): for X_b in DataLoader(TensorDataset(X), batch_size=256): preds.append(model(X_b[0].to(device)).cpu()); preds=torch.cat(preds).numpy()
+  3. 计算完成后将结果移回 CPU：result = result.detach().cpu().numpy()
+  4. 注意：输入数据（pandas DataFrame）需要先转为 torch.Tensor 才能移到 GPU
+  5. 如果 GPU 不可用，代码会自动降级到 CPU 计算，无需报错
+  对于纯 pandas/numpy 的传统因子，无需使用 GPU。
+
     重要规则 —— 数据类型与索引（必读，否则极易写出隐性 bug）：
 
   1. 从 HDF5 读取的数据是 MultiIndex DataFrame，索引为 ['datetime', 'instrument']。每只股票在每个交易日有一行。
@@ -82,7 +97,7 @@ evolving_strategy_factor_implementation_v1_system: |-
   4. 不要对 MultiIndex 数据做 reset_index() 除非绝对必要。如果 reset_index 了，最终必须 set_index(['datetime', 'instrument']) 恢复。
   5. 除非绝对必要，不要使用 unstack()；如果使用，保存前必须恢复 MultiIndex。
   6. 不要创建名为 'datetime' 或 'instrument' 的普通列（除非已 reset_index 并会在之后 set_index 回来）。
-  7. 分钟数据聚合到日频：先 reset_index() → 创建 date 列 → groupby(['date', 'instrument']) → rename date 为 datetime → set_index(['datetime', 'instrument'])。
+  7. 分钟数据聚合到日频：先 reset_index() → 用 df_min['datetime'].dt.normalize() 创建 date 列（⚠️ 必须用 .dt.normalize() 而非 .dt.date，因为 .dt.date 返回 Python datetime.date 对象，与主 DataFrame 的 pandas.Timestamp 索引类型不匹配，join 时会全部变 NaN） → groupby(['date', 'instrument']) → rename date 为 datetime → set_index(['datetime', 'instrument'])。
 
   ⚠️ 重要规则 —— numpy 与 pandas 混用（极易出错！最常见的 bug 来源）：
 
@@ -105,6 +120,7 @@ evolving_strategy_factor_implementation_v1_system: |-
   21. 不允许用无关代理变量替代缺失数据。特别是成交量 `$volume` 不能替代换手率 `turnover`；如果因子定义需要换手率但本地没有 `$turnover`、`$turnover_rate`、`$turnover_rate_f` 或流通股本/总股本字段，必须输出 `DATA_UNAVAILABLE: 缺少换手率或股本数据，不能用成交量替代`。
   22. 代码应保持简洁，优先使用清晰的 pandas/groupby/rolling 表达式；不要写与因子无关的复杂框架、训练循环或兜底近似。
   23. 日频窗口必须是整数交易日数（如 20、60、120），不能用 pd.DateOffset 或 “30D”。
+  24. ⚠️ 如果 rename 了列名（如去掉 $ 前缀），后续所有引用该列的变量、列表、表达式必须同步更新。最常见的 bug：rename 后 features 列表仍用旧列名导致 KeyError。
 
   重要规则 —— 因子定义与事件逻辑：
 

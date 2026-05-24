@@ -59,6 +59,9 @@ class RDAgentSettings(ExtendedBaseSettings):
     max_output_duplicate_factor_group: int = 20
     max_kmeans_group_number: int = 40
 
+    # project root conf
+    project_path: Path = Path.cwd()
+
     # workspace conf
     workspace_path: Path = Path.cwd() / "git_ignore_folder" / "RD-Agent_workspace"
     workspace_ckp_size_limit: int = 0

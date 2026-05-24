@@ -23,6 +23,7 @@ from rdagent.components.document_reader.document_reader import (
     load_and_process_pdfs_for_paper_factor,
 )
 from rdagent.core.conf import RD_AGENT_SETTINGS
+from rdagent.core.exception import CoderError
 from rdagent.core.proposal import Hypothesis, HypothesisFeedback
 from rdagent.log import rdagent_logger as logger
 from rdagent.oai.llm_utils import APIBackend, md5_hash
@@ -50,7 +51,7 @@ class PaperFactorExperiment(FactorExperiment[FactorTask, FactorFBWorkspace, Fact
 
 
 def _load_processed_report_paths() -> set[str]:
-    report_folder = Path.cwd() / "papers" / "inbox"
+    report_folder = RD_AGENT_SETTINGS.project_path / "papers" / "inbox"
     if not report_folder.exists():
         return set()
     return {str(path.resolve()) for path in report_folder.rglob("*.pdf") if _report_fully_processed(path)}
@@ -59,7 +60,7 @@ def _load_processed_report_paths() -> set[str]:
 def _load_terminal_report_factor_names(report_path: str | Path) -> set[str]:
     report_title = Path(report_path).resolve().stem
     report_dir = (
-        Path.cwd()
+        RD_AGENT_SETTINGS.project_path
         / "git_ignore_folder"
         / "factor_outputs"
         / "literature_reports"
@@ -75,7 +76,7 @@ def _load_terminal_report_factor_names(report_path: str | Path) -> set[str]:
             factors = payload.get("factors") or {}
             if not isinstance(factors, dict):
                 factors = {}
-        except Exception as exc:  # noqa: BLE001
+        except (json.JSONDecodeError, OSError) as exc:
             logger.warning(f"Failed to read extracted factor cache for terminal detection: {exc}")
 
     terminal_names: set[str] = set()
@@ -106,7 +107,7 @@ def _load_terminal_report_factor_names(report_path: str | Path) -> set[str]:
 def _record_rejected_report_factor(task, feedback, source_report_path: str | None, source_report_title: str | None) -> None:
     if source_report_path is None:
         return
-    output_dir = Path.cwd() / "git_ignore_folder" / "factor_outputs"
+    output_dir = RD_AGENT_SETTINGS.project_path / "git_ignore_folder" / "factor_outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
     factor_name = str(getattr(task, "factor_name", "") or "").strip()
     if not factor_name:
@@ -247,7 +248,7 @@ def build_lightweight_hypothesis(report_file_path: str, factor_result: dict) -> 
 
 
 def _load_local_factor_data_profile() -> dict[str, Any]:
-    base_dir = Path.cwd() / "git_ignore_folder" / "factor_implementation_source_data"
+    base_dir = RD_AGENT_SETTINGS.project_path / "git_ignore_folder" / "factor_implementation_source_data"
     meta_path = base_dir / "jq_data_meta.json"
     profile: dict[str, Any] = {
         "source": "local_factor_data",
@@ -270,7 +271,7 @@ def _load_local_factor_data_profile() -> dict[str, Any]:
                     "years": meta.get("years", profile["years"]),
                 }
             )
-        except Exception as exc:  # noqa: BLE001
+        except (json.JSONDecodeError, OSError) as exc:
             logger.warning(f"Failed to load local factor data metadata from {meta_path}: {exc}")
     for file_name, field_name in [("daily_pv.h5", "daily_columns"), ("minute_pv.h5", "minute_columns")]:
         data_path = base_dir / file_name
@@ -279,7 +280,10 @@ def _load_local_factor_data_profile() -> dict[str, Any]:
         try:
             df = pd.read_hdf(data_path, key="data", start=0, stop=1)
             profile[field_name] = list(df.columns)
-        except Exception as exc:  # noqa: BLE001
+            # Store index information so LLM knows stock code is in the index
+            if hasattr(df.index, 'names'):
+                profile[f"{field_name.replace('columns', 'index_names')}"] = list(df.index.names)
+        except (OSError, KeyError, ValueError) as exc:
             logger.warning(f"Failed to inspect available columns from {data_path}: {exc}")
     field_schema = filter_field_schema(load_factor_field_schema(base_dir), profile["daily_columns"])
     profile["daily_column_schema"] = field_schema
@@ -464,7 +468,7 @@ def _expand_related_knowledge_sections(
 def _load_paper_factor_knowledge_graph() -> dict[str, dict[str, Any]]:
     graph_paths = [
         Path(__file__).with_name("paper_factor_knowledge_graph.yaml"),
-        Path.cwd() / "git_ignore_folder" / "paper_factor_knowledge_graph.yaml",
+        RD_AGENT_SETTINGS.project_path / "git_ignore_folder" / "paper_factor_knowledge_graph.yaml",
     ]
     nodes: dict[str, dict[str, Any]] = {}
     for path in graph_paths:
@@ -472,7 +476,7 @@ def _load_paper_factor_knowledge_graph() -> dict[str, dict[str, Any]]:
             continue
         try:
             payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except Exception as exc:  # noqa: BLE001
+        except (yaml.YAMLError, OSError) as exc:
             logger.warning(f"Failed to load paper_factor knowledge graph from {path}: {exc}")
             continue
         raw_nodes = payload.get("nodes", {}) if isinstance(payload, dict) else {}
@@ -572,7 +576,7 @@ def _load_paper_factor_domain_knowledge(task: FactorTask | None = None, *, top_k
 
     knowledge_paths = [
         Path(__file__).with_name("paper_factor_knowledge.md"),
-        Path.cwd() / "git_ignore_folder" / "paper_factor_knowledge.md",
+        RD_AGENT_SETTINGS.project_path / "git_ignore_folder" / "paper_factor_knowledge.md",
     ]
     sections: list[tuple[str, str, Path]] = []
     for path in knowledge_paths:
@@ -580,7 +584,7 @@ def _load_paper_factor_domain_knowledge(task: FactorTask | None = None, *, top_k
             continue
         try:
             content = path.read_text(encoding="utf-8").strip()
-        except Exception as exc:  # noqa: BLE001
+        except OSError as exc:
             logger.warning(f"Failed to load paper_factor knowledge from {path}: {exc}")
             continue
         if content:
@@ -628,6 +632,34 @@ def _judge_factor_data_availability_with_llm(
     }:
         return None
 
+    # Cache availability check results to avoid repeated LLM calls on re-runs
+    cache_dir = RD_AGENT_SETTINGS.project_path / "git_ignore_folder" / "factor_outputs" / "availability_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_key = md5_hash(
+        json.dumps(
+            {
+                "factor_name": task.factor_name,
+                "description": task.factor_description,
+                "formulation": task.factor_formulation,
+                "variables": task.variables,
+                "daily_columns": data_profile.get("daily_columns") or [],
+                "minute_columns": data_profile.get("minute_columns") or [],
+                "knowledge": domain_knowledge,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    cache_path = cache_dir / f"{cache_key}.json"
+    if cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            result_str = cached.get("result")
+            logger.info(f"Using cached availability check for {task.factor_name}: {result_str}")
+            return result_str
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning(f"Failed to read availability cache {cache_path}: {exc}")
+
     system_prompt = (
         "你是金融工程因子复现前的数据可用性审查员。用户会给你一个从研报抽取出的因子定义、"
         "当前本地可用数据字段、字段含义和相关领域知识。你的任务只判断：仅依赖这些本地数据，是否足以进入代码实现。\n"
@@ -639,6 +671,9 @@ def _judge_factor_data_availability_with_llm(
         "5. 日频基本面数据（如 $盈利因子1=毛利率、$成长因子1=营收同比增长率）虽然以日频存储，但包含季度变化点，可以据此推导TTM、季度环比、同比等口径。不要因为因子要求TTM或季度口径就判定日频基本面数据不可用。\n"
         "6. 不允许用无关代理变量替代必需数据。例如没有 turnover/turnover_rate 或股本字段时，不能用 volume 代替换手率。\n"
         "7. 只判断是否进入代码实现，不写代码，不评价因子好坏。只返回 JSON。\n"
+        "8. 【极其重要】数据为MultiIndex DataFrame结构，股票代码(instrument)和日期(datetime)是索引(index)，不是列(columns)。"
+        "不要因为列名中没有股票代码就判定缺少股票代码字段！股票代码可通过 df.index.get_level_values('instrument') 获取。"
+        "同理，日期可通过 df.index.get_level_values('datetime') 获取。这是最常见的误判，请务必注意！\n"
         "关于深度学习/机器学习因子的特别规则（极其重要）：\n"
         "- 以下情况全部属于 DEFINITION_INCOMPLETE，不是 DATA_UNAVAILABLE：\n"
         "  · 缺少预训练模型参数/权重（可以从头训练）\n"
@@ -669,8 +704,11 @@ def _judge_factor_data_availability_with_llm(
                 "daily_columns": data_profile.get("daily_columns") or [],
                 "daily_column_schema": data_profile.get("daily_column_schema") or {},
                 "minute_columns": data_profile.get("minute_columns") or [],
+                "daily_index": data_profile.get("daily_index_names") or ["datetime", "instrument"],
+                "minute_index": data_profile.get("minute_index_names") or ["datetime", "instrument"],
                 "history_window": f"{data_profile.get('start_date')} to {data_profile.get('end_date')}",
                 "stock_count": data_profile.get("stock_count"),
+                "data_structure_hint": "数据为MultiIndex DataFrame，股票代码(instrument)和日期(datetime)在索引中，不在列中。可通过 df.index.get_level_values('instrument') 和 df.index.get_level_values('datetime') 获取。",
             },
             "retrieved_knowledge": domain_knowledge,
             "return_schema": {
@@ -681,43 +719,60 @@ def _judge_factor_data_availability_with_llm(
         ensure_ascii=False,
     )
     judge_model = os.environ.get("RDAGENT_PAPER_FACTOR_AVAILABILITY_JUDGE_MODEL", "").strip()
+    backend = APIBackend()
+    if judge_model:
+        from rdagent.oai.llm_conf import LLM_SETTINGS
+        original_model = LLM_SETTINGS.chat_model
+        LLM_SETTINGS.chat_model = judge_model
     try:
-        backend = APIBackend()
+        _last_exc: Exception | None = None
+        for _attempt in range(3):
+            try:
+                response = backend.build_messages_and_create_chat_completion(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    json_mode=True,
+                    json_target_type=Dict[str, Any],
+                )
+                result = json.loads(response)
+                break
+            except Exception as exc:
+                _last_exc = exc
+                logger.warning(f"LLM data availability check attempt {_attempt + 1}/3 failed for {task.factor_name}: {exc}")
+        else:
+            raise RuntimeError(
+                f"LLM data availability check failed for {task.factor_name} after 3 attempts: {_last_exc}"
+            ) from _last_exc
+    finally:
         if judge_model:
-            from rdagent.oai.llm_conf import LLM_SETTINGS
-            original_model = LLM_SETTINGS.chat_model
-            LLM_SETTINGS.chat_model = judge_model
-        try:
-            response = backend.build_messages_and_create_chat_completion(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                json_mode=True,
-                json_target_type=Dict[str, Any],
-            )
-        finally:
-            if judge_model:
-                LLM_SETTINGS.chat_model = original_model
-        result = json.loads(response)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"Failed to judge data availability for {task.factor_name}: {exc}")
-        return None
+            LLM_SETTINGS.chat_model = original_model
 
     if not isinstance(result, dict):
-        return None
-    status = str(result.get("status") or "").strip().upper()
-    reason = str(result.get("reason") or "").strip()
-    if status == "DATA_UNAVAILABLE":
-        return f"DATA_UNAVAILABLE: {reason or '该因子所需数据在当前本地环境中不可用。'}"
-    if status == "DEFINITION_INCOMPLETE":
-        return f"DEFINITION_INCOMPLETE: {reason or '因子定义不够清楚，将由代码生成阶段补全默认实现。'}"
-    return None
+        result_str = None
+    else:
+        status = str(result.get("status") or "").strip().upper()
+        reason = str(result.get("reason") or "").strip()
+        if status == "DATA_UNAVAILABLE":
+            result_str = f"DATA_UNAVAILABLE: {reason or '该因子所需数据在当前本地环境中不可用。'}"
+        elif status == "DEFINITION_INCOMPLETE":
+            result_str = f"DEFINITION_INCOMPLETE: {reason or '因子定义不够清楚，将由代码生成阶段补全默认实现。'}"
+        else:
+            result_str = None
+
+    # Cache the result
+    try:
+        cache_path.write_text(json.dumps({"result": result_str}, ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:
+        logger.warning(f"Failed to write availability cache {cache_path}: {exc}")
+
+    return result_str
 
 
 def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any], domain_knowledge: str) -> FactorTask:
     if os.environ.get("RDAGENT_PAPER_FACTOR_DISABLE_TASK_REFINEMENT", "").strip().lower() in {"1", "true", "yes", "on"}:
         return task
 
-    cache_dir = Path.cwd() / "git_ignore_folder" / "factor_outputs" / "task_refinement_cache"
+    cache_dir = RD_AGENT_SETTINGS.project_path / "git_ignore_folder" / "factor_outputs" / "task_refinement_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_key = md5_hash(
         json.dumps(
@@ -738,7 +793,7 @@ def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any],
     if cache_path.exists():
         try:
             refined = json.loads(cache_path.read_text(encoding="utf-8"))
-        except Exception as exc:  # noqa: BLE001
+        except (json.JSONDecodeError, OSError) as exc:
             logger.warning(f"Failed to read factor task refinement cache {cache_path}: {exc}")
         else:
             return FactorTask(
@@ -779,8 +834,11 @@ def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any],
                 "daily_columns": data_profile.get("daily_columns") or [],
                 "daily_column_schema": data_profile.get("daily_column_schema") or {},
                 "minute_columns": data_profile.get("minute_columns") or [],
+                "daily_index": data_profile.get("daily_index_names") or ["datetime", "instrument"],
+                "minute_index": data_profile.get("minute_index_names") or ["datetime", "instrument"],
                 "history_window": f"{data_profile.get('start_date')} to {data_profile.get('end_date')}",
                 "stock_count": data_profile.get("stock_count"),
+                "data_structure_hint": "数据为MultiIndex DataFrame，股票代码(instrument)和日期(datetime)在索引中，不在列中。可通过 df.index.get_level_values('instrument') 和 df.index.get_level_values('datetime') 获取。",
             },
             "retrieved_knowledge": domain_knowledge,
             "return_schema": {
@@ -792,17 +850,25 @@ def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any],
         },
         ensure_ascii=False,
     )
-    try:
-        response = APIBackend().build_messages_and_create_chat_completion(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            json_mode=True,
-            json_target_type=Dict[str, Any],
-        )
-        refined = json.loads(response)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"Failed to refine paper_factor task with LLM for {task.factor_name}: {exc}")
-        return task
+    _last_exc: Exception | None = None
+    refined = None
+    for _attempt in range(3):
+        try:
+            response = APIBackend().build_messages_and_create_chat_completion(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                json_mode=True,
+                json_target_type=Dict[str, Any],
+            )
+            refined = json.loads(response)
+            break
+        except Exception as exc:
+            _last_exc = exc
+            logger.warning(f"LLM task refinement attempt {_attempt + 1}/3 failed for {task.factor_name}: {exc}")
+    if refined is None:
+        raise RuntimeError(
+            f"LLM task refinement failed for {task.factor_name} after 3 attempts: {_last_exc}"
+        ) from _last_exc
 
     if not isinstance(refined, dict):
         return task
@@ -821,11 +887,16 @@ def _adapt_report_task_for_available_data(task: FactorTask) -> FactorTask:
     adapted_task = _refine_factor_task_with_llm(deepcopy(task), data_profile, domain_knowledge)
     available_daily_columns = ", ".join(data_profile.get("daily_columns") or []) or "unknown"
     available_minute_columns = ", ".join(data_profile.get("minute_columns") or []) or "unknown"
+    daily_index_names = ", ".join(data_profile.get("daily_index_names") or []) or "unknown"
+    minute_index_names = ", ".join(data_profile.get("minute_index_names") or []) or "unknown"
     schema_text = data_profile.get("daily_column_schema_text") or ""
     adaptation_note = (
         f"\n\n本地可用数据：{data_profile.get('source')}，约{data_profile.get('stock_count')}只股票，"
         f"{data_profile.get('start_date')}至{data_profile.get('end_date')}。"
         f"日频字段：{available_daily_columns}。分钟频字段：{available_minute_columns}。"
+        f"\n重要：数据为MultiIndex结构，索引包含：{daily_index_names}（日频）、{minute_index_names}（分钟频）。"
+        f"股票代码(instrument)在索引中，可通过 df.index.get_level_values('instrument') 获取。"
+        f"日期(datetime)也在索引中，可通过 df.index.get_level_values('datetime') 获取。"
     )
     if schema_text:
         adaptation_note += f"\n\n日频字段说明（含公式、英文名、来源）：\n{schema_text}"
@@ -843,7 +914,7 @@ def _persist_extracted_factor_preview(
     file_to_factor_result: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> Path:
     report_path = Path(report_file_path).resolve()
-    output_dir = Path.cwd() / "git_ignore_folder" / "factor_outputs" / "extracted_reports"
+    output_dir = RD_AGENT_SETTINGS.project_path / "git_ignore_folder" / "factor_outputs" / "extracted_reports"
     output_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "report_file_path": str(report_path),
@@ -862,7 +933,7 @@ def _persist_extracted_factor_preview(
 
 def _extracted_factor_preview_path(report_file_path: str | Path) -> Path:
     report_path = Path(report_file_path).resolve()
-    return Path.cwd() / "git_ignore_folder" / "factor_outputs" / "extracted_reports" / f"{report_path.stem}.extracted.json"
+    return RD_AGENT_SETTINGS.project_path / "git_ignore_folder" / "factor_outputs" / "extracted_reports" / f"{report_path.stem}.extracted.json"
 
 
 def _load_extracted_factor_count(report_file_path: str | Path) -> int | None:
@@ -871,7 +942,7 @@ def _load_extracted_factor_count(report_file_path: str | Path) -> int | None:
         return None
     try:
         payload = json.loads(preview_path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001
+    except (json.JSONDecodeError, OSError) as exc:
         logger.warning(f"Failed to read extracted factor count from {preview_path}: {exc}")
         return None
     factors = payload.get("factors") or {}
@@ -898,7 +969,7 @@ def _load_exp_from_extracted_factor_preview(report_file_path: str, *, minimal_mo
         return None
     try:
         payload = json.loads(preview_path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001
+    except (json.JSONDecodeError, OSError, KeyError) as exc:
         logger.warning(f"Failed to read extracted factor cache {preview_path}: {exc}")
         return None
     if str(payload.get("report_file_path") or "") != str(Path(report_file_path).resolve()):
@@ -1075,6 +1146,7 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
         )
 
     async def direct_exp_gen(self, prev_out: dict[str, Any]):
+        loop = asyncio.get_running_loop()
         while True:
             unfinished_loop_cnt = self.get_unfinished_loop_cnt(self.loop_idx)
             current_report_dispatched = (
@@ -1082,10 +1154,11 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
                 and self.pending_report_factor_idx >= self.pending_report_factor_total
             )
             if current_report_dispatched and unfinished_loop_cnt > 0:
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
                 continue
             if unfinished_loop_cnt < self.parallel_factor_n:
-                exp = self._next_single_factor_exp()
+                # Run blocking LLM calls in thread pool to avoid blocking the event loop
+                exp = await loop.run_in_executor(None, self._next_single_factor_exp)
                 exp.based_experiments = [PaperFactorExperiment(sub_tasks=[], hypothesis=exp.hypothesis)] + [
                     t[0] for t in self.trace.hist if t[1]
                 ]
@@ -1095,7 +1168,25 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
                 logger.log_object(exp.hypothesis, tag="hypothesis generation")
                 logger.log_object(exp.sub_tasks, tag="experiment generation")
                 return exp
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.1)
+
+    @staticmethod
+    def _is_deep_learning_report(report_path: Path) -> bool:
+        """用 LLM 判断研报是否涉及深度学习（GRU/TCN/LSTM/Transformer 等），仅需是/否。"""
+        try:
+            backend = APIBackend()
+            title = report_path.stem
+            response = backend.build_messages_and_create_chat_completion(
+                user_prompt=f"研报标题：{title}\n\n这是一篇关于深度学习（如 GRU、TCN、LSTM、Transformer、CNN、RNN、神经网络）的研报吗？只回答 yes 或 no。",
+                system_prompt="你是一个分类助手。只回答 yes 或 no，不要解释。",
+                json_mode=False,
+            )
+            result = "yes" in response.strip().lower()
+            logger.info(f"Deep learning check for '{title}': {result} (response: {response.strip()[:50]})")
+            return result
+        except Exception as e:
+            logger.warning(f"Deep learning check failed: {e}, defaulting to non-DL")
+            return False
 
     def _next_single_factor_exp(self) -> PaperFactorExperiment:
         while self.pending_report_exp is None or self.pending_report_factor_idx >= self.pending_report_factor_total:
@@ -1105,6 +1196,21 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
             report_file_path = self.judge_pdf_data_items[self.report_cursor]
             self.report_cursor += 1
             logger.info(f"Processing report {self.report_cursor}: {report_file_path}")
+
+            # 根据研报类型调整并行度
+            _base_parallel = int(os.environ.get("RDAGENT_PAPER_FACTOR_PARALLEL_FACTORS", "10"))
+            _dl_parallel = int(os.environ.get("RDAGENT_PAPER_FACTOR_DL_PARALLEL_FACTORS", "3"))
+            if self._is_deep_learning_report(report_file_path):
+                self.parallel_factor_n = _dl_parallel
+            else:
+                self.parallel_factor_n = _base_parallel
+            RD_AGENT_SETTINGS.step_semaphore = {
+                "direct_exp_gen": 1,
+                "coding": self.parallel_factor_n,
+                "running": self.parallel_factor_n,
+                "feedback": 1,
+                "record": 1,
+            }
             exp = extract_hypothesis_and_exp_from_reports(
                 str(report_file_path),
                 minimal_mode=self.minimal_mode,
@@ -1243,6 +1349,31 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
         feedback = prev_out["feedback"]
         exp = prev_out.get("running") or prev_out.get("coding") or prev_out.get("direct_exp_gen")
         exported_count = 0
+
+        # Handle CoderError: when all implementations fail, record factors as permanently failed
+        from rdagent.utils.workflow.loop import LoopBase
+        exc = prev_out.get(LoopBase.EXCEPTION_KEY)
+        if exc is not None and isinstance(exc, CoderError) and exp is not None:
+            source_report_path = getattr(exp, "source_report_path", None)
+            source_report_title = getattr(exp, "source_report_title", None)
+            for task in (exp.sub_tasks or []):
+                factor_name = getattr(task, "factor_name", "unknown")
+                _record_rejected_report_factor(
+                    task,
+                    FactorSingleFeedback(
+                        execution_feedback=str(exc),
+                        value_generated_flag=False,
+                        code_feedback="所有实现均失败，已永久跳过。",
+                        value_feedback="未生成因子值。",
+                        final_decision=False,
+                        final_feedback=f"CoderError: 所有实现均失败 ({factor_name})",
+                        final_decision_based_on_gt=False,
+                    ),
+                    source_report_path,
+                    source_report_title,
+                )
+                print(f"paper_factor: permanently failed {factor_name} (all implementations failed).", flush=True)
+
         if exp is not None and getattr(exp, "prop_dev_feedback", None) is not None:
             source_report_path = getattr(exp, "source_report_path", None)
             source_report_title = getattr(exp, "source_report_title", None)
@@ -1269,7 +1400,7 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
                     continue
                 try:
                     _, df = workspace.execute("All")
-                except Exception as exc:  # noqa: BLE001
+                except (OSError, ValueError) as exc:
                     logger.warning(
                         f"Failed to reload report-derived factor dataframe for reviewed export: "
                         f"task={task.factor_name}; {exc}"
