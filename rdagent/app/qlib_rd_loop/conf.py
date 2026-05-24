@@ -12,20 +12,8 @@ class FactorBasePropSetting(BasePropSetting):
     scen: str = "rdagent.scenarios.qlib.experiment.factor_experiment.QlibFactorScenario"
     """Scenario class for Qlib Factor"""
 
-    hypothesis_gen: str = "rdagent.scenarios.qlib.proposal.factor_proposal.QlibFactorHypothesisGen"
-    """Hypothesis generation class"""
-
-    hypothesis2experiment: str = "rdagent.scenarios.qlib.proposal.factor_proposal.QlibFactorHypothesis2Experiment"
-    """Hypothesis to experiment class"""
-
     coder: str = "rdagent.scenarios.qlib.developer.factor_coder.QlibFactorCoSTEER"
     """Coder class"""
-
-    runner: str = "rdagent.scenarios.qlib.developer.factor_runner.QlibFactorRunner"
-    """Runner class"""
-
-    summarizer: str = "rdagent.scenarios.qlib.developer.feedback.QlibFactorExperiment2Feedback"
-    """Summarizer class"""
 
     evolving_n: int = 10
     """Number of evolutions"""

@@ -465,7 +465,6 @@ def _ensure_workspace_dirs() -> list[Path]:
         GIT_IGNORE_DIR,
         GIT_IGNORE_DIR / "factor_outputs",
         GIT_IGNORE_DIR / "research_store" / "knowledge",
-        GIT_IGNORE_DIR / "research_store" / "knowledge_v2" / "paper_improvement",
         GIT_IGNORE_DIR / "research_store" / "knowledge_v2" / "error_cases",
         GIT_IGNORE_DIR / "factor_implementation_source_data",
         GIT_IGNORE_DIR / "factor_implementation_source_data_debug",
@@ -629,30 +628,10 @@ def _ensure_factor_data(force: bool = False) -> list[str]:
     ]
 
 
-def _ingest_factor_improvement_knowledge() -> list[str]:
-    from rdagent.app.qlib_rd_loop.paper_improvement import ingest_factor_improvement_papers
-
-    report_folder = PAPERS_DIR / "factor_improvement"
-    pdf_count = len(list(report_folder.rglob("*.pdf")))
-    if pdf_count == 0:
-        return [f"No factor-improvement papers found under {report_folder}."]
-
-    updated_count = ingest_factor_improvement_papers(report_folder=str(report_folder))
-    return [
-        f"Ingested {updated_count} factor-improvement paper(s) into the paper-improvement knowledge base."
-    ]
-
-
-def init_workspace(
-    force: bool = False,
-    *,
-    ingest_factor_improvement: bool = False,
-) -> dict[str, list[str] | str]:
+def init_workspace(force: bool = False) -> dict[str, list[str] | str]:
     created_dirs = [str(path) for path in _ensure_workspace_dirs()]
     env_message = _ensure_env_file(force=force)
     data_actions = _ensure_factor_data(force=force)
-    if ingest_factor_improvement:
-        data_actions.extend(_ingest_factor_improvement_knowledge())
 
     summary = {
         "created_dirs": created_dirs,
@@ -660,8 +639,7 @@ def init_workspace(
         "data": data_actions,
         "next_steps": [
             "Review .env and fill in your API keys if needed.",
-            "Run `rdagent health_check --no-check-docker` to verify API and port configuration.",
-            "Run `rdagent daily_factor` or `rdagent minute_factor` to start mining factors.",
+            "Run `paper_factor run` to start extracting factors from papers.",
         ],
     }
     logger.info("Workspace initialization finished.")
