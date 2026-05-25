@@ -62,6 +62,10 @@ class LoopMeta(type):
         Returns:
             LoopMeta: A new instance of LoopMeta.
         """
+        # If steps is explicitly set in this class, use it directly
+        if "steps" in attrs and isinstance(attrs["steps"], list):
+            return super().__new__(mcs, clsname, bases, attrs)
+
         steps = LoopMeta._get_steps(bases)  # all the base classes of parents
         for name, attr in attrs.items():
             if not name.startswith("_") and callable(attr) and not isinstance(attr, type):
@@ -238,21 +242,36 @@ class LoopBase:
                             )
                         # Use thread pool with shallow copy — threads share memory,
                         # shallow copy prevents concurrent mutation of the dict itself
-                        result = await curr_loop.run_in_executor(
+                        coro = curr_loop.run_in_executor(
                             self._thread_pool, func, copy.copy(self.loop_prev_out[li])
                         )
                     else:
                         # auto determine whether to run async or sync
                         if asyncio.iscoroutinefunction(func):
-                            result = await func(self.loop_prev_out[li])
+                            coro = func(self.loop_prev_out[li])
                         else:
                             # Use thread executor for sync functions to avoid blocking the event loop
                             curr_loop = asyncio.get_running_loop()
-                            result = await curr_loop.run_in_executor(None, func, self.loop_prev_out[li])
+                            coro = curr_loop.run_in_executor(None, func, self.loop_prev_out[li])
+
+                    timeout = RD_AGENT_SETTINGS.step_timeout
+                    if timeout > 0:
+                        result = await asyncio.wait_for(coro, timeout=timeout)
+                    else:
+                        result = await coro
+
                     # Store result in the nested dictionary
                     self.loop_prev_out[li][name] = result
                 except Exception as e:
-                    if isinstance(e, self.skip_loop_error):
+                    if isinstance(e, asyncio.TimeoutError):
+                        logger.warning(f"Step {name} of loop {li} timed out after {timeout}s, skipping to feedback.")
+                        if "feedback" in self.steps:
+                            next_step_idx = self.steps.index("feedback")
+                        else:
+                            next_step_idx = len(self.steps) - 1
+                        self.loop_prev_out[li][name] = None
+                        self.loop_prev_out[li][self.EXCEPTION_KEY] = TimeoutError(f"Step '{name}' timed out after {timeout}s")
+                    elif isinstance(e, self.skip_loop_error):
                         logger.warning(f"Skip loop {li} due to {e}")
                         if self.skip_loop_error_stepname:
                             next_step_idx = self.steps.index(self.skip_loop_error_stepname)

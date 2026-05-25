@@ -1085,6 +1085,8 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
         os.environ.setdefault("RDAGENT_PAPER_FACTOR_SKIP_LOW_IC_REPAIR", "1")
         os.environ.setdefault("RDAGENT_PAPER_FACTOR_FAST", "1")
         os.environ.setdefault("RDAGENT_FACTOR_MAX_CONSECUTIVE_OUTPUT_WITHOUT_ACCEPT", "0")
+        if RD_AGENT_SETTINGS.step_timeout <= 0:
+            RD_AGENT_SETTINGS.step_timeout = 600  # 10 minutes per step default
         try:
             self.parallel_factor_n = max(
                 1,
@@ -1377,6 +1379,8 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
         if exp is not None and getattr(exp, "prop_dev_feedback", None) is not None:
             source_report_path = getattr(exp, "source_report_path", None)
             source_report_title = getattr(exp, "source_report_title", None)
+            # Collect accepted factor export jobs for parallel execution
+            export_jobs = []
             for task, workspace, task_feedback in zip(exp.sub_tasks, exp.sub_workspace_list, exp.prop_dev_feedback):
                 if task_feedback is None:
                     continue
@@ -1398,54 +1402,77 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
                     continue
                 if workspace is None:
                     continue
-                try:
-                    _, df = workspace.execute("All")
-                except (OSError, ValueError) as exc:
-                    logger.warning(
-                        f"Failed to reload report-derived factor dataframe for reviewed export: "
-                        f"task={task.factor_name}; {exc}"
-                    )
-                    continue
-                if df is None or df.empty:
-                    continue
-                ic_feedback, full_sample_ic = evaluate_factor_ic_from_workspace(
-                    workspace,
-                    data_type="All",
-                    gen_df=df,
-                )
-                logic_summary = task.factor_description
-                review_notes = "\n".join(
-                    part
-                    for part in [task_feedback.execution, task_feedback.return_checking, task_feedback.code, ic_feedback]
-                    if part
-                )
-                tags = _infer_report_factor_registry_tags(task, task_feedback)
-                if full_sample_ic is not None and abs(full_sample_ic) >= FACTOR_COSTEER_SETTINGS.min_abs_ic:
-                    tags.append("ic_passed")
-                elif full_sample_ic is not None:
-                    tags.append("ic_recorded_only")
-                else:
-                    tags.append("ic_unavailable")
-                tags = sorted(set(tags))
-                workspace.export_reviewed_factor(
-                    df,
-                    accepted=True,
-                    logic_summary=logic_summary,
-                    tags=tags,
-                    review_notes=review_notes,
-                    ic_score=full_sample_ic,
-                    source_type="literature_report",
-                    source_report_path=source_report_path,
-                    source_report_title=source_report_title,
-                )
-                exported_count += 1
-                print(f"paper_factor: exported {task.factor_name}.", flush=True)
+                export_jobs.append((task, workspace, task_feedback, source_report_path, source_report_title))
+
+            # Run accepted factor exports in parallel
+            if export_jobs:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                max_workers = min(len(export_jobs), 10)
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures = {
+                        pool.submit(_export_single_factor, *job): job[0].factor_name
+                        for job in export_jobs
+                    }
+                    for future in as_completed(futures):
+                        factor_name = futures[future]
+                        try:
+                            if future.result():
+                                exported_count += 1
+                                print(f"paper_factor: exported {factor_name}.", flush=True)
+                        except Exception as exc:
+                            logger.warning(f"Failed to export factor {factor_name}: {exc}")
 
         self.trace.sync_dag_parent_and_hist((exp, feedback), prev_out[self.LOOP_IDX_KEY])
         logger.info(
             f"Factor report loop recorded. Accepted reviewed factor exports: {exported_count}. "
             f"Source report: {getattr(exp, 'source_report_title', 'unknown') if exp is not None else 'unknown'}."
         )
+
+
+def _export_single_factor(task, workspace, task_feedback, source_report_path, source_report_title) -> bool:
+    """Export a single accepted factor. Returns True if exported successfully."""
+    try:
+        _, df = workspace.execute("All")
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            f"Failed to reload report-derived factor dataframe for reviewed export: "
+            f"task={task.factor_name}; {exc}"
+        )
+        return False
+    if df is None or df.empty:
+        return False
+    ic_feedback, full_sample_ic = evaluate_factor_ic_from_workspace(
+        workspace,
+        data_type="All",
+        gen_df=df,
+    )
+    logic_summary = task.factor_description
+    review_notes = "\n".join(
+        part
+        for part in [task_feedback.execution, task_feedback.return_checking, task_feedback.code, ic_feedback]
+        if part
+    )
+    tags = _infer_report_factor_registry_tags(task, task_feedback)
+    if full_sample_ic is not None and abs(full_sample_ic) >= FACTOR_COSTEER_SETTINGS.min_abs_ic:
+        tags.append("ic_passed")
+    elif full_sample_ic is not None:
+        tags.append("ic_recorded_only")
+    else:
+        tags.append("ic_unavailable")
+    tags = sorted(set(tags))
+    workspace.export_reviewed_factor(
+        df,
+        accepted=True,
+        logic_summary=logic_summary,
+        tags=tags,
+        review_notes=review_notes,
+        ic_score=full_sample_ic,
+        source_type="literature_report",
+        source_report_path=source_report_path,
+        source_report_title=source_report_title,
+    )
+    return True
 
 
 def _infer_report_factor_registry_tags(task, feedback) -> list[str]:

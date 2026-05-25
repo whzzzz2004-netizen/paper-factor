@@ -29,6 +29,7 @@ from rdagent.utils.workflow import LoopBase, LoopMeta
 
 
 class RDLoop(LoopBase, metaclass=LoopMeta):
+    steps = ["direct_exp_gen", "coding", "running", "feedback", "record"]
 
     def __init__(self, PROP_SETTING: BasePropSetting):
         scen: Scenario = import_class(PROP_SETTING.scen)()
