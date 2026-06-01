@@ -15,29 +15,24 @@ REAL_MINUTE_QUOTE_FILENAME = "minute_quote.h5"
 
 DAILY_COLUMN_GROUPS: dict[str, dict[str, str]] = {
     "价格": {"$open": "开盘价", "$high": "最高价", "$low": "最低价", "$close": "收盘价", "$pre_close": "前收盘价"},
-    "涨跌": {"$change": "涨跌额", "$pct_chg": "涨跌幅"},
-    "成交量额": {"$volume": "成交量(股)", "$amount": "成交额(元)"},
-    "换手": {"$turnover_rate": "换手率", "$turnover_rate_f": "换手率(自由流通股本)", "$turnover": "换手率(别名)", "$volume_ratio": "量比"},
-    "估值": {"$pe": "市盈率", "$pe_ttm": "市盈率(TTM)", "$pb": "市净率", "$ps": "市销率", "$ps_ttm": "市销率(TTM)"},
-    "股息": {"$dv_ratio": "股息率", "$dv_ttm": "股息率(TTM)"},
-    "市值股本": {"$total_mv": "总市值", "$circ_mv": "流通市值", "$total_share": "总股本", "$float_share": "流通股本", "$free_share": "自由流通股本", "$market_cap": "总市值"},
+    "涨跌": {"$pct_chg": "涨跌幅(%)"},
+    "成交量": {"$volume": "成交量(股)"},
+    "换手": {"$turnover_rate": "换手率(%)"},
     "复权": {"$factor": "复权因子"},
-    "期货": {"$pre_settle": "前结算价", "$settle": "结算价", "$change1": "涨跌1", "$change2": "涨跌2", "$open_interest": "持仓量", "$open_interest_chg": "持仓量变化"},
-    "元信息": {"$symbol": "股票代码", "$name": "股票名称", "$area": "地区", "$industry": "行业", "$industry_sw": "申万行业", "$market": "市场", "$list_date": "上市日期", "$asset_type": "资产类型"},
-    "基本面-价值": {f"$价值因子{i}": f"价值因子{i}" for i in range(1, 13)},
     "基本面-盈利": {f"$盈利因子{i}": f"盈利因子{i}" for i in range(1, 15)},
-    "基本面-成长": {f"$成长因子{i}": f"成长因子{i}" for i in range(1, 17)},
-    "基本面-杠杆": {f"$杠杆因子{i}": f"杠杆因子{i}" for i in range(1, 9)},
     "基本面-现金流": {f"$现金流因子{i}": f"现金流因子{i}" for i in range(1, 10)},
-    "基本面-股本": {f"$股本因子{i}": f"股本因子{i}" for i in range(1, 6)},
-    "基本面-质量": {f"$质量因子{i}": f"质量因子{i}" for i in range(1, 16)},
+    "基本面-价值": {f"$价值因子{i}": f"价值因子{i}" for i in range(1, 13)},
+    "基本面-成长": {f"$成长因子{i}": f"成长因子{i}" for i in range(1, 17)},
     "基本面-运营": {f"$运营因子{i}": f"运营因子{i}" for i in range(1, 23)},
+    "基本面-杠杆": {f"$杠杆因子{i}": f"杠杆因子{i}" for i in range(1, 9)},
+    "基本面-质量": {f"$质量因子{i}": f"质量因子{i}" for i in range(1, 16)},
     "基本面-其他": {f"$其他因子{i}": f"其他因子{i}" for i in range(1, 14)},
+    "基本面-股本": {f"$股本因子{i}": f"股本因子{i}" for i in range(1, 3)},
 }
 
 MINUTE_COLUMN_GROUPS: dict[str, dict[str, str]] = {
     "价格": {"$open": "分钟开盘价", "$close": "分钟收盘价", "$high": "分钟最高价", "$low": "分钟最低价"},
-    "成交": {"$volume": "分钟成交量", "$vwap": "分钟均价"},
+    "成交": {"$volume": "分钟成交量", "$vwap": "分钟均价(VWAP)"},
     "收益": {"$return": "分钟收益率"},
     "复权": {"$factor": "复权因子"},
 }
@@ -361,9 +356,9 @@ def get_data_folder_intro(fname_reg: str = ".*", flags=0, variable_mapping=None)
     ensure_sample_minute_data_files()
     mode = resolve_factor_data_mode()
     pattern_by_mode = {
-        "all": r"^(.+\.h5|README\.md)$" if fname_reg == ".*" else fname_reg,
-        "daily": r"^(daily_.*\.h5|README\.md)$",
-        "minute": r"^(minute_pv\.h5|README\.md)$",
+        "all": r"^(.+\.h5|README\.md|data_field_dictionary\.md)$" if fname_reg == ".*" else fname_reg,
+        "daily": r"^(daily_.*\.h5|README\.md|data_field_dictionary\.md)$",
+        "minute": r"^(minute_pv\.h5|README\.md|data_field_dictionary\.md)$",
     }
     content_l = []
     for p in Path(FACTOR_COSTEER_SETTINGS.data_folder_debug).iterdir():
@@ -406,4 +401,9 @@ def get_compact_data_folder_intro() -> str:
 
     file_intros = {"daily": _daily_intro, "minute": _minute_intro, "all": lambda: f"{_daily_intro()}\n{_minute_intro()}"}
 
-    return factor_mode_instruction(mode) + "\n\nAvailable source files:\n" + file_intros[mode]()
+    dict_intro = ""
+    dict_path = data_folder / "data_field_dictionary.md"
+    if dict_path.exists():
+        dict_intro = f"\n\ndata_field_dictionary.md: 包含所有基本面因子的含义、公式和数据来源说明。"
+
+    return factor_mode_instruction(mode) + "\n\nAvailable source files:\n" + file_intros[mode]() + dict_intro

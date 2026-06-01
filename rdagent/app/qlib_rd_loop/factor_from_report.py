@@ -674,6 +674,20 @@ def _judge_factor_data_availability_with_llm(
         "8. 【极其重要】数据为MultiIndex DataFrame结构，股票代码(instrument)和日期(datetime)是索引(index)，不是列(columns)。"
         "不要因为列名中没有股票代码就判定缺少股票代码字段！股票代码可通过 df.index.get_level_values('instrument') 获取。"
         "同理，日期可通过 df.index.get_level_values('datetime') 获取。这是最常见的误判，请务必注意！\n"
+        "9. 【重要】分钟数据文件(minute_pv.h5)包含 $open,$high,$low,$close,$volume,$vwap,$factor,$return 共8个字段。"
+        "如果因子公式涉及分钟级别的价格、成交量、均价、收益率计算，这些字段都可用。不要因为因子描述中写了'分钟数据'就判定 DATA_UNAVAILABLE。\n"
+        "10. 【重要】字段 $turnover_rate 就是换手率（日频）。如果因子需要换手率数据，使用 $turnover_rate。"
+        "如果因子需要'流通股本'来从成交量计算换手率，可以直接使用 $turnover_rate 字段，无需反推股本。\n"
+        "11. 【重要】'市值中性化'、'行业中性化'、'截面标准化'、'Z-score标准化'、'Rank标准化'等操作属于标准数据处理流程，"
+        "不需要额外数据字段。即使缺少行业分类数据，也可以做市值中性化或纯截面标准化。缺少行业中性化条件不应判为 DATA_UNAVAILABLE。\n"
+        "12. 【宽松原则】除非因子明确需要以下不可用数据，否则一律判为 AVAILABLE 或 DEFINITION_INCOMPLETE：\n"
+        "    - 逐笔成交数据（tick-level trade data），而非分钟K线\n"
+        "    - 订单簿数据（order book / level-2 data）\n"
+        "    - 龙虎榜数据、融资融券数据、北向资金数据\n"
+        "    - 财务报告原文中的非结构化文本信息\n"
+        "    - 行业分类标签（如申万一级行业）\n"
+        "    - 机构持仓数据\n"
+        "对于上述宽松原则的例外：如果因子需要单独的外生变量（如GDP、CPI、利率等宏观数据），这些确实不可用，判DATA_UNAVAILABLE。\n"
         "关于深度学习/机器学习因子的特别规则（极其重要）：\n"
         "- 以下情况全部属于 DEFINITION_INCOMPLETE，不是 DATA_UNAVAILABLE：\n"
         "  · 缺少预训练模型参数/权重（可以从头训练）\n"
@@ -686,11 +700,18 @@ def _judge_factor_data_availability_with_llm(
         "- 只有以下情况才属于 DATA_UNAVAILABLE：\n"
         "  · 输入字段本身不存在（如需要逐笔成交但只有分钟K线）\n"
         "  · 需要的原始数据列在 local_data 中确实没有（如需要 $roe 但没有）\n"
-        "- 简单来说：只要输入字段（OHLCV、volume、turnover 等）存在，其他一切缺失都算 DEFINITION_INCOMPLETE。\n"
+        "13. 【极其重要】历史数据时间长度不足（如研报要求9年但本地只有2.5年）不是 DATA_UNAVAILABLE 的理由。"
+        "即使只有几个月的数据，coder 也可以用可用数据训练和预测。只要字段存在，就判 AVAILABLE 或 DEFINITION_INCOMPLETE。\n"
+        "14. 【极其重要】禁止猜测数据质量。你没有实际读取完整数据文件，无法知道某列是否有 NaN、是否全为 0 等。"
+        "只判断字段名是否存在。数据值质量问题（NaN、missing）由运行时代码自行处理。\n"
+        "15. 因子描述中提到的训练窗口、历史长度等需求，如果本地数据不能满足，coder 会用可用数据适配。"
+        "不要因此判 DATA_UNAVAILABLE。\n"
+        "- 简单来说：只要输入字段（OHLCV、volume、turnover_rate 等）在 local_data 中列出来了，其他一切缺失都算 DEFINITION_INCOMPLETE。\n"
         "返回状态说明：\n"
         "- AVAILABLE：字段和定义都够，直接进入代码生成。\n"
         "- DEFINITION_INCOMPLETE：因子定义不够清楚（如 DL 模型缺 hidden size、loss、标签、标准化方法），但大模型可以凭知识尝试补全，进入代码生成。\n"
-        "- DATA_UNAVAILABLE：真的缺输入字段（如需要逐笔成交但只有分钟K线，需要 $roe 但没有），无法实现，跳过。"
+        "- DATA_UNAVAILABLE：真的缺输入字段（如需要逐笔成交但只有分钟K线，需要 $roe 但没有），无法实现，跳过。\n"
+        "【总结】当你不确定时，倾向于 AVAILABLE 或 DEFINITION_INCOMPLETE，而不是 DATA_UNAVAILABLE。只有当明确检测到上述不可用数据时，才返回 DATA_UNAVAILABLE。"
     )
     user_prompt = json.dumps(
         {
@@ -820,7 +841,11 @@ def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any],
         "11. T 日固定表示因子值输出/信号对应的日期；若论文使用事件日、形成日、买入日、调仓日、预测区间等不同日期，必须保留论文原始时间关系，不要混用。\n"
         "12. 如果因子包含阈值、分段、打分映射、状态判定、分位数边界、窗口长度等参数，必须给出具体数值或确定性公式。禁止写“合理设定”“自行设定”“参照图表但不给数值”“根据情况调整”等不可执行描述。\n"
         "13. 如果论文定义有小的工程细节缺失，应优先给出保守默认实现建议并明确标注；如果核心数据、核心标签或事件口径缺失到无法写代码，再指出缺少字段、缺少规则和逻辑歧义。\n"
-        "14. 只返回 JSON，不要输出解释文字。"
+        "14. ⚠️ local_data.history_window 是本地实际可用的数据时间范围（通常仅约2.5年）。"
+        "因子描述中如果包含按年度滚动训练（如'每年用前N年数据训练'）、多年训练集（如'前9年数据作为训练集'）"
+        "等需要超出本地数据范围的训练方案，必须改为'使用全部可用数据，按时间顺序分割为训练集/验证集'。"
+        "不要保留需要多年数据的原始方案。\n"
+        "15. 只返回 JSON，不要输出解释文字。"
     )
     user_prompt = json.dumps(
         {
@@ -1026,6 +1051,7 @@ def extract_hypothesis_and_exp_from_reports(
         if cached_exp is not None:
             return cached_exp
 
+    # Extract text from PDF and parse factors using LLM
     docs_dict = load_and_process_pdfs_for_paper_factor(report_file_path)
     loader = FactorExperimentLoaderFromPDFfiles()
     exp = loader.load_from_docs_dict(
@@ -1120,6 +1146,7 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
             self.coder.with_knowledge = True
             self.coder.knowledge_self_gen = False
             self.coder.max_loop = 5
+            self.coder.settings.v2_error_summary = True
             self.coder.stop_eval_chain_on_fail = True
         processed_report_paths = _load_processed_report_paths()
         if report_paths is not None:
@@ -1472,6 +1499,41 @@ def _export_single_factor(task, workspace, task_feedback, source_report_path, so
         source_report_path=source_report_path,
         source_report_title=source_report_title,
     )
+
+    # Also export to remote mount: /mnt/remote_e/paper_factors/文献因子/<ReportTitle>/
+    remote_base = Path("/mnt/remote_e/paper_factors/文献因子")
+    if remote_base.exists():
+        try:
+            report_title_slug = FactorFBWorkspace._sanitize_factor_name(
+                source_report_title or Path(source_report_path).stem
+            ) if (source_report_title or source_report_path) else "unknown_report"
+            remote_dir = remote_base / report_title_slug
+            remote_dir.mkdir(parents=True, exist_ok=True)
+
+            factor_name = FactorFBWorkspace._sanitize_factor_name(str(df.columns[0]))
+            remote_parquet = remote_dir / f"{factor_name}.parquet"
+            df.to_parquet(remote_parquet, engine="pyarrow")
+
+            remote_meta = remote_dir / f"{factor_name}.meta.json"
+            metadata = {
+                "factor_name": factor_name,
+                "display_name": str(df.columns[0]),
+                "factor_description": getattr(task, "factor_description", None),
+                "factor_formulation": getattr(task, "factor_formulation", None),
+                "variables": getattr(task, "variables", None),
+                "rows": len(df),
+                "non_null": int(df.iloc[:, 0].notna().sum()),
+                "ic_score": full_sample_ic,
+                "tags": tags,
+                "export_time": datetime.now().isoformat(timespec="seconds"),
+            }
+            if source_report_title:
+                metadata["source_report_title"] = source_report_title
+            if source_report_path:
+                metadata["source_report_path"] = str(source_report_path)
+            remote_meta.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        except (OSError, ValueError) as exc:
+            logger.warning(f"Failed to export factor to remote mount {remote_base}: {exc}")
     return True
 
 

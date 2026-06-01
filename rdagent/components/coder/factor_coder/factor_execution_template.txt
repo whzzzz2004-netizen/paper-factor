@@ -12,4 +12,4 @@ else:
 cls = feature_engineering_cls()
 cls.fit(valid_df)
 new_feat = cls.transform(valid_df)
-new_feat.to_hdf("result.h5", key="data", mode="w")
+new_feat.to_parquet("result.parquet")

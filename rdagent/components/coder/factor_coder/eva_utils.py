@@ -350,9 +350,12 @@ def _safe_float(x: float | None) -> float | None:
     return xf
 
 
-def _compute_raw_factor_value_quality(gen_df: pd.DataFrame) -> dict[str, Any]:
+def _compute_raw_factor_value_quality(gen_df: pd.DataFrame | pd.Series) -> dict[str, Any]:
     """Cheap distributional checks on the generated factor column (before label merge)."""
     out: dict[str, Any] = {}
+    # pd.read_parquet on a single-column result may return a Series
+    if isinstance(gen_df, pd.Series):
+        gen_df = gen_df.to_frame()
     if gen_df is None or gen_df.empty or gen_df.shape[1] < 1:
         out["factor_quality_error"] = "empty_or_missing_factor_column"
         return out
@@ -888,15 +891,17 @@ class FactorValueEvaluator(FactorEvaluator):
         # Combine all conclusions into a single string
         conclusion_str = "\n".join(conclusions)
 
-        if gt_implementation is not None and (equal_value_ratio_result > 0.99) or high_correlation_result:
+        if gt_implementation is not None and (equal_value_ratio_result > 0.99 or high_correlation_result):
             decision_from_value_check = True
         elif (
-            row_result is not None
-            and row_result <= 0.99
-            or output_format_result is False
+            output_format_result is False
             or daily_check_result is False
             or numeric_check_result is False
             or inf_evaluate_res is False
+        ):
+            decision_from_value_check = False
+        elif gt_implementation is not None and (
+            (row_result is not None and row_result <= 0.99)
             or ic_check_result is False
         ):
             decision_from_value_check = False

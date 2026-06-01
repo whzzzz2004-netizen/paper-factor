@@ -64,21 +64,40 @@ evolving_strategy_factor_implementation_v1_system: |-
   import pandas as pd; import numpy as np; from pathlib import Path; import os
   DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or ".")
   def calculate_<Factor_Name>():
-      df = pd.read_hdf(DATA_DIR / "daily_pv.h5", key="data")  # MultiIndex: ['datetime','instrument']
-      # 在此实现因子逻辑 (详见下方规则)
+      # 1. 读取数据 → reset_index 扁平化（datetime, instrument 变成普通列）
+      df = pd.read_hdf(DATA_DIR / "daily_pv.h5", key="data")
+      df = df.reset_index()
+      # 现在 df 列: ['datetime', 'instrument', '$open', '$close', ...]
+
+      # 2. 按 instrument, datetime 排序保证组内时间顺序
+      df = df.sort_values(['instrument', 'datetime'])
+
+      # 3. 在此实现因子逻辑
+      #    - 跨股票序列运算（shift/rolling/expanding/diff）用 groupby('instrument')
+      #    - 横截面运算（rank/标准化）用 groupby('datetime')
+      #    - datetime 列是 datetime64 类型，可直接用 .dt 访问器
+
+      # ... 你的因子计算代码 ...
+      df['<factor_column>'] = ...
+
+      # 4. 处理无穷值
       df['<factor_column>'] = df['<factor_column>'].replace([np.inf, -np.inf], np.nan)
-      result_df = df[['<factor_column>']].copy()
-      result_df.columns = ['<Factor_Name>']
-      result_df.to_hdf("result.h5", key="data")
+
+      # 5. 输出 parquet: pivot 为日期为行、股票为列的矩阵
+      result = df[['datetime', 'instrument', '<factor_column>']].drop_duplicates(subset=['datetime', 'instrument'])
+      result = result.pivot(index='datetime', columns='instrument', values='<factor_column>')
+      result.index.name = 'datetime'
+      result.to_parquet("result.parquet")
   if __name__ == '__main__':
       calculate_<Factor_Name>()
   ```
 
   daily_pv.h5 可用列（⚠️ 这些列确实存在，直接使用即可）：
-  - $open, $close, $high, $low, $volume, $factor（复权因子）, $market_cap（总市值）, $industry_sw（申万行业）, $turnover（换手率）
-  - 索引：MultiIndex ['datetime', 'instrument']
-  minute_pv.h5 可用列：$open, $high, $low, $close, $volume, $vwap
-  - 索引：MultiIndex ['datetime', 'instrument']
+  - 价量列：$open, $close, $high, $low, $volume, $factor（复权因子）, $pct_chg（涨跌幅）, $pre_close（前收盘价）, $turnover_rate（换手率，注意不是$turnover）
+  - 基本面因子列（共111个）：$盈利因子1~$盈利因子14, $价值因子1~$价值因子12, $成长因子1~$成长因子16, $运营因子1~$运营因子22, $杠杆因子1~$杠杆因子8, $质量因子1~$质量因子15, $现金流因子1~$现金流因子9, $其他因子1~$其他因子13, $股本因子1~$股本因子2
+  - 读取后需 reset_index()，得到的 datetime 列是 datetime64 类型，可直接使用 .dt 访问器
+  minute_pv.h5 可用列：$open, $high, $low, $close, $volume, $vwap, $factor（复权因子）, $return（分钟收益率）
+  - 读取后需 reset_index() 再使用
 
   GPU 使用说明（适用于深度学习因子）：
   环境中已安装 PyTorch。如果因子需要使用深度学习模型（如神经网络、LSTM、Transformer、embedding 等），请自动检测 GPU 并使用：
@@ -89,34 +108,38 @@ evolving_strategy_factor_implementation_v1_system: |-
   5. 如果 GPU 不可用，代码会自动降级到 CPU 计算，无需报错
   对于纯 pandas/numpy 的传统因子，无需使用 GPU。
 
-    重要规则 —— 数据类型与索引（必读，否则极易写出隐性 bug）：
+    重要规则 —— 数据类型与索引：
 
-  1. 从 HDF5 读取的数据是 MultiIndex DataFrame，索引为 ['datetime', 'instrument']。每只股票在每个交易日有一行。
-  2. 从 MultiIndex DataFrame 取出的单列（如 df['$close']）是普通 pandas Series，其索引保持 MultiIndex。⚠️ 对其做 .shift()、.diff()、.pct_change() 等涉及前后行运算时，必须用 groupby(level='instrument') 包裹，否则会跨越 instrument 边界，把 A 股票的数据移到 B 股票上。示例：df.groupby(level='instrument')['$close'].shift(2)。
-  3. 对 MultiIndex 日频数据做跨股票计算（rolling、expanding、累计等）时，用 groupby(level='instrument')；做横截面操作时，用 groupby(level='datetime')。
-  4. 不要对 MultiIndex 数据做 reset_index() 除非绝对必要。如果 reset_index 了，最终必须 set_index(['datetime', 'instrument']) 恢复。
-  5. 除非绝对必要，不要使用 unstack()；如果使用，保存前必须恢复 MultiIndex。
-  6. 不要创建名为 'datetime' 或 'instrument' 的普通列（除非已 reset_index 并会在之后 set_index 回来）。
-  7. 分钟数据聚合到日频：先 reset_index() → 用 df_min['datetime'].dt.normalize() 创建 date 列（⚠️ 必须用 .dt.normalize() 而非 .dt.date，因为 .dt.date 返回 Python datetime.date 对象，与主 DataFrame 的 pandas.Timestamp 索引类型不匹配，join 时会全部变 NaN） → groupby(['date', 'instrument']) → rename date 为 datetime → set_index(['datetime', 'instrument'])。
+  1. 数据读取后需先 reset_index() 扁平化（模板已包含此步骤）。此后所有列（datetime, instrument, $open, ...）都是普通列。
+  2. 做 .shift()、.diff()、.pct_change()、.rolling()、.expanding() 等涉及前后行运算时，必须用 groupby('instrument') 包裹，否则会跨越股票边界。示例：df.groupby('instrument')['$close'].shift(2)。
+  3. 横截面操作（rank、标准化等）用 groupby('datetime')。
+  4. 分钟数据聚合到日频：→ reset_index() → 用 df_min['datetime'].dt.normalize() 创建 date 列（⚠️ 必须用 .normalize() 而非 .date()，因为 .date() 返回 Python date 对象，与 datetime64 类型不匹配） → groupby(['date', 'instrument']) → rename date 为 datetime → 合并回主表。
 
-  ⚠️ 重要规则 —— numpy 与 pandas 混用（极易出错！最常见的 bug 来源）：
+  ⚠️ 重要规则 —— numpy 与 pandas 混用：
 
-  8. pd.cut() 和 pd.qcut() 返回的是 pandas Series，其索引是整数位置 [0, 1, 2, ...]，不是数据的 MultiIndex。
-  9. np.sqrt()、np.where()、np.arctan2() 等 numpy 函数返回的是 numpy ndarray（无索引）。
-  10. 当 numpy ndarray 和 pandas Series 做算术运算时（例如 np_arr + pd_series * 50），pandas 按索引对齐，结果是一个索引为 [0, 1, 2, ...] 的 Series。
-  11. 如果后续用这个 [0,1,2,...] 索引的 Series 去创建以 instrument 名称为索引的新 Series（例如 pd.Series(result, index=df.index.get_level_values('instrument'))），索引完全对不上 → 结果全是 NaN，不报错！
-  12. 解决方案：涉及 numpy 和 pandas 混算的表达式，在最后加 .values 转为 numpy array。例如：region_code = (numpy_arr + (pd_cut_result - 1) * 50).values
-  13. 或者全程只用一种类型：全 numpy（所有变量都加 .values）或全 pandas（显式管理每个 Series 的索引）。
+  5. 因模板已 reset_index()，DataFrame 的索引为整数位置 [0,1,2,...]，与 numpy array 对齐。正常情况下不存在索引错位问题。
+  6. 如果明确遇到索引问题，加 .values 统一转为 numpy array 即可。
+
+  重要规则 —— 深度学习因子的训练/预测数据分割（必读）：
+
+  7. ⚠️ 本地数据仅约 2.5 年（2024-01 至 2026-05），约 570 个交易日。不要假设有多年数据可用，不要按年度（year）分割数据。
+  8. 使用全部可用数据同时做训练和预测：所有有完整特征窗口的日期都应输出因子值，不要在最后留出一段"预测集"不输出。
+  9. 如需训练/验证分割，使用 80%/20% 按时间顺序分割，但验证集也要输出因子值。
+  10. 训练完成后，对所有有完整特征窗口的日期进行预测——即训练集和验证集都要预测，不要只预测其中一部分。
+  11. 所有预测结果合并为一个 DataFrame 输出，不要遗漏任何日期的任何股票。
+  12. 如果训练完成后预测值全为常数或全为 NaN，检查训练过程是否收敛：添加梯度裁剪（max_norm=1.0）、降低学习率、增加训练轮数或减小模型容量。因子值全 NaN 会被评估器直接拒绝。
+  13. ⚠️ 不要在代码中检查样本量是否足够。即使可用样本很少（如只有几十个），也要正常训练并输出预测值。不要打印 DATA_UNAVAILABLE 来跳过样本量不足的情况。
 
   重要规则 —— 因子值与输出格式：
 
   14. 必须把 np.inf 和 -np.inf 替换为 np.nan。
-  15. 结果 DataFrame 必须使用 MultiIndex ['datetime', 'instrument']，且只能有一列，列名必须是因子名。
+  15. 结果 parquet 文件必须使用日期(datetime)为行索引、股票代码(instrument)为列的矩阵格式。只包含因子值，索引名必须为 `datetime`。
   16. 因子值必须是数值型。不要输出字符串、类别名或中文标签。如果因子是类别/阶段状态，必须先映射为数值编码（如 0,1,2,-1），并在注释中说明映射。
   17. **核心约束：T 日的因子值只能由 T 日及以前（≤T）的数据计算，不得使用任何 T 日之后的信息。** 构建查表（lookup table）时用 shift(-N) 计算历史 label 是合法的，只要查询时仅使用 ≤T 的历史数据、不将未来信息带入最终因子值。
   18. 最终输出必须是日频：每个交易日、每只股票一个因子值。
   19. 只能使用场景数据描述中明确列出的文件和字段，以及能由这些字段按因子定义或 paper_factor 知识库中的确定性口径计算出的派生量。不要假设存在额外表、字段或隐藏数据。
-  20. 如果因子需要的数据不可用，且不能由已有字段通过明确、无歧义、无未来信息的公式计算得出：打印 `DATA_UNAVAILABLE: <原因>`，退出且不写 result.h5。
+  20. 如果因子需要的数据不可用，且不能由已有字段通过明确、无歧义、无未来信息的公式计算得出：打印 `DATA_UNAVAILABLE: <原因>`，退出且不写 result.parquet。
+      ⚠️ 注意：缺少足够的历史数据（如研报要求9年但只有2.5年、研报要求60个交易日但股票上市不足60天等）不属于"数据不可用"。不要因为样本量少、时间窗口短就打印 DATA_UNAVAILABLE。用可用数据正常计算即可，有多少用多少。
   21. 不允许用无关代理变量替代缺失数据。特别是成交量 `$volume` 不能替代换手率 `turnover`；如果因子定义需要换手率但本地没有 `$turnover`、`$turnover_rate`、`$turnover_rate_f` 或流通股本/总股本字段，必须输出 `DATA_UNAVAILABLE: 缺少换手率或股本数据，不能用成交量替代`。
   22. 代码应保持简洁，优先使用清晰的 pandas/groupby/rolling 表达式；不要写与因子无关的复杂框架、训练循环或兜底近似。
   23. 日频窗口必须是整数交易日数（如 20、60、120），不能用 pd.DateOffset 或 “30D”。
@@ -124,11 +147,11 @@ evolving_strategy_factor_implementation_v1_system: |-
 
   重要规则 —— 因子定义与事件逻辑：
 
-  24. 变量说明是强约束。如果写着 T-2日（涨停日）、limit-up day 等，必须识别该事件日；条件不满足时因子值设为 NaN。
-  25. 不要用常识发明判定规则。中间概念只能使用因子信息或 paper_factor 知识库的定义。缺失时输出 `DATA_UNAVAILABLE`。
-  26. 严格遵守频率和时间逻辑。T 日=信号日期，不是事件日。只有条件满足时输出数值，否则 NaN。
-  27. 不要自创阈值。含糊描述（如”合理设定””自行设定”）→ 输出 `DATA_UNAVAILABLE: 缺少可执行的阈值定义`。
-  28. 布尔序列 shift() 后必须 fillna(False)。禁止对含 NaN 的布尔序列直接使用 ~、&、|。
+  25. 变量说明是强约束。如果写着 T-2日（涨停日）、limit-up day 等，必须识别该事件日；条件不满足时因子值设为 NaN。
+  26. 不要用常识发明判定规则。中间概念只能使用因子信息或 paper_factor 知识库的定义。缺失时输出 `DATA_UNAVAILABLE`。
+  27. 严格遵守频率和时间逻辑。T 日=信号日期，不是事件日。只有条件满足时输出数值，否则 NaN。
+  28. 不要自创阈值。含糊描述（如”合理设定””自行设定”）→ 输出 `DATA_UNAVAILABLE: 缺少可执行的阈值定义`。
+  29. 布尔序列 shift() 后必须 fillna(False)。禁止对含 NaN 的布尔序列直接使用 ~、&、|。
 
   请按以下 JSON 格式返回代码。JSON 输出结构示例：
   {

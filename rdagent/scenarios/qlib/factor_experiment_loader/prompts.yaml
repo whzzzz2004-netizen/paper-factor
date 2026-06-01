@@ -61,12 +61,11 @@ extract_factor_formulation_system: |-
     6. 禁止在 formulation 或 variables 中使用“同 XXX”“同上”“其他参数同”“具体架构见研报”“参考前文”“见表 X/图 X”等引用式描述。后续代码生成只依赖当前 JSON，不会再读取研报或其他因子，因此所有共享设定都必须在当前因子内完整展开；无法展开时明确标记缺少哪些架构、参数、标签或数据定义。
     7. 对机器学习/深度学习因子，必须在当前因子中完整说明模型结构和训练目标，包括输入字段、输入窗口、预测 horizon、标签定义、样本构造、标准化/去极值方式、模型类型、层数、隐藏维度、loss、训练/验证切分、随机种子或复现实验需要的固定参数。不能只写“同某模型”“newloss”“seed3”或“具体见研报”。
 
-    本地复现仅可使用以下数据源：
+    本地复现可使用以下数据源：
 
-    1. 日频价量数据：daily open、high、low、close、volume、amount、average/VWAP-like price、paused status、turnover rate、turnover，前提是这些字段在本地 schema 中明确存在。
-    2. 分钟线数据：minute open、high、low、close、volume、amount、factor、VWAP、paused status，前提是这些字段在本地 schema 中明确存在。
-
-    除非后续本地 schema 明确列出，否则用户没有财务报表、资产负债表、利润表、现金流量表、公司基本面、市值、总股本、流通股本、行业分类、市场分类、分析师预测、盘口报价、逐笔成交、新闻、文本、宏观数据或任何隐藏表。
+    1. 日频价量数据（daily_pv.h5）：$open、$close、$high、$low、$volume、$factor（复权因子）、$pct_chg（涨跌幅）、$pre_close（前收盘价）、$turnover_rate（换手率）。
+    2. 日频基本面因子（daily_pv.h5 中共111个）：$盈利因子1~$盈利因子14、$价值因子1~$价值因子12、$成长因子1~$成长因子16、$运营因子1~$运营因子22、$杠杆因子1~$杠杆因子8、$质量因子1~$质量因子15、$现金流因子1~$现金流因子9、$其他因子1~$其他因子13、$股本因子1~$股本因子2。
+    3. 分钟线数据（minute_pv.h5）：$open、$close、$high、$low、$volume、$vwap、$factor（复权因子）、$return（分钟收益率）。
 
     请只使用可用的日频/分钟价量数据展开公式。如果某个因子需要不可用数据或未定义中间概念，请保留论文公式，但在变量解释中明确标记所需变量不可用，并说明该因子应跳过，而不是用无关的价量代理变量近似。若因子数量超过 token 限制，在不超过限制的前提下尽可能多抽取公式。注意避免 JSON 中的特殊字符语法错误，尤其是 LaTeX 中的反斜杠和下划线。
 
@@ -130,16 +129,10 @@ factor_viability_system: |-
     3. LaTeX 格式的因子公式；
     4. 因子公式中变量和函数的说明。
 
-    用户只有以下源数据：
-    1. 日频 OHLCV 数据：daily open、close、high、low、volume 和 adjustment factor；
-    2. 分钟线数据：minute open、close、high、low、volume、amount，以及 data schema 中明确列出的其他列。
-
-    除非因子描述明确表明可由上述数据源推导，否则用户没有以下数据：
-    1. 公司财务报表，例如资产负债表、利润表、现金流量表；
-    2. 股票基本面数据，例如市值、自由流通股本、账面价值、行业分类、股东结构等；
-    3. 分析师预期、一致预期、评级、目标价；
-    4. 新闻、文本、事件、情绪、宏观、另类数据或逐笔成交数据；
-    5. 任何未明确列出的隐藏表。
+    用户拥有以下源数据：
+    1. 日频价量数据（daily_pv.h5）：$open、$close、$high、$low、$volume、$factor（复权因子）、$pct_chg（涨跌幅）、$pre_close（前收盘价）、$turnover_rate（换手率）；
+    2. 日频基本面因子（daily_pv.h5 中共111个预计算因子）：包括盈利、价值、成长、运营、杠杆、质量、现金流、其他、股本等大类。列名格式为 $盈利因子1、$价值因子1 等；
+    3. 分钟线数据（minute_pv.h5）：$open、$close、$high、$low、$volume、$vwap、$factor（复权因子）、$return（分钟收益率）。
 
 
     可实现因子应满足以下条件：

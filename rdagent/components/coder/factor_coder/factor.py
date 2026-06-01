@@ -331,13 +331,20 @@ class FactorFBWorkspace(FBWorkspace):
         self.EXPORTED_PARQUET_DIR.mkdir(parents=True, exist_ok=True)
         export_dir = self._resolve_export_dir(review_metadata)
         export_dir.mkdir(parents=True, exist_ok=True)
-        factor_name = self._sanitize_factor_name(str(df.columns[0]))
+        # Use task factor_name when available (more reliable than LLM-named column)
+        factor_name = self._sanitize_factor_name(
+            str(self.target_task.factor_name) if self.target_task is not None and hasattr(self.target_task, 'factor_name') and self.target_task.factor_name
+            else str(df.columns[0])
+        )
         latest_path = export_dir / f"{factor_name}.parquet"
         current_hash = self._hash_factor_dataframe(df)
 
         if latest_path.exists():
             try:
                 existing_df = pd.read_parquet(latest_path)
+                if not isinstance(existing_df.index, pd.MultiIndex):
+                    existing_df = existing_df.stack().to_frame(df.columns[0])
+                    existing_df.index.names = ['datetime', 'instrument']
                 if self._hash_factor_dataframe(existing_df) == current_hash:
                     self._write_factor_code_snapshot(latest_path)
                     self._write_factor_metadata(factor_name, latest_path, df, current_hash, review_metadata)
@@ -345,10 +352,16 @@ class FactorFBWorkspace(FBWorkspace):
                     refresh_factor_dashboard()
                     return
             except Exception:
-                # If the previous parquet cannot be read, overwrite it with the current successful output.
                 pass
 
-        df.to_parquet(latest_path, engine="pyarrow")
+        # 转换为日期为行、股票为列的矩阵格式输出
+        if isinstance(df.index, pd.MultiIndex):
+            val_col = str(df.columns[0])
+            export_df = df.reset_index().pivot(index='datetime', columns='instrument', values=val_col)
+            export_df.columns.name = None
+        else:
+            export_df = df
+        export_df.to_parquet(latest_path, engine="pyarrow")
         self._write_factor_code_snapshot(latest_path)
         self._write_factor_metadata(factor_name, latest_path, df, current_hash, review_metadata)
         self._clear_rejected_marker(factor_name, review_metadata)
@@ -393,8 +406,19 @@ class FactorFBWorkspace(FBWorkspace):
             import pandas as pd
 
             DATA_DIR = Path({str(source_data_path)!r})
+            WORKSPACE_DIR = Path("/workspace/factor_workspace")
             os.environ["FACTOR_DATA_DIR"] = str(DATA_DIR)
             os.environ["RDAGENT_FACTOR_DATA_DIR"] = str(DATA_DIR)
+
+            # Ensure CWD is valid — some libraries (e.g. PyTorch DataLoader with
+            # num_workers>0, CUDA runtime) can invalidate the working directory
+            # during long-running DL training, which causes to_hdf/to_parquet("result.*")
+            # to fail with "FileNotFoundError: os.getcwd()".
+            try:
+                os.chdir(str(WORKSPACE_DIR))
+            except FileNotFoundError:
+                WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+                os.chdir(str(WORKSPACE_DIR))
 
             def _resolve_data_path(path_like):
                 if path_like is None:
@@ -460,7 +484,7 @@ class FactorFBWorkspace(FBWorkspace):
             .replace(str(site.getsitepackages()[0]), r"/path/to/site-packages")
         )
         if len(feedback) > 2000:
-            feedback = feedback[:1000] + "....hidden long error message...." + feedback[-1000:]
+            feedback = feedback[:300] + "....hidden long error message...." + feedback[-1700:]
         return feedback
 
     def _execute_locally(
@@ -519,7 +543,7 @@ class FactorFBWorkspace(FBWorkspace):
         if call_factor_py is True:
             4. execute the code
         else:
-            4. generate a script from template to import the factor.py dump get the factor value to result.h5
+            4. generate a script from template to import the factor.py dump get the factor value to result file
         5. read the factor value from the output file in the workspace path folder
         returns the execution feedback as a string and the factor value as a pandas dataframe
 
@@ -609,13 +633,21 @@ class FactorFBWorkspace(FBWorkspace):
                     raise CustomRuntimeError(execution_feedback) from e
                 execution_error = CustomRuntimeError(execution_feedback)
 
-            workspace_output_file_path = self.workspace_path / "result.h5"
+            workspace_output_file_path = self.workspace_path / "result.parquet"
             if workspace_output_file_path.exists() and execution_success:
                 try:
-                    executed_factor_value_dataframe = pd.read_hdf(workspace_output_file_path)
+                    executed_factor_value_dataframe = pd.read_parquet(workspace_output_file_path)
+                    if isinstance(executed_factor_value_dataframe, pd.Series):
+                        executed_factor_value_dataframe = executed_factor_value_dataframe.to_frame()
+                    # 如果 parquet 是日期为行、股票为列的矩阵格式，转回 MultiIndex 供内部评估用
+                    if not isinstance(executed_factor_value_dataframe.index, pd.MultiIndex):
+                        executed_factor_value_dataframe = (
+                            executed_factor_value_dataframe.stack().to_frame('value')
+                        )
+                        executed_factor_value_dataframe.index.names = ['datetime', 'instrument']
                     execution_feedback += self.FB_OUTPUT_FILE_FOUND
                 except Exception as e:
-                    execution_feedback += f"Error found when reading hdf file: {e}"[:1000]
+                    execution_feedback += f"Error found when reading parquet result: {e}"[:1000]
                     executed_factor_value_dataframe = None
             else:
                 execution_feedback += self.FB_OUTPUT_FILE_NOT_FOUND

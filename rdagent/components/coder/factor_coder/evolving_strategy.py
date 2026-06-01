@@ -11,6 +11,7 @@ from rdagent.components.coder.CoSTEER.evolving_strategy import (
     MultiProcessEvolvingStrategy,
 )
 from rdagent.components.coder.CoSTEER.knowledge_management import (
+    CoSTEERKnowledge,
     CoSTEERQueriedKnowledge,
     CoSTEERQueriedKnowledgeV2,
 )
@@ -81,6 +82,34 @@ class FactorMultiProcessEvolvingStrategy(MultiProcessEvolvingStrategy):
         **kwargs,
     ) -> Generator:
         self._mark_stalled_tasks_from_trace(evo, queried_knowledge, evolving_trace)
+
+        # Inject evolving_trace data into queried_knowledge so the LLM can see its
+        # previous code across max_loop iterations.  Without this, `knowledge_self_gen=False`
+        # prevents working_trace_knowledge from being populated, and the prompt's
+        # queried_former_failed_knowledge section is empty — the LLM never sees its own code.
+        if (
+            queried_knowledge is not None
+            and isinstance(queried_knowledge, CoSTEERQueriedKnowledgeV2)
+            and len(evolving_trace) > 0
+        ):
+            for task_index, target_task in enumerate(evo.sub_tasks):
+                task_info = target_task.get_task_information()
+                if task_info not in queried_knowledge.task_to_former_failed_traces:
+                    queried_knowledge.task_to_former_failed_traces[task_info] = ([], None)
+                former_list, latest = queried_knowledge.task_to_former_failed_traces[task_info]
+
+                # Collect previous attempts from the evolving_trace (all entries before
+                # the current in-progress iteration).
+                for step in evolving_trace:
+                    if step.feedback is not None and task_index < len(step.feedback):
+                        fb = step.feedback[task_index]
+                        if fb is not None and step.evolvable_subjects is not None:
+                            ws = step.evolvable_subjects.sub_workspace_list[task_index]
+                            if ws is not None:
+                                former_list.append(
+                                    CoSTEERKnowledge(target_task, ws, fb)
+                                )
+
         yield from super().evolve_iter(
             evo=evo,
             queried_knowledge=queried_knowledge,
@@ -158,6 +187,7 @@ class FactorMultiProcessEvolvingStrategy(MultiProcessEvolvingStrategy):
                     "from pathlib import Path",
                     "def calculate_",
                     "to_hdf(",
+                    "to_parquet(",
                 )
             )
             if looks_like_python:
@@ -184,7 +214,37 @@ class FactorMultiProcessEvolvingStrategy(MultiProcessEvolvingStrategy):
             else []
         )
 
-        queried_former_failed_knowledge_to_render = queried_former_failed_knowledge
+        # 只保留最近 2 次失败记录，更早的用一句摘要压缩
+        if len(queried_former_failed_knowledge) > 2:
+            earlier_errors = []
+            for k in queried_former_failed_knowledge[:-2]:
+                fb = k.feedback or ""
+                exec_fb = getattr(fb, "execution_feedback", "") or ""
+                # 从 traceback 里提取错误类型
+                err_type = "unknown"
+                for line in exec_fb.splitlines():
+                    line = line.strip()
+                    if line.startswith(("KeyError", "ValueError", "AttributeError",
+                                        "SyntaxError", "TypeError", "IndexError",
+                                        "NameError", "ZeroDivisionError", "ImportError",
+                                        "ModuleNotFoundError", "FileNotFoundError",
+                                        "RuntimeError", "OSError", "MemoryError",
+                                        "DataUnavailable", "NotImplementedError")):
+                        err_type = line.split(":")[0].split("(")[0].strip()
+                        break
+                earlier_errors.append(err_type)
+            summary = " | ".join(dict.fromkeys(earlier_errors))  # deduplicate preserving order
+            summary_text = f"（更早的 {len(queried_former_failed_knowledge) - 2} 次尝试：{summary}）"
+            # 保留最近 2 条，第一条替换为压缩摘要
+            queried_former_failed_knowledge_to_render = queried_former_failed_knowledge[-2:]
+            # 把摘要存入第一条的 feedback 中，供模板渲染
+            first = queried_former_failed_knowledge_to_render[0]
+            if first.feedback is None:
+                first.feedback = CoSTEERSingleFeedback()
+            existing = getattr(first.feedback, "execution_feedback", "") or ""
+            first.feedback.execution_feedback = (summary_text + "\n" + existing).strip()
+        else:
+            queried_former_failed_knowledge_to_render = queried_former_failed_knowledge
 
         latest_attempt_to_latest_successful_execution = queried_knowledge.task_to_former_failed_traces[
             target_factor_task_information
