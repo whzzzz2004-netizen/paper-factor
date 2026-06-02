@@ -653,10 +653,8 @@ def validate_workspace_ready(*, require_factor_data: bool = True) -> dict[str, l
     data_messages: list[str] = []
     if require_factor_data:
         checks = [
-            (FACTOR_DATA_DIR / "daily_pv.h5", _is_valid_daily_factor_file),
-            (FACTOR_DATA_DIR / "minute_pv.h5", lambda path: path.exists()),
-            (FACTOR_DATA_DEBUG_DIR / "daily_pv.h5", _is_valid_daily_factor_file),
-            (FACTOR_DATA_DEBUG_DIR / "minute_pv.h5", lambda path: path.exists()),
+            (FACTOR_DATA_DIR / "stock_data" / "daily" / "stock_list.json", lambda path: path.exists()),
+            (FACTOR_DATA_DIR / "stock_data" / "minute" / "stock_list.json", lambda path: path.exists()),
         ]
         missing = [str(path) for path, checker in checks if not checker(path)]
         if missing:

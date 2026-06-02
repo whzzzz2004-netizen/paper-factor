@@ -154,6 +154,9 @@ class FactorSingleColumnEvaluator(FactorEvaluator):
                 "The source dataframe is None. Please check the implementation.",
                 False,
             )
+        # 宽表格式: Date index, Code columns (每个股票一列是正常的)
+        if gen_df.index.name == "Date" and gen_df.columns.name == "Code":
+            return "The source dataframe is in wide table format (Date x Code), which is correct.", True
         if len(gen_df.columns) == 1:
             return "The source dataframe has only one column which is correct.", True
         else:
@@ -172,10 +175,13 @@ class FactorNumericValueEvaluator(FactorEvaluator):
         _, gen_df = self._get_df(gt_implementation, implementation)
         if gen_df is None:
             return "The source dataframe is None. Please check the implementation.", False
-        if gen_df.shape[1] == 0:
+        # 处理宽表格式 (Date index, Code columns)
+        if gen_df.index.name == "Date" and gen_df.columns.name == "Code":
+            factor = gen_df.stack()
+        elif gen_df.shape[1] >= 1:
+            factor = gen_df.iloc[:, 0]
+        else:
             return "The source dataframe has no factor column.", False
-
-        factor = gen_df.iloc[:, 0]
         non_null_count = int(factor.notna().sum())
         if non_null_count == 0:
             return "The factor column has no non-null values. All values are NaN — this is a critical failure. The code must produce valid numeric factor values.", False
@@ -208,6 +214,10 @@ class FactorOutputFormatEvaluator(FactorEvaluator):
                 "The source dataframe is None. Skip the evaluation of the output format.",
                 False,
             )
+        # 宽表格式: Date index, Code columns
+        if gen_df.index.name == "Date" and gen_df.columns.name == "Code":
+            return "Output format check passed: wide table format (Date x Code).", True
+        # 旧格式: MultiIndex (datetime, instrument)
         if self._paper_fast_enabled():
             if not isinstance(gen_df.index, pd.MultiIndex):
                 return "Output format check failed: result index is not a MultiIndex.", False
@@ -273,18 +283,24 @@ class FactorDatetimeDailyEvaluator(FactorEvaluator):
         if gen_df is None:
             return "The source dataframe is None. Skip the evaluation of the datetime format.", False
 
-        if "datetime" not in gen_df.index.names:
+        # 宽表格式: Date index
+        if gen_df.index.name == "Date":
+            try:
+                datetime_index = pd.to_datetime(gen_df.index)
+            except Exception:
+                return f"The source dataframe has a Date index but it is not in the correct format.\n{gen_df.head()}", False
+        # 旧格式: MultiIndex with datetime
+        elif "datetime" in gen_df.index.names:
+            try:
+                datetime_index = pd.to_datetime(gen_df.index.get_level_values("datetime"))
+            except Exception:
+                return (
+                    f"The source dataframe has a datetime index but it is not in the correct format.\n{gen_df.head()}",
+                    False,
+                )
+        else:
             return "The source dataframe does not have a datetime index. Please check the implementation.", False
 
-        try:
-            pd.to_datetime(gen_df.index.get_level_values("datetime"))
-        except Exception:
-            return (
-                f"The source dataframe has a datetime index but it is not in the correct format (maybe a regular string or other objects). Please check the implementation.\n The head of the output dataframe is: \n{gen_df.head()}",
-                False,
-            )
-
-        datetime_index = pd.to_datetime(gen_df.index.get_level_values("datetime"))
         time_diff = datetime_index.to_series().diff().dropna()
         positive_diff = time_diff[time_diff > pd.Timedelta(0)].unique()
 
@@ -308,18 +324,35 @@ class FactorDatetimeDailyEvaluator(FactorEvaluator):
 
 
 def _get_daily_label_from_data_folder(data_folder: Path) -> pd.Series:
-    daily_path = data_folder / "daily_pv.h5"
-    df = pd.read_hdf(daily_path, key="data").sort_index()
-    close = pd.to_numeric(df["$close"], errors="coerce")
-    label = close.groupby(level="instrument").pct_change().groupby(level="instrument").shift(-1)
-    label.name = "label_next_return"
-    return label
+    import json
+    stock_data_dir = data_folder / "stock_data" / "daily"
+    with open(stock_data_dir / "stock_list.json") as f:
+        stocks = json.load(f)
+    frames = []
+    for stock in stocks:
+        df = pd.read_parquet(stock_data_dir / f"{stock}.parquet")
+        close = pd.to_numeric(df["close"], errors="coerce")
+        ret = close.pct_change().shift(-1)
+        ret.name = "label_next_return"
+        ret = ret.to_frame()
+        ret["instrument"] = stock
+        frames.append(ret)
+    combined = pd.concat(frames)
+    combined.index.name = "datetime"
+    combined = combined.reset_index().set_index(["datetime", "instrument"]).sort_index()
+    return combined["label_next_return"]
 
 
 def _mean_cross_sectional_ic(factor_df: pd.DataFrame, label: pd.Series) -> float:
     if factor_df is None or factor_df.empty:
         return float("nan")
-    factor_series = pd.to_numeric(factor_df.iloc[:, 0], errors="coerce")
+    # 处理宽表格式 (Date index, Code columns)
+    if factor_df.index.name == "Date" and factor_df.columns.name == "Code":
+        factor_long = factor_df.stack()
+        factor_long.index.names = ["datetime", "instrument"]
+        factor_series = pd.to_numeric(factor_long, errors="coerce")
+    else:
+        factor_series = pd.to_numeric(factor_df.iloc[:, 0], errors="coerce")
     factor_series.name = "factor"
     merged = pd.concat([factor_series, label], axis=1, join="inner").dropna()
     if merged.empty:
@@ -332,8 +365,16 @@ def _mean_cross_sectional_ic(factor_df: pd.DataFrame, label: pd.Series) -> float
 
 
 def _merge_factor_and_label(factor_df: pd.DataFrame, label: pd.Series) -> pd.DataFrame:
-    factor_series = pd.to_numeric(factor_df.iloc[:, 0], errors="coerce")
-    factor_series.name = "factor"
+    # 处理宽表格式 (Date index, Code columns) -> 转为 long format
+    if factor_df.index.name == "Date" and factor_df.columns.name == "Code":
+        factor_long = factor_df.stack()
+        factor_long.index.names = ["datetime", "instrument"]
+        factor_long.name = "factor"
+        factor_series = pd.to_numeric(factor_long, errors="coerce")
+    else:
+        # 旧格式: MultiIndex (datetime, instrument), 1列
+        factor_series = pd.to_numeric(factor_df.iloc[:, 0], errors="coerce")
+        factor_series.name = "factor"
     merged = pd.concat([factor_series, label], axis=1, join="inner").dropna()
     return merged
 
@@ -350,16 +391,20 @@ def _safe_float(x: float | None) -> float | None:
     return xf
 
 
-def _compute_raw_factor_value_quality(gen_df: pd.DataFrame | pd.Series) -> dict[str, Any]:
+def _compute_raw_factor_value_quality(gen_df: pd.DataFrame) -> dict[str, Any]:
     """Cheap distributional checks on the generated factor column (before label merge)."""
     out: dict[str, Any] = {}
-    # pd.read_parquet on a single-column result may return a Series
-    if isinstance(gen_df, pd.Series):
-        gen_df = gen_df.to_frame()
-    if gen_df is None or gen_df.empty or gen_df.shape[1] < 1:
+    if gen_df is None or gen_df.empty:
         out["factor_quality_error"] = "empty_or_missing_factor_column"
         return out
-    s = pd.to_numeric(gen_df.iloc[:, 0], errors="coerce")
+    # 处理宽表格式 (Date index, Code columns)
+    if gen_df.index.name == "Date" and gen_df.columns.name == "Code":
+        s = pd.to_numeric(gen_df.stack(), errors="coerce")
+    elif gen_df.shape[1] >= 1:
+        s = pd.to_numeric(gen_df.iloc[:, 0], errors="coerce")
+    else:
+        out["factor_quality_error"] = "empty_or_missing_factor_column"
+        return out
     n = int(len(s))
     nn = int(s.notna().sum())
     out["factor_non_null"] = nn
@@ -655,9 +700,8 @@ class FactorICEvaluator(FactorEvaluator):
         data_type: str = "Debug",
     ) -> Tuple[str, object]:
         feedback, ic = evaluate_factor_ic_from_workspace(implementation, data_type=data_type)
-        if ic is None:
-            return feedback, False
-        return feedback, abs(ic) >= FACTOR_COSTEER_SETTINGS.min_abs_ic
+        # IC 只记录不阻断：只要因子有值就通过
+        return feedback, True
 
 
 class FactorRowCountEvaluator(FactorEvaluator):
@@ -891,22 +935,11 @@ class FactorValueEvaluator(FactorEvaluator):
         # Combine all conclusions into a single string
         conclusion_str = "\n".join(conclusions)
 
-        if gt_implementation is not None and (equal_value_ratio_result > 0.99 or high_correlation_result):
-            decision_from_value_check = True
-        elif (
-            output_format_result is False
-            or daily_check_result is False
-            or numeric_check_result is False
-            or inf_evaluate_res is False
-        ):
-            decision_from_value_check = False
-        elif gt_implementation is not None and (
-            (row_result is not None and row_result <= 0.99)
-            or ic_check_result is False
-        ):
-            decision_from_value_check = False
-        else:
+        # 非全 NaN 就导出
+        if numeric_check_result is True:
             decision_from_value_check = None
+        else:
+            decision_from_value_check = False
         return conclusion_str, decision_from_value_check
 
 

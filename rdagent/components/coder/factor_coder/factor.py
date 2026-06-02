@@ -26,6 +26,11 @@ from rdagent.utils.env import DockerConf, DockerEnv
 
 
 class FactorTask(CoSTEERTask):
+    # factor_type: "single_stock" | "cross_section" | "deep_learning"
+    FACTOR_TYPE_SINGLE = "single_stock"
+    FACTOR_TYPE_CROSS = "cross_section"
+    FACTOR_TYPE_DL = "deep_learning"
+
     # TODO:  generalized the attributes into the Task
     # - factor_* -> *
     def __init__(
@@ -37,6 +42,7 @@ class FactorTask(CoSTEERTask):
         variables: dict = {},
         resource: str = None,
         factor_implementation: bool = False,
+        factor_type: str = "single_stock",
         **kwargs,
     ) -> None:
         self.factor_name = (
@@ -46,6 +52,7 @@ class FactorTask(CoSTEERTask):
         self.variables = variables
         self.factor_resources = resource
         self.factor_implementation = factor_implementation
+        self.factor_type = factor_type
         super().__init__(name=factor_name, description=factor_description, *args, **kwargs)
 
     @property
@@ -55,6 +62,7 @@ class FactorTask(CoSTEERTask):
 
     def get_task_information(self):
         return f"""factor_name: {self.factor_name}
+factor_type: {getattr(self, 'factor_type', 'single_stock')}
 factor_description: {self.factor_description}
 factor_formulation: {self.factor_formulation}
 variables: {str(self.variables)}"""
@@ -150,6 +158,107 @@ class FactorFBWorkspace(FBWorkspace):
     EXPORTED_PARQUET_DIR = Path.cwd() / "git_ignore_folder" / "factor_outputs"
     EXECUTION_LAUNCHER = "_rdagent_factor_launcher.py"
 
+    # 日线框架代码模板
+    DAILY_FRAMEWORK_TEMPLATE = """import pandas as pd
+import numpy as np
+import sys, json, os
+from pathlib import Path
+from joblib import Parallel, delayed
+from tqdm.auto import tqdm
+
+DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or ".")
+STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
+STOCK_LIST = json.load(open(STOCK_DATA_DIR / "stock_list.json"))
+TRADE_DATES = json.load(open(STOCK_DATA_DIR / "trade_dates.json"))
+
+def load_stock(stock):
+    return pd.read_parquet(STOCK_DATA_DIR / f"{{stock}}.parquet")
+
+{user_code}
+
+def _compute_stock(stock):
+    df = load_stock(stock)
+    results = []
+    for td_str in TRADE_DATES:
+        td = pd.Timestamp(td_str)
+        sub = df[df.index <= td]
+        if sub.empty:
+            continue
+        r = calc_factor_single_stock(sub, td)
+        if r:
+            results.append({{"datetime": td_str, "instrument": stock, **r}})
+    return results
+
+if __name__ == '__main__':
+    print("计算因子...")
+    all_records = []
+    for stock_results in Parallel(n_jobs=10, backend="loky")(
+        delayed(_compute_stock)(s) for s in tqdm(STOCK_LIST, desc="按股票并行")
+    ):
+        all_records.extend(stock_results)
+    long_df = pd.DataFrame(all_records)
+    long_df["datetime"] = pd.to_datetime(long_df["datetime"])
+    factor_name = [c for c in long_df.columns if c not in ("datetime", "instrument")][0]
+    wide = long_df.pivot(index="datetime", columns="instrument", values=factor_name)
+    wide = wide.sort_index().sort_index(axis=1)
+    wide.index.name = "Date"
+    wide.columns.name = "Code"
+    wide = wide.replace([np.inf, -np.inf], np.nan)
+    wide.attrs["factor_name"] = factor_name
+    wide.to_parquet("result.parquet")
+    print(f"完成，共 {{wide.shape[0]}} 天 x {{wide.shape[1]}}, 只股票")
+"""
+
+    # 分钟线框架代码模板（按日期文件，每天一个 parquet）
+    MINUTE_FRAMEWORK_TEMPLATE = """import pandas as pd
+import numpy as np
+import sys, json, os
+from pathlib import Path
+from joblib import Parallel, delayed
+from tqdm.auto import tqdm
+
+DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or ".")
+MINUTE_BY_DATE_DIR = DATA_DIR / "stock_data" / "minute_by_date"
+STOCK_LIST = json.load(open(DATA_DIR / "stock_data" / "minute" / "stock_list.json"))
+TRADE_DATES = json.load(open(MINUTE_BY_DATE_DIR / "trade_dates.json"))
+
+def load_day(td):
+    return pd.read_parquet(MINUTE_BY_DATE_DIR / f"{{td}}.parquet")
+
+{user_code}
+
+def _compute_day(td):
+    day_all = load_day(td)
+    results = []
+    for stock in day_all.index.get_level_values("instrument").unique():
+        day_df = day_all.xs(stock, level="instrument")
+        if day_df.empty:
+            continue
+        r = calc_factors_one_day(day_df)
+        if r:
+            results.append({{"datetime": td, "instrument": stock, **r}})
+    return results
+
+if __name__ == '__main__':
+    print("计算分钟线因子...")
+    all_records = []
+    for day_results in Parallel(n_jobs=10, backend="loky")(
+        delayed(_compute_day)(td) for td in tqdm(TRADE_DATES, desc="按日期并行")
+    ):
+        all_records.extend(day_results)
+    long_df = pd.DataFrame(all_records)
+    long_df["datetime"] = pd.to_datetime(long_df["datetime"])
+    factor_name = [c for c in long_df.columns if c not in ("datetime", "instrument")][0]
+    wide = long_df.pivot(index="datetime", columns="instrument", values=factor_name)
+    wide = wide.sort_index().sort_index(axis=1)
+    wide.index.name = "Date"
+    wide.columns.name = "Code"
+    wide = wide.replace([np.inf, -np.inf], np.nan)
+    wide.attrs["factor_name"] = factor_name
+    wide.to_parquet("result.parquet")
+    print(f"完成，共 {{wide.shape[0]}} 天 x {{wide.shape[1]}}, 只股票")
+"""
+
     def __init__(
         self,
         *args,
@@ -158,6 +267,125 @@ class FactorFBWorkspace(FBWorkspace):
     ) -> None:
         super().__init__(*args, **kwargs)
         self.raise_exception = raise_exception
+
+    # 截面因子框架代码模板
+    CROSS_SECTION_FRAMEWORK_TEMPLATE = """import pandas as pd
+import numpy as np
+import sys, json, os
+from pathlib import Path
+
+DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or ".")
+STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
+STOCK_LIST = json.load(open(STOCK_DATA_DIR / "stock_list.json"))
+TRADE_DATES = json.load(open(STOCK_DATA_DIR / "trade_dates.json"))
+
+def load_stock(stock):
+    return pd.read_parquet(STOCK_DATA_DIR / f"{{stock}}.parquet")
+
+{user_code}
+
+if __name__ == '__main__':
+    print("计算截面因子...")
+    all_records = []
+    for td_str in tqdm(TRADE_DATES, desc="按日期计算"):
+        td = pd.Timestamp(td_str)
+        all_data = {{}}
+        for stock in STOCK_LIST:
+            df = load_stock(stock)
+            sub = df[df.index <= td]
+            if not sub.empty:
+                all_data[stock] = sub
+        if not all_data:
+            continue
+        result = calc_factor_cross_section(all_data, td)
+        for stock, fdict in result.items():
+            if fdict:
+                all_records.append({{"datetime": td_str, "instrument": stock, **fdict}})
+    long_df = pd.DataFrame(all_records)
+    long_df["datetime"] = pd.to_datetime(long_df["datetime"])
+    factor_name = [c for c in long_df.columns if c not in ("datetime", "instrument")][0]
+    wide = long_df.pivot(index="datetime", columns="instrument", values=factor_name)
+    wide = wide.sort_index().sort_index(axis=1)
+    wide.index.name = "Date"
+    wide.columns.name = "Code"
+    wide = wide.replace([np.inf, -np.inf], np.nan)
+    wide.attrs["factor_name"] = factor_name
+    wide.to_parquet("result.parquet")
+    print(f"完成，共 {{wide.shape[0]}} 天 x {{wide.shape[1]}}, 只股票")
+"""
+
+    # 深度学习因子框架代码模板
+    DEEP_LEARNING_FRAMEWORK_TEMPLATE = """import pandas as pd
+import numpy as np
+import sys, json, os
+from pathlib import Path
+from tqdm.auto import tqdm
+
+DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or ".")
+STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
+STOCK_LIST = json.load(open(STOCK_DATA_DIR / "stock_list.json"))
+TRADE_DATES = json.load(open(STOCK_DATA_DIR / "trade_dates.json"))
+
+def load_stock(stock):
+    return pd.read_parquet(STOCK_DATA_DIR / f"{{stock}}.parquet")
+
+{user_code}
+
+if __name__ == '__main__':
+    print("计算深度学习因子...")
+    # 预加载所有股票数据
+    all_data = {{}}
+    for stock in tqdm(STOCK_LIST, desc="加载数据"):
+        all_data[stock] = load_stock(stock)
+
+    all_records = []
+    for td_str in tqdm(TRADE_DATES, desc="按日期计算"):
+        td = pd.Timestamp(td_str)
+        # 训练模型（只用截至 trade_date 的数据）
+        data_for_train = {{}}
+        for stock, df in all_data.items():
+            sub = df[df.index <= td]
+            if not sub.empty:
+                data_for_train[stock] = sub
+        if not data_for_train:
+            continue
+        model = train_model(data_for_train, td)
+        # 逐股票推理
+        for stock, df in data_for_train.items():
+            r = predict(model, df, td)
+            if r:
+                all_records.append({{"datetime": td_str, "instrument": stock, **r}})
+    long_df = pd.DataFrame(all_records)
+    long_df["datetime"] = pd.to_datetime(long_df["datetime"])
+    factor_name = [c for c in long_df.columns if c not in ("datetime", "instrument")][0]
+    wide = long_df.pivot(index="datetime", columns="instrument", values=factor_name)
+    wide = wide.sort_index().sort_index(axis=1)
+    wide.index.name = "Date"
+    wide.columns.name = "Code"
+    wide = wide.replace([np.inf, -np.inf], np.nan)
+    wide.attrs["factor_name"] = factor_name
+    wide.to_parquet("result.parquet")
+    print(f"完成，共 {{wide.shape[0]}} 天 x {{wide.shape[1]}}, 只股票")
+"""
+
+    def inject_files(self, *args, **kwargs):
+        """Override to wrap AI-generated code with framework if needed."""
+        # Call parent inject_files first
+        super().inject_files(*args, **kwargs)
+        # Check if factor.py needs framework wrapping
+        if "factor.py" in self.file_dict:
+            code = self.file_dict["factor.py"]
+            # 按代码内容检测模板类型
+            if "def train_model" in code and "def predict" in code:
+                wrapped = self.DEEP_LEARNING_FRAMEWORK_TEMPLATE.format(user_code=code)
+            elif "calc_factor_cross_section" in code:
+                wrapped = self.CROSS_SECTION_FRAMEWORK_TEMPLATE.format(user_code=code)
+            elif "calc_factors_one_day" in code:
+                wrapped = self.MINUTE_FRAMEWORK_TEMPLATE.format(user_code=code)
+            else:
+                wrapped = self.DAILY_FRAMEWORK_TEMPLATE.format(user_code=code)
+            self.file_dict["factor.py"] = wrapped
+            (self.workspace_path / "factor.py").write_text(wrapped)
 
     def hash_func(self, data_type: str = "Debug") -> str:
         if "factor.py" not in self.file_dict or self.raise_exception:
@@ -215,9 +443,15 @@ class FactorFBWorkspace(FBWorkspace):
 
     @staticmethod
     def _infer_time_granularity(df: pd.DataFrame) -> str:
-        if df is None or df.empty or "datetime" not in df.index.names:
+        if df is None or df.empty:
             return "unknown"
-        dt_index = pd.to_datetime(df.index.get_level_values("datetime"))
+        # 处理宽表格式 (Date index) 和旧格式 (MultiIndex with datetime)
+        if df.index.name == "Date":
+            dt_index = pd.to_datetime(df.index)
+        elif "datetime" in df.index.names:
+            dt_index = pd.to_datetime(df.index.get_level_values("datetime"))
+        else:
+            return "unknown"
         diffs = dt_index.to_series().diff().dropna()
         positive_diffs = diffs[diffs > pd.Timedelta(0)].unique()
         if len(positive_diffs) == 0:
@@ -262,9 +496,9 @@ class FactorFBWorkspace(FBWorkspace):
         for keyword, tag in keyword_to_tag.items():
             if keyword in content:
                 tags.add(tag)
-        if "minute_pv.h5" in content:
+        if "minute_pv" in content or '/minute"' in content or "/minute'" in content:
             tags.add("minute_input")
-        if "daily_pv.h5" in content:
+        if "daily_pv" in content or '/daily"' in content or "/daily'" in content:
             tags.add("daily_input")
         return sorted(tags)
 
@@ -290,13 +524,13 @@ class FactorFBWorkspace(FBWorkspace):
         task = self.target_task if isinstance(self.target_task, FactorTask) else None
         metadata = {
             "factor_name": factor_name,
-            "display_name": str(df.columns[0]),
+            "display_name": factor_name,
             "factor_description": task.factor_description if task is not None else None,
             "factor_formulation": task.factor_formulation if task is not None else None,
             "variables": task.variables if task is not None else None,
             "hash": factor_hash,
             "rows": len(df),
-            "non_null": int(df.iloc[:, 0].notna().sum()),
+            "non_null": int(df.stack().notna().sum()) if df.index.name == "Date" and df.columns.name == "Code" else int(df.iloc[:, 0].notna().sum()),
             "time_granularity": self._infer_time_granularity(df),
             "logic_summary": (
                 task.factor_description if task is not None else "No factor description recorded."
@@ -331,20 +565,20 @@ class FactorFBWorkspace(FBWorkspace):
         self.EXPORTED_PARQUET_DIR.mkdir(parents=True, exist_ok=True)
         export_dir = self._resolve_export_dir(review_metadata)
         export_dir.mkdir(parents=True, exist_ok=True)
-        # Use task factor_name when available (more reliable than LLM-named column)
-        factor_name = self._sanitize_factor_name(
-            str(self.target_task.factor_name) if self.target_task is not None and hasattr(self.target_task, 'factor_name') and self.target_task.factor_name
-            else str(df.columns[0])
-        )
+        # 从 attrs 获取因子名（宽表格式），或从列名获取（旧格式）
+        if "factor_name" in df.attrs:
+            factor_name = self._sanitize_factor_name(df.attrs["factor_name"])
+        elif df.index.name == "Date" and df.columns.name == "Code":
+            # 宽表但没有 attrs，尝试从任务获取
+            factor_name = self._sanitize_factor_name(self.target_task.factor_name if self.target_task else "unknown")
+        else:
+            factor_name = self._sanitize_factor_name(str(df.columns[0]))
         latest_path = export_dir / f"{factor_name}.parquet"
         current_hash = self._hash_factor_dataframe(df)
 
         if latest_path.exists():
             try:
                 existing_df = pd.read_parquet(latest_path)
-                if not isinstance(existing_df.index, pd.MultiIndex):
-                    existing_df = existing_df.stack().to_frame(df.columns[0])
-                    existing_df.index.names = ['datetime', 'instrument']
                 if self._hash_factor_dataframe(existing_df) == current_hash:
                     self._write_factor_code_snapshot(latest_path)
                     self._write_factor_metadata(factor_name, latest_path, df, current_hash, review_metadata)
@@ -352,16 +586,27 @@ class FactorFBWorkspace(FBWorkspace):
                     refresh_factor_dashboard()
                     return
             except Exception:
+                # If the previous parquet cannot be read, overwrite it with the current successful output.
                 pass
 
-        # 转换为日期为行、股票为列的矩阵格式输出
-        if isinstance(df.index, pd.MultiIndex):
-            val_col = str(df.columns[0])
-            export_df = df.reset_index().pivot(index='datetime', columns='instrument', values=val_col)
-            export_df.columns.name = None
-        else:
-            export_df = df
-        export_df.to_parquet(latest_path, engine="pyarrow")
+        # 统一 size：reindex 到完整的日期×股票，NaN 填充
+        if df.index.name == "Date" and df.columns.name == "Code":
+            full_dates = pd.read_json(
+                Path(FACTOR_COSTEER_SETTINGS.data_folder) / "stock_data" / "daily" / "trade_dates.json",
+                typ="series"
+            )
+            full_dates = pd.to_datetime(full_dates).sort_values()
+            full_stocks = json.loads(
+                (Path(FACTOR_COSTEER_SETTINGS.data_folder) / "stock_data" / "daily" / "stock_list.json").read_text()
+            )
+            full_stocks = sorted(full_stocks)
+            df = df.reindex(index=full_dates, columns=full_stocks)
+            df.index.name = "Date"
+            df.columns.name = "Code"
+            # 重新计算 hash
+            current_hash = self._hash_factor_dataframe(df)
+
+        df.to_parquet(latest_path, engine="pyarrow")
         self._write_factor_code_snapshot(latest_path)
         self._write_factor_metadata(factor_name, latest_path, df, current_hash, review_metadata)
         self._clear_rejected_marker(factor_name, review_metadata)
@@ -406,19 +651,8 @@ class FactorFBWorkspace(FBWorkspace):
             import pandas as pd
 
             DATA_DIR = Path({str(source_data_path)!r})
-            WORKSPACE_DIR = Path("/workspace/factor_workspace")
             os.environ["FACTOR_DATA_DIR"] = str(DATA_DIR)
             os.environ["RDAGENT_FACTOR_DATA_DIR"] = str(DATA_DIR)
-
-            # Ensure CWD is valid — some libraries (e.g. PyTorch DataLoader with
-            # num_workers>0, CUDA runtime) can invalidate the working directory
-            # during long-running DL training, which causes to_hdf/to_parquet("result.*")
-            # to fail with "FileNotFoundError: os.getcwd()".
-            try:
-                os.chdir(str(WORKSPACE_DIR))
-            except FileNotFoundError:
-                WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
-                os.chdir(str(WORKSPACE_DIR))
 
             def _resolve_data_path(path_like):
                 if path_like is None:
@@ -484,7 +718,7 @@ class FactorFBWorkspace(FBWorkspace):
             .replace(str(site.getsitepackages()[0]), r"/path/to/site-packages")
         )
         if len(feedback) > 2000:
-            feedback = feedback[:300] + "....hidden long error message...." + feedback[-1700:]
+            feedback = feedback[:1000] + "....hidden long error message...." + feedback[-1000:]
         return feedback
 
     def _execute_locally(
@@ -543,7 +777,7 @@ class FactorFBWorkspace(FBWorkspace):
         if call_factor_py is True:
             4. execute the code
         else:
-            4. generate a script from template to import the factor.py dump get the factor value to result file
+            4. generate a script from template to import the factor.py dump get the factor value to result.parquet
         5. read the factor value from the output file in the workspace path folder
         returns the execution feedback as a string and the factor value as a pandas dataframe
 
@@ -637,17 +871,9 @@ class FactorFBWorkspace(FBWorkspace):
             if workspace_output_file_path.exists() and execution_success:
                 try:
                     executed_factor_value_dataframe = pd.read_parquet(workspace_output_file_path)
-                    if isinstance(executed_factor_value_dataframe, pd.Series):
-                        executed_factor_value_dataframe = executed_factor_value_dataframe.to_frame()
-                    # 如果 parquet 是日期为行、股票为列的矩阵格式，转回 MultiIndex 供内部评估用
-                    if not isinstance(executed_factor_value_dataframe.index, pd.MultiIndex):
-                        executed_factor_value_dataframe = (
-                            executed_factor_value_dataframe.stack().to_frame('value')
-                        )
-                        executed_factor_value_dataframe.index.names = ['datetime', 'instrument']
                     execution_feedback += self.FB_OUTPUT_FILE_FOUND
                 except Exception as e:
-                    execution_feedback += f"Error found when reading parquet result: {e}"[:1000]
+                    execution_feedback += f"Error found when reading parquet file: {e}"[:1000]
                     executed_factor_value_dataframe = None
             else:
                 execution_feedback += self.FB_OUTPUT_FILE_NOT_FOUND

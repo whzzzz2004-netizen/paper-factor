@@ -46,7 +46,7 @@ class FactorFromReportPropSetting(FactorBasePropSetting):
     report_result_json_file_path: str = "git_ignore_folder/report_list.json"
     """Path to the JSON file listing research reports for factor extraction"""
 
-    max_factors_per_exp: int = 10
+    max_factors_per_exp: int = 3
     """Maximum number of factors implemented per experiment"""
 
     report_limit: int = 20

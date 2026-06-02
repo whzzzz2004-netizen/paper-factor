@@ -252,6 +252,7 @@ class FactorMultiProcessEvolvingStrategy(MultiProcessEvolvingStrategy):
         system_prompt = T(".prompts:evolving_strategy_factor_implementation_v1_system").r(
             scenario=self.scen.get_scenario_all_desc(target_task, filtered_tag="feature"),
             queried_former_failed_knowledge=queried_former_failed_knowledge_to_render,
+            factor_type=getattr(target_task, 'factor_type', 'single_stock'),
         )
         queried_similar_successful_knowledge_to_render = queried_similar_successful_knowledge
         queried_similar_error_knowledge_to_render = queried_similar_error_knowledge

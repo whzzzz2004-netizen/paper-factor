@@ -273,18 +273,23 @@ def _load_local_factor_data_profile() -> dict[str, Any]:
             )
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning(f"Failed to load local factor data metadata from {meta_path}: {exc}")
-    for file_name, field_name in [("daily_pv.h5", "daily_columns"), ("minute_pv.h5", "minute_columns")]:
-        data_path = base_dir / file_name
-        if not data_path.exists():
+    for freq, field_name in [("daily", "daily_columns"), ("minute", "minute_columns")]:
+        stock_list_path = base_dir / "stock_data" / freq / "stock_list.json"
+        if not stock_list_path.exists():
             continue
         try:
-            df = pd.read_hdf(data_path, key="data", start=0, stop=1)
-            profile[field_name] = list(df.columns)
-            # Store index information so LLM knows stock code is in the index
-            if hasattr(df.index, 'names'):
-                profile[f"{field_name.replace('columns', 'index_names')}"] = list(df.index.names)
+            import json as _json
+            with open(stock_list_path) as _f:
+                stocks = _json.load(_f)
+            if stocks:
+                sample_path = base_dir / "stock_data" / freq / f"{stocks[0]}.parquet"
+                if sample_path.exists():
+                    df = pd.read_parquet(sample_path, columns=None).head(1)
+                    profile[field_name] = list(df.columns)
+                    if hasattr(df.index, 'names'):
+                        profile[f"{field_name.replace('columns', 'index_names')}"] = list(df.index.names)
         except (OSError, KeyError, ValueError) as exc:
-            logger.warning(f"Failed to inspect available columns from {data_path}: {exc}")
+            logger.warning(f"Failed to inspect available columns from per-stock parquet: {exc}")
     field_schema = filter_field_schema(load_factor_field_schema(base_dir), profile["daily_columns"])
     profile["daily_column_schema"] = field_schema
     profile["daily_column_schema_text"] = format_field_schema_for_prompt(field_schema)
@@ -822,6 +827,7 @@ def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any],
                 factor_description=str(refined.get("description") or task.factor_description),
                 factor_formulation=str(refined.get("formulation") or task.factor_formulation),
                 variables=refined.get("variables") if isinstance(refined.get("variables"), dict) else task.variables,
+                factor_type=getattr(task, 'factor_type', 'single_stock'),
             )
 
     system_prompt = (
@@ -903,6 +909,7 @@ def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any],
         factor_description=str(refined.get("description") or task.factor_description),
         factor_formulation=str(refined.get("formulation") or task.factor_formulation),
         variables=refined.get("variables") if isinstance(refined.get("variables"), dict) else task.variables,
+        factor_type=getattr(task, 'factor_type', 'single_stock'),
     )
 
 
@@ -988,6 +995,42 @@ def _report_fully_processed(report_path: str | Path) -> bool:
     return len(terminal_factor_names) >= extracted_factor_count
 
 
+def _classify_factors_with_llm(factors: dict) -> dict:
+    """用 LLM 对提取的因子进行类型分类（single_stock / cross_section / deep_learning）。"""
+    if not factors:
+        return factors
+    # 构建因子描述列表
+    desc_lines = []
+    for name, info in factors.items():
+        desc = str(info.get("description") or "")[:200]
+        form = str(info.get("formulation") or "")[:100]
+        desc_lines.append(f"- {name}: {desc} | 公式: {form}")
+    factor_descriptions = "\n".join(desc_lines)
+
+    system_prompt = T(".prompts:classify_factor_type_system").r()
+    user_prompt = T(".prompts:classify_factor_type_user").r(factor_descriptions=factor_descriptions)
+
+    try:
+        resp = APIBackend().build_messages_and_create_chat_completion(
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            json_mode=True,
+        )
+        classifications = json.loads(resp)
+        valid_types = {"single_stock", "cross_section", "deep_learning"}
+        for name in factors:
+            ft = str(classifications.get(name) or "single_stock").strip().lower()
+            if ft not in valid_types:
+                ft = "single_stock"
+            factors[name]["factor_type"] = ft
+        logger.info(f"Factor type classification: { {n: f.get('factor_type') for n, f in factors.items()} }")
+    except Exception as exc:
+        logger.warning(f"Factor type classification failed: {exc}. Defaulting to single_stock.")
+        for name in factors:
+            factors[name]["factor_type"] = "single_stock"
+    return factors
+
+
 def _load_exp_from_extracted_factor_preview(report_file_path: str, *, minimal_mode: bool) -> PaperFactorExperiment | None:
     preview_path = _extracted_factor_preview_path(report_file_path)
     if not preview_path.exists():
@@ -1010,12 +1053,15 @@ def _load_exp_from_extracted_factor_preview(report_file_path: str, *, minimal_mo
     factors = payload.get("factors") or {}
     if not isinstance(factors, dict) or not factors:
         return None
+    # 第二步：用 LLM 对因子分类
+    factors = _classify_factors_with_llm(factors)
     tasks = [
         FactorTask(
             factor_name=name,
             factor_description=str(item.get("description") or ""),
             factor_formulation=str(item.get("formulation") or ""),
             variables=item.get("variables") if isinstance(item.get("variables"), dict) else {},
+            factor_type=str(item.get("factor_type") or "single_stock"),
         )
         for name, item in factors.items()
         if isinstance(item, dict)
@@ -1062,6 +1108,8 @@ def extract_hypothesis_and_exp_from_reports(
     )
     raw_factor_result = getattr(loader, "last_factor_dict", {}) or {}
     raw_file_to_factor_result = getattr(loader, "last_file_to_factor_result", {}) or {}
+    # 用 LLM 对因子分类
+    raw_factor_result = _classify_factors_with_llm(raw_factor_result)
     preview_path = _persist_extracted_factor_preview(
         report_file_path,
         minimal_mode=minimal_mode,
@@ -1227,8 +1275,8 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
             logger.info(f"Processing report {self.report_cursor}: {report_file_path}")
 
             # 根据研报类型调整并行度
-            _base_parallel = int(os.environ.get("RDAGENT_PAPER_FACTOR_PARALLEL_FACTORS", "10"))
-            _dl_parallel = int(os.environ.get("RDAGENT_PAPER_FACTOR_DL_PARALLEL_FACTORS", "3"))
+            _base_parallel = int(os.environ.get("RDAGENT_PAPER_FACTOR_PARALLEL_FACTORS", "3"))
+            _dl_parallel = int(os.environ.get("RDAGENT_PAPER_FACTOR_DL_PARALLEL_FACTORS", "2"))
             if self._is_deep_learning_report(report_file_path):
                 self.parallel_factor_n = _dl_parallel
             else:

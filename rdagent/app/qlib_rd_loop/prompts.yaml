@@ -14,3 +14,18 @@ hypothesis_generation:
 
     以下是研报内容：
     {{ report_content }}
+
+classify_factor_type_system: |-
+    对以下每个因子，判断其计算方式属于哪种类型，返回 JSON。
+    - "single_stock": 只需单只股票数据（动量、反转、均线等）
+    - "cross_section": 需要多只股票数据（行业排名、截面分位等）
+    - "deep_learning": 需要训练神经网络（GRU、TCN、LSTM等）
+
+    json schema:
+    {
+        "factor_name_1": "single_stock",
+        "factor_name_2": "deep_learning"
+    }
+
+classify_factor_type_user: |-
+    {{ factor_descriptions }}
