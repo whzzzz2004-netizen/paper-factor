@@ -24,7 +24,6 @@ from rdagent.core.proposal import (
 from rdagent.core.scenario import Scenario
 from rdagent.core.utils import import_class
 from rdagent.log import rdagent_logger as logger
-from rdagent.utils.qlib import ALPHA20, validate_qlib_features
 from rdagent.utils.workflow import LoopBase, LoopMeta
 
 
@@ -43,7 +42,7 @@ class RDLoop(LoopBase, metaclass=LoopMeta):
         )
 
         self.plan: ExperimentPlan = {
-            "features": ALPHA20,
+            "features": {},
             "feature_codes": {},
         }  # for user interaction
 
@@ -96,15 +95,10 @@ class RDLoop(LoopBase, metaclass=LoopMeta):
                             "`base_factors.json` must contain a JSON object of feature_name -> expression."
                         )
 
-                    if validate_qlib_features(list(features.values())):
-                        self.plan["features"] = features
-                        logger.info(
-                            f"Loaded base features from {base_factors_file}. {len(features)} features loaded and {len(feature_codes)} feature code files loaded."
-                        )
-                    else:
-                        logger.warning(
-                            f"Base feature validation failed for features loaded from {base_factors_file}. Using default features."
-                        )
+                    self.plan["features"] = features
+                    logger.info(
+                        f"Loaded base features from {base_factors_file}. {len(features)} features loaded and {len(feature_codes)} feature code files loaded."
+                    )
             except Exception as e:
                 logger.warning(f"Failed to load base features from {base_features_path}: {e}. Using default features.")
         else:
@@ -140,12 +134,8 @@ class RDLoop(LoopBase, metaclass=LoopMeta):
                 )
                 self.plan["features"] = self.user_response_q.get()
                 logger.info("Received base feature configuration response.")
-                if validate_qlib_features(list(self.plan["features"].values())):
-                    logger.info(f"Base feature validation passed. {len(self.plan['features'])} features selected.")
-                    break
-                else:
-                    logger.info("Base feature validation failed. Asking user to revise.")
-                    fea_valid_msg = "Some features are invalid, please revise."
+                logger.info(f"Base features accepted. {len(self.plan['features'])} features selected.")
+                break
 
         except (EOFError, OSError):
             logger.info("User interaction failed, using default initial parameters.")

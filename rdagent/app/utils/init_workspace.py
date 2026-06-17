@@ -16,10 +16,11 @@ ROOT = Path.cwd()
 GIT_IGNORE_DIR = ROOT / "git_ignore_folder"
 PAPERS_DIR = ROOT / "papers"
 TEMPLATE_DIR = ROOT / "rdagent" / "scenarios" / "qlib" / "experiment" / "factor_data_template"
-FACTOR_DATA_DIR = ROOT / "git_ignore_folder" / "factor_implementation_source_data"
+import os
+FACTOR_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(ROOT / "git_ignore_folder" / "factor_implementation_source_data_1000")))
 FACTOR_DATA_DEBUG_DIR = ROOT / "git_ignore_folder" / "factor_implementation_source_data_debug"
 JQ_META_FILENAME = "jq_data_meta.json"
-FULL_SAMPLE_DAYS = 252
+FULL_SAMPLE_DAYS = 600
 DEBUG_SAMPLE_DAYS = 60
 FULL_SAMPLE_INSTRUMENTS = 80
 DEBUG_SAMPLE_INSTRUMENTS = 20
@@ -466,7 +467,7 @@ def _ensure_workspace_dirs() -> list[Path]:
         GIT_IGNORE_DIR / "factor_outputs",
         GIT_IGNORE_DIR / "research_store" / "knowledge",
         GIT_IGNORE_DIR / "research_store" / "knowledge_v2" / "error_cases",
-        GIT_IGNORE_DIR / "factor_implementation_source_data",
+        FACTOR_DATA_DIR,
         GIT_IGNORE_DIR / "factor_implementation_source_data_debug",
         GIT_IGNORE_DIR / "RD-Agent_workspace",
         GIT_IGNORE_DIR / "traces",

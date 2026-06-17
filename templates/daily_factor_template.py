@@ -9,7 +9,8 @@
 
 输入说明：
     df —— 单只股票从上市到 trade_date 的全部日线数据（已按日期排序），普通 DatetimeIndex
-         可用列: open, close, high, low, volume, factor(复权因子), market_cap, industry_sw, turnover
+         可用列: open, close, high, low, volume, factor(复权因子), pct_chg, pre_close, turnover_rate
+         基本面因子: roe, roa, pe_ttm, pb, revenue_yoy, profit_yoy, gross_margin, net_margin, debt_to_asset, ocf_per_share
     trade_date —— 当前要计算因子的交易日 (pd.Timestamp)
 
 返回说明：
@@ -52,7 +53,7 @@ def calc_factor_single_stock(df, trade_date):
 
     Args:
         df: 单只股票的全部历史日线数据（截至 trade_date），DatetimeIndex
-            列: open, close, high, low, volume, factor, market_cap, industry_sw, turnover
+            列: open, close, high, low, volume, factor, pct_chg, pre_close, turnover_rate, roe, roa, pe_ttm, pb, revenue_yoy, profit_yoy, gross_margin, net_margin, debt_to_asset, ocf_per_share
         trade_date: 目标交易日 (pd.Timestamp)
 
     Returns:

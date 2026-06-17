@@ -11,9 +11,8 @@ import pandas as pd
 import yaml
 
 from rdagent.app.qlib_rd_loop.conf import FACTOR_FROM_REPORT_PROP_SETTING
-from rdagent.app.qlib_rd_loop.factor import FactorRDLoop
+from rdagent.components.workflow.rd_loop import RDLoop
 from rdagent.components.coder.factor_coder.config import FACTOR_COSTEER_SETTINGS
-from rdagent.components.coder.factor_coder.eva_utils import evaluate_factor_ic_from_workspace
 from rdagent.components.coder.factor_coder.evaluators import FactorSingleFeedback
 from rdagent.components.coder.factor_coder.factor import FactorExperiment, FactorFBWorkspace, FactorTask
 from rdagent.components.document_reader.document_reader import (
@@ -23,7 +22,7 @@ from rdagent.components.document_reader.document_reader import (
     load_and_process_pdfs_for_paper_factor,
 )
 from rdagent.core.conf import RD_AGENT_SETTINGS
-from rdagent.core.exception import CoderError
+from rdagent.core.exception import CoderError, FactorEmptyError
 from rdagent.core.proposal import Hypothesis, HypothesisFeedback
 from rdagent.log import rdagent_logger as logger
 from rdagent.oai.llm_utils import APIBackend, md5_hash
@@ -81,13 +80,22 @@ def _load_terminal_report_factor_names(report_path: str | Path) -> set[str]:
 
     terminal_names: set[str] = set()
 
-    # 从缓存因子列表中检查终端状态
+    # 扫描目录中的实际文件（parquet + SKIPPED）
+    if report_dir.exists():
+        for f in report_dir.glob("*.parquet"):
+            terminal_names.add(f.stem)
+        for f in report_dir.glob("SKIPPED__*.md"):
+            name = f.stem.removeprefix("SKIPPED__")
+            terminal_names.add(name)
+
+    # 也从缓存因子列表中检查（处理缓存名和文件名不一致的情况）
     if factors:
         for factor_name in factors:
             safe_name = FactorFBWorkspace._sanitize_factor_name(str(factor_name))
             if (report_dir / f"{safe_name}.parquet").exists() or (report_dir / f"SKIPPED__{safe_name}.md").exists():
-                terminal_names.add(str(factor_name))
-    else:
+                terminal_names.add(safe_name)
+
+    if not terminal_names:
         # 缓存为空时，扫描目录中的实际文件来发现终端因子
         if report_dir.exists():
             for f in report_dir.glob("*.parquet"):
@@ -247,8 +255,34 @@ def build_lightweight_hypothesis(report_file_path: str, factor_result: dict) -> 
     )
 
 
+_TRADE_DATE_COUNT_CACHE: int | None = None
+
+
+def _count_available_trade_dates() -> int:
+    """返回当前数据子集中的交易日数量。"""
+    global _TRADE_DATE_COUNT_CACHE
+    if _TRADE_DATE_COUNT_CACHE is not None:
+        return _TRADE_DATE_COUNT_CACHE
+    base_dir = Path(os.environ.get("FACTOR_DATA_DIR", str(RD_AGENT_SETTINGS.project_path / "git_ignore_folder" / "factor_implementation_source_data_1000")))
+    td_path = base_dir / "stock_data" / "daily" / "trade_dates.json"
+    if td_path.exists():
+        try:
+            _TRADE_DATE_COUNT_CACHE = len(json.loads(td_path.read_text(encoding="utf-8")))
+            return _TRADE_DATE_COUNT_CACHE
+        except (json.JSONDecodeError, OSError):
+            pass
+    _TRADE_DATE_COUNT_CACHE = 0
+    return 0
+
+
+_DATA_PROFILE_CACHE: dict[str, Any] | None = None
+
+
 def _load_local_factor_data_profile() -> dict[str, Any]:
-    base_dir = RD_AGENT_SETTINGS.project_path / "git_ignore_folder" / "factor_implementation_source_data"
+    global _DATA_PROFILE_CACHE
+    if _DATA_PROFILE_CACHE is not None:
+        return _DATA_PROFILE_CACHE
+    base_dir = Path(os.environ.get("FACTOR_DATA_DIR", str(RD_AGENT_SETTINGS.project_path / "git_ignore_folder" / "factor_implementation_source_data_1000")))
     meta_path = base_dir / "jq_data_meta.json"
     profile: dict[str, Any] = {
         "source": "local_factor_data",
@@ -293,6 +327,7 @@ def _load_local_factor_data_profile() -> dict[str, Any]:
     field_schema = filter_field_schema(load_factor_field_schema(base_dir), profile["daily_columns"])
     profile["daily_column_schema"] = field_schema
     profile["daily_column_schema_text"] = format_field_schema_for_prompt(field_schema)
+    _DATA_PROFILE_CACHE = profile
     return profile
 
 
@@ -470,7 +505,13 @@ def _expand_related_knowledge_sections(
     return expanded
 
 
+_KNOWLEDGE_GRAPH_CACHE: dict[str, dict[str, Any]] | None = None
+
+
 def _load_paper_factor_knowledge_graph() -> dict[str, dict[str, Any]]:
+    global _KNOWLEDGE_GRAPH_CACHE
+    if _KNOWLEDGE_GRAPH_CACHE is not None:
+        return _KNOWLEDGE_GRAPH_CACHE
     graph_paths = [
         Path(__file__).with_name("paper_factor_knowledge_graph.yaml"),
         RD_AGENT_SETTINGS.project_path / "git_ignore_folder" / "paper_factor_knowledge_graph.yaml",
@@ -494,6 +535,7 @@ def _load_paper_factor_knowledge_graph() -> dict[str, dict[str, Any]]:
             normalized_node = dict(node)
             normalized_node["_source_path"] = path
             nodes[str(node_id)] = normalized_node
+    _KNOWLEDGE_GRAPH_CACHE = nodes
     return nodes
 
 
@@ -625,9 +667,8 @@ def _judge_factor_data_availability_with_llm(
 ) -> str | None:
     """Return availability status string.
 
-    Returns None for AVAILABLE, "DATA_UNAVAILABLE: ..." when data is truly missing,
-    "DEFINITION_INCOMPLETE: ..." when definition is unclear but LLM can fill defaults.
-    Only DATA_UNAVAILABLE should skip the factor; DEFINITION_INCOMPLETE enters coding.
+    Returns None for AVAILABLE, "DATA_UNAVAILABLE: ..." when data is truly missing.
+    Only DATA_UNAVAILABLE should skip the factor.
     """
     if os.environ.get("RDAGENT_PAPER_FACTOR_DISABLE_DATA_AVAILABILITY_JUDGE", "").strip().lower() in {
         "1",
@@ -670,53 +711,38 @@ def _judge_factor_data_availability_with_llm(
         "当前本地可用数据字段、字段含义和相关领域知识。你的任务只判断：仅依赖这些本地数据，是否足以进入代码实现。\n"
         "判定规则：\n"
         "1. 只能使用 local_data 中列出的字段、字段说明，以及能由这些字段或 retrieved_knowledge 明确推导出的派生量；禁止假设隐藏表或额外字段。\n"
-        "2. local_data.daily_column_schema 包含每个日频字段的中文名、公式、英文名、来源等信息。很多字段使用抽象名称（如 $盈利因子1、$成长因子14），必须通过 schema 查看其实际含义来判断是否可用，不能仅凭列名就判定缺失。\n"
-        "3. 如果因子能由现成字段直接取得，或能由日频/分钟频字段通过明确公式、rolling、rank、聚合、标准化、训练过程得到，应判定 AVAILABLE。\n"
-        "4. 分钟数据中的 $vwap 可以通过加权平均聚合为日频均价，因此不要因为缺少日频vwap就判定不可用。\n"
-        "5. 日频基本面数据（如 $盈利因子1=毛利率、$成长因子1=营收同比增长率）虽然以日频存储，但包含季度变化点，可以据此推导TTM、季度环比、同比等口径。不要因为因子要求TTM或季度口径就判定日频基本面数据不可用。\n"
+        "2. local_data.daily_column_schema 包含每个日频字段的名称和含义。基本面字段使用英文名（如 roe、pe_ttm、gross_margin），必须通过 schema 查看其实际含义来判断是否可用。\n"
+        "3. 只要因子需要的输入数据字段在本地存在，就判 AVAILABLE。因子公式是否完整、定义是否清晰不是你的判断范围。\n"
+        "4. 分钟数据中的 vwap 可以通过加权平均聚合为日频均价，因此不要因为缺少日频vwap就判定不可用。\n"
+        "5. 日频基本面数据（如 gross_margin=毛利率、revenue_yoy=营收同比增长率）虽然以日频存储，但包含季度变化点，可以据此推导TTM、季度环比、同比等口径。不要因为因子要求TTM或季度口径就判定数据不可用。\n"
         "6. 不允许用无关代理变量替代必需数据。例如没有 turnover/turnover_rate 或股本字段时，不能用 volume 代替换手率。\n"
         "7. 只判断是否进入代码实现，不写代码，不评价因子好坏。只返回 JSON。\n"
-        "8. 【极其重要】数据为MultiIndex DataFrame结构，股票代码(instrument)和日期(datetime)是索引(index)，不是列(columns)。"
-        "不要因为列名中没有股票代码就判定缺少股票代码字段！股票代码可通过 df.index.get_level_values('instrument') 获取。"
-        "同理，日期可通过 df.index.get_level_values('datetime') 获取。这是最常见的误判，请务必注意！\n"
-        "9. 【重要】分钟数据文件(minute_pv.h5)包含 $open,$high,$low,$close,$volume,$vwap,$factor,$return 共8个字段。"
-        "如果因子公式涉及分钟级别的价格、成交量、均价、收益率计算，这些字段都可用。不要因为因子描述中写了'分钟数据'就判定 DATA_UNAVAILABLE。\n"
-        "10. 【重要】字段 $turnover_rate 就是换手率（日频）。如果因子需要换手率数据，使用 $turnover_rate。"
-        "如果因子需要'流通股本'来从成交量计算换手率，可以直接使用 $turnover_rate 字段，无需反推股本。\n"
-        "11. 【重要】'市值中性化'、'行业中性化'、'截面标准化'、'Z-score标准化'、'Rank标准化'等操作属于标准数据处理流程，"
-        "不需要额外数据字段。即使缺少行业分类数据，也可以做市值中性化或纯截面标准化。缺少行业中性化条件不应判为 DATA_UNAVAILABLE。\n"
-        "12. 【宽松原则】除非因子明确需要以下不可用数据，否则一律判为 AVAILABLE 或 DEFINITION_INCOMPLETE：\n"
+        "8. 【极其重要】数据为按股票分割的 parquet 文件，每只股票一个文件，DatetimeIndex 简单索引。"
+        "列名无 $ 前缀（如 close、volume、roe、pe_ttm 等）。直接用 df['close'] 即可，无需 groupby。\n"
+        "9. 【重要】分钟数据包含 open,high,low,close,volume,vwap,return,factor 共8个字段。"
+        "如果因子公式涉及分钟级别的价格、成交量、均价、收益率计算，这些字段都可用。不要因为因子描述中写了'分钟数据'就判定不可用。\n"
+        "10. 【重要】字段 turnover_rate 就是换手率（日频）。如果因子需要换手率数据，使用 turnover_rate。"
+        "如果因子需要'流通股本'来从成交量计算换手率，可以直接使用 turnover_rate 字段，无需反推股本。\n"
+        "11. 【重要】'市值中性化'、'行业中性化'、'截面标准化'、'Z-score标准化'、'Rank标准化'等操作属于标准数据处理流程。"
+        "市值可通过 pe_ttm 和 price 反推，或直接用截面标准化替代市值中性化。行业中性化可用 INDUSTRY_DICT（申万一级行业）实现。\n"
+        "12. 以下数据不可用，如果因子明确需要这些数据才能计算，判 DATA_UNAVAILABLE：\n"
         "    - 逐笔成交数据（tick-level trade data），而非分钟K线\n"
         "    - 订单簿数据（order book / level-2 data）\n"
         "    - 龙虎榜数据、融资融券数据、北向资金数据\n"
         "    - 财务报告原文中的非结构化文本信息\n"
-        "    - 行业分类标签（如申万一级行业）\n"
         "    - 机构持仓数据\n"
-        "对于上述宽松原则的例外：如果因子需要单独的外生变量（如GDP、CPI、利率等宏观数据），这些确实不可用，判DATA_UNAVAILABLE。\n"
-        "关于深度学习/机器学习因子的特别规则（极其重要）：\n"
-        "- 以下情况全部属于 DEFINITION_INCOMPLETE，不是 DATA_UNAVAILABLE：\n"
-        "  · 缺少预训练模型参数/权重（可以从头训练）\n"
-        "  · 缺少 hidden size、层数、dilation_base 等超参数（可以用常见默认值）\n"
-        "  · 缺少 loss 函数定义（可以用 MSE/MAE 等常见默认）\n"
-        "  · 缺少标准化/归一化方法（可以用 z-score 默认）\n"
-        "  · 缺少训练轮数、学习率等训练细节（可以用常见默认值）\n"
-        "  · 预测标签定义有歧义（如10日均价涨跌幅，可以用合理默认解释）\n"
-        "  · 周度/月度数据聚合口径未明确（可以从日频数据聚合）\n"
-        "- 只有以下情况才属于 DATA_UNAVAILABLE：\n"
-        "  · 输入字段本身不存在（如需要逐笔成交但只有分钟K线）\n"
-        "  · 需要的原始数据列在 local_data 中确实没有（如需要 $roe 但没有）\n"
-        "13. 【极其重要】历史数据时间长度不足（如研报要求9年但本地只有2.5年）不是 DATA_UNAVAILABLE 的理由。"
-        "即使只有几个月的数据，coder 也可以用可用数据训练和预测。只要字段存在，就判 AVAILABLE 或 DEFINITION_INCOMPLETE。\n"
+        "    - GDP、CPI、利率等宏观数据\n"
+        "行业分类标签（申万一级行业）现已可用，通过 INDUSTRY_DICT[stock] 获取。指数数据（中证500、沪深300等）通过 get_jq_data(symbol, 'price') 获取。\n"
+        "13. 【极其重要】历史数据时间长度不足、数据质量不好、训练窗口不够等不是不可用的理由。"
+        "coder 会用可用数据适配。只要字段存在，就判 AVAILABLE。\n"
         "14. 【极其重要】禁止猜测数据质量。你没有实际读取完整数据文件，无法知道某列是否有 NaN、是否全为 0 等。"
         "只判断字段名是否存在。数据值质量问题（NaN、missing）由运行时代码自行处理。\n"
         "15. 因子描述中提到的训练窗口、历史长度等需求，如果本地数据不能满足，coder 会用可用数据适配。"
         "不要因此判 DATA_UNAVAILABLE。\n"
-        "- 简单来说：只要输入字段（OHLCV、volume、turnover_rate 等）在 local_data 中列出来了，其他一切缺失都算 DEFINITION_INCOMPLETE。\n"
         "返回状态说明：\n"
-        "- AVAILABLE：字段和定义都够，直接进入代码生成。\n"
-        "- DEFINITION_INCOMPLETE：因子定义不够清楚（如 DL 模型缺 hidden size、loss、标签、标准化方法），但大模型可以凭知识尝试补全，进入代码生成。\n"
-        "- DATA_UNAVAILABLE：真的缺输入字段（如需要逐笔成交但只有分钟K线，需要 $roe 但没有），无法实现，跳过。\n"
-        "【总结】当你不确定时，倾向于 AVAILABLE 或 DEFINITION_INCOMPLETE，而不是 DATA_UNAVAILABLE。只有当明确检测到上述不可用数据时，才返回 DATA_UNAVAILABLE。"
+        "- AVAILABLE：数据可用，进入代码生成。\n"
+        "- DATA_UNAVAILABLE：真的缺输入字段（如需要逐笔成交但只有分钟K线，需要 roe 但没有），无法实现，跳过。\n"
+        "【总结】当你不确定时，倾向于 AVAILABLE。只有当明确检测到上述不可用数据时，才返回 DATA_UNAVAILABLE。"
     )
     user_prompt = json.dumps(
         {
@@ -734,12 +760,14 @@ def _judge_factor_data_availability_with_llm(
                 "minute_index": data_profile.get("minute_index_names") or ["datetime", "instrument"],
                 "history_window": f"{data_profile.get('start_date')} to {data_profile.get('end_date')}",
                 "stock_count": data_profile.get("stock_count"),
-                "data_structure_hint": "数据为MultiIndex DataFrame，股票代码(instrument)和日期(datetime)在索引中，不在列中。可通过 df.index.get_level_values('instrument') 和 df.index.get_level_values('datetime') 获取。",
+                "data_structure_hint": "数据为按股票分割的 parquet 文件，每只股票一个文件，DatetimeIndex 简单索引。列名无 $ 前缀（如 close、volume、roe、pe_ttm 等）。直接用 df['close'] 即可，无需 groupby。",
+                "industry_data": "INDUSTRY_DICT 字典，key 为股票代码，value 为申万一级行业名（如 '银行I'、'食品饮料I'），共31个行业。",
+                "index_data": "get_jq_data(symbol, 'price') 函数，返回 DataFrame（列：open, close, high, low, volume, money）。symbol 为聚宽格式：'000905.XSHG'=中证500, '000300.XSHG'=沪深300, '000001.XSHG'=上证指数。",
             },
             "retrieved_knowledge": domain_knowledge,
             "return_schema": {
-                "status": "AVAILABLE / DEFINITION_INCOMPLETE / DATA_UNAVAILABLE",
-                "reason": "中文理由；DATA_UNAVAILABLE 必须说明缺少的字段；DEFINITION_INCOMPLETE 必须说明哪些定义不清",
+                "status": "AVAILABLE / DATA_UNAVAILABLE",
+                "reason": "中文理由；DATA_UNAVAILABLE 必须说明缺少的字段",
             },
         },
         ensure_ascii=False,
@@ -780,8 +808,6 @@ def _judge_factor_data_availability_with_llm(
         reason = str(result.get("reason") or "").strip()
         if status == "DATA_UNAVAILABLE":
             result_str = f"DATA_UNAVAILABLE: {reason or '该因子所需数据在当前本地环境中不可用。'}"
-        elif status == "DEFINITION_INCOMPLETE":
-            result_str = f"DEFINITION_INCOMPLETE: {reason or '因子定义不够清楚，将由代码生成阶段补全默认实现。'}"
         else:
             result_str = None
 
@@ -827,7 +853,9 @@ def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any],
                 factor_description=str(refined.get("description") or task.factor_description),
                 factor_formulation=str(refined.get("formulation") or task.factor_formulation),
                 variables=refined.get("variables") if isinstance(refined.get("variables"), dict) else task.variables,
-                factor_type=getattr(task, 'factor_type', 'single_stock'),
+                factor_type=getattr(task, 'factor_type', 'daily_single'),
+                lookback_days=getattr(task, 'lookback_days', 0),
+                special_conditions=str(refined.get("special_conditions") or getattr(task, 'special_conditions', '')),
             )
 
     system_prompt = (
@@ -838,20 +866,21 @@ def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any],
         "2. description 不应只是金融含义解释，还要说明实际生成步骤，包括变量含义、时间偏移、输入字段、样本范围、过滤条件、中间状态/判定逻辑、缺失值和非满足条件样本处理。\n"
         "3. formulation、description、variables 中出现的变量，都要明确时间锚点、是否相对事件日定义、依赖的原始字段、具体计算口径和输出频率。\n"
         "4. 因子任务必须自包含，不要假设其他因子已经提前算出。后续代码生成只能看到当前因子的 description、formulation、variables，不能再查看研报原文或其他因子定义。若引用 Stage_t_raw、Stage_smooth、市场情绪、回调确认、首板日、行业热度等中间概念，必须展开其生成逻辑；无法展开时明确缺少什么定义或数据。\n"
-        "5. 禁止写“同 XXX 因子”“同上”“其他参数同”“具体架构见研报”“参考前文”“见表 X/图 X”等外部引用式描述。若当前因子与另一个因子共享模型结构、输入字段、标准化方式、标签定义、训练目标、窗口设置、阈值或事件口径，必须在当前因子的 description/formulation/variables 中完整重复展开。如果研报没有给出可展开细节，要明确写缺少哪些参数或定义。\n"
+        "5. 禁止写「同 XXX 因子」「同上」「其他参数同」「具体架构见研报」「参考前文」「见表 X/图 X」等外部引用式描述。若当前因子与另一个因子共享模型结构、输入字段、标准化方式、标签定义、训练目标、窗口设置、阈值或事件口径，必须在当前因子的 description/formulation/variables 中完整重复展开。如果研报没有给出可展开细节，要明确写缺少哪些参数或定义。\n"
         "6. 对机器学习/深度学习因子，必须尽量定义好模型结构和训练目标，包括输入字段、输入窗口、预测 horizon、标签定义、样本构造、标准化方式、模型类型、层数、loss、随机种子等。名称中的信息必须显式展开。若研报没有给出 hidden size、训练轮数等工程细节，可以写明缺失并给出常见、简洁、可复现的默认实现建议；不要因此把任务改成不可实现。只有输入字段、标签或训练目标本身无法确定时，才标记定义不足。\n"
         "7. rolling/window/groupby/rank/标准化/分层统计等操作，必须说明窗口长度、聚合方式、排序方向、分组维度，以及是否去极值、标准化或中性化。\n"
         "8. 如果因子依赖事件或条件样本，例如涨停、炸板、首板、回调、放量、突破等，必须写清事件如何由本地行情数据或 retrieved_knowledge 口径计算、事件时间锚点、有效样本、非事件样本输出、多次事件冲突处理、是否需要历史窗口或未来确认。\n"
         "9. 领域概念口径只能来自研报原文或 retrieved_knowledge。对于涨停、首板、回调、一字板、非一字板等概念，禁止根据常识临时发明新定义，也不要为不同因子生成不同口径。\n"
         "10. 必须明确该因子使用的数据频率：日频、分钟频，或日频+分钟频。最终输出仍然必须是日频因子。\n"
         "11. T 日固定表示因子值输出/信号对应的日期；若论文使用事件日、形成日、买入日、调仓日、预测区间等不同日期，必须保留论文原始时间关系，不要混用。\n"
-        "12. 如果因子包含阈值、分段、打分映射、状态判定、分位数边界、窗口长度等参数，必须给出具体数值或确定性公式。禁止写“合理设定”“自行设定”“参照图表但不给数值”“根据情况调整”等不可执行描述。\n"
+        "12. 如果因子包含阈值、分段、打分映射、状态判定、分位数边界、窗口长度等参数，必须给出具体数值或确定性公式。禁止写「合理设定」「自行设定」「参照图表但不给数值」「根据情况调整」等不可执行描述。\n"
         "13. 如果论文定义有小的工程细节缺失，应优先给出保守默认实现建议并明确标注；如果核心数据、核心标签或事件口径缺失到无法写代码，再指出缺少字段、缺少规则和逻辑歧义。\n"
         "14. ⚠️ local_data.history_window 是本地实际可用的数据时间范围（通常仅约2.5年）。"
         "因子描述中如果包含按年度滚动训练（如'每年用前N年数据训练'）、多年训练集（如'前9年数据作为训练集'）"
         "等需要超出本地数据范围的训练方案，必须改为'使用全部可用数据，按时间顺序分割为训练集/验证集'。"
         "不要保留需要多年数据的原始方案。\n"
-        "15. 只返回 JSON，不要输出解释文字。"
+        "15. 只返回 JSON，不要输出解释文字。\n"
+        "16. 保留并完善传入的 special_conditions，确保所有数据过滤/剔除条件完整无歧义。"
     )
     user_prompt = json.dumps(
         {
@@ -869,7 +898,9 @@ def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any],
                 "minute_index": data_profile.get("minute_index_names") or ["datetime", "instrument"],
                 "history_window": f"{data_profile.get('start_date')} to {data_profile.get('end_date')}",
                 "stock_count": data_profile.get("stock_count"),
-                "data_structure_hint": "数据为MultiIndex DataFrame，股票代码(instrument)和日期(datetime)在索引中，不在列中。可通过 df.index.get_level_values('instrument') 和 df.index.get_level_values('datetime') 获取。",
+                "data_structure_hint": "数据为按股票分割的 parquet 文件，每只股票一个文件，DatetimeIndex 简单索引。列名无 $ 前缀（如 close、volume、roe、pe_ttm 等）。直接用 df['close'] 即可，无需 groupby。",
+                "industry_data": "INDUSTRY_DICT 字典，key 为股票代码，value 为申万一级行业名（如 '银行I'、'食品饮料I'），共31个行业。",
+                "index_data": "get_jq_data(symbol, 'price') 函数，返回 DataFrame（列：open, close, high, low, volume, money）。symbol 为聚宽格式：'000905.XSHG'=中证500, '000300.XSHG'=沪深300, '000001.XSHG'=上证指数。",
             },
             "retrieved_knowledge": domain_knowledge,
             "return_schema": {
@@ -877,6 +908,7 @@ def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any],
                 "description": "完整中文任务描述，必须包含数据频率、T日输出/信号日期定义、事件锚点、有效样本条件、非事件样本输出、具体阈值/参数、共享设定的完整展开、ML/DL模型结构与训练目标、缺失数据或缺失定义说明；禁止同上/同某因子/见研报等引用式描述",
                 "formulation": "自包含、可复现的公式；必须统一T日时间逻辑，必要时加入条件事件或 indicator，并展开中间概念、阈值、分段、打分映射、模型输入输出、标签和训练目标的计算定义；禁止外部引用式描述",
                 "variables": {"变量名": "完整变量解释，包含数据频率、时间偏移、条件事件、输入字段、中间概念判定规则、具体阈值/参数、ML/DL模型参数和缺失定义说明"},
+                "special_conditions": "所有数据过滤/剔除条件（剔除停牌、剔除ST、剔除上市不满N天等），无则写'无'",
             },
         },
         ensure_ascii=False,
@@ -909,7 +941,9 @@ def _refine_factor_task_with_llm(task: FactorTask, data_profile: dict[str, Any],
         factor_description=str(refined.get("description") or task.factor_description),
         factor_formulation=str(refined.get("formulation") or task.factor_formulation),
         variables=refined.get("variables") if isinstance(refined.get("variables"), dict) else task.variables,
-        factor_type=getattr(task, 'factor_type', 'single_stock'),
+        factor_type=getattr(task, 'factor_type', 'daily_single'),
+        lookback_days=getattr(task, 'lookback_days', 0),
+        special_conditions=str(refined.get("special_conditions") or getattr(task, 'special_conditions', '')),
     )
 
 
@@ -996,14 +1030,21 @@ def _report_fully_processed(report_path: str | Path) -> bool:
 
 
 def _classify_factors_with_llm(factors: dict) -> dict:
-    """用 LLM 对提取的因子进行类型分类（single_stock / cross_section / deep_learning）。"""
+    """用 LLM 对提取的因子进行类型分类（daily_single / cross_section / minute / minute_cross_section / deep_learning）及 lookback_days。"""
     if not factors:
         return factors
     # 构建因子描述列表
     desc_lines = []
     for name, info in factors.items():
-        desc = str(info.get("description") or "")[:200]
-        form = str(info.get("formulation") or "")[:100]
+        desc = str(info.get("description") or "")
+        # 只取描述的核心部分（截断数据字段说明，保留因子定义）
+        cutoff_markers = ["本地可用数据", "日频字段", "分钟频字段", "paper_factor retrieved"]
+        for marker in cutoff_markers:
+            idx = desc.find(marker)
+            if idx > 0:
+                desc = desc[:idx]
+        desc = desc.strip()[:300]
+        form = str(info.get("formulation") or "")[:200]
         desc_lines.append(f"- {name}: {desc} | 公式: {form}")
     factor_descriptions = "\n".join(desc_lines)
 
@@ -1017,17 +1058,29 @@ def _classify_factors_with_llm(factors: dict) -> dict:
             json_mode=True,
         )
         classifications = json.loads(resp)
-        valid_types = {"single_stock", "cross_section", "deep_learning"}
+        valid_types = {"daily_single", "cross_section", "deep_learning", "minute", "minute_cross_section"}
         for name in factors:
-            ft = str(classifications.get(name) or "single_stock").strip().lower()
+            entry = classifications.get(name)
+            # 兼容新格式 {"type": "...", "lookback_days": N} 和旧格式 "type_string"
+            if isinstance(entry, dict):
+                ft = str(entry.get("type") or "daily_single").strip().lower()
+                lb = entry.get("lookback_days", 0)
+            else:
+                ft = str(entry or "daily_single").strip().lower()
+                lb = 0
             if ft not in valid_types:
-                ft = "single_stock"
+                ft = "daily_single"
             factors[name]["factor_type"] = ft
-        logger.info(f"Factor type classification: { {n: f.get('factor_type') for n, f in factors.items()} }")
+            try:
+                factors[name]["lookback_days"] = max(0, int(lb))
+            except (TypeError, ValueError):
+                factors[name]["lookback_days"] = 0
+        logger.info(f"Factor type classification: { {n: (f.get('factor_type'), f.get('lookback_days')) for n, f in factors.items()} }")
     except Exception as exc:
-        logger.warning(f"Factor type classification failed: {exc}. Defaulting to single_stock.")
+        logger.warning(f"Factor type classification failed: {exc}. Defaulting to daily_single.")
         for name in factors:
-            factors[name]["factor_type"] = "single_stock"
+            factors[name]["factor_type"] = "daily_single"
+            factors[name]["lookback_days"] = 0
     return factors
 
 
@@ -1061,7 +1114,10 @@ def _load_exp_from_extracted_factor_preview(report_file_path: str, *, minimal_mo
             factor_description=str(item.get("description") or ""),
             factor_formulation=str(item.get("formulation") or ""),
             variables=item.get("variables") if isinstance(item.get("variables"), dict) else {},
-            factor_type=str(item.get("factor_type") or "single_stock"),
+            factor_type=str(item.get("factor_type") or "daily_single"),
+            lookback_days=item.get("lookback_days", 0),
+            special_conditions=str(item.get("special_conditions") or ""),
+            source_excerpt=str(item.get("source_excerpt") or ""),
         )
         for name, item in factors.items()
         if isinstance(item, dict)
@@ -1110,6 +1166,13 @@ def extract_hypothesis_and_exp_from_reports(
     raw_file_to_factor_result = getattr(loader, "last_file_to_factor_result", {}) or {}
     # 用 LLM 对因子分类
     raw_factor_result = _classify_factors_with_llm(raw_factor_result)
+    # 将分类结果（factor_type / lookback_days）回写到 exp.sub_tasks
+    if exp is not None:
+        for task in exp.sub_tasks:
+            cls = raw_factor_result.get(task.factor_name)
+            if isinstance(cls, dict):
+                task.factor_type = cls.get("factor_type", getattr(task, "factor_type", "daily_single"))
+                task.lookback_days = cls.get("lookback_days", 0)
     preview_path = _persist_extracted_factor_preview(
         report_file_path,
         minimal_mode=minimal_mode,
@@ -1153,7 +1216,9 @@ def extract_hypothesis_and_exp_from_reports(
     return exp
 
 
-class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
+class FactorReportLoop(RDLoop, metaclass=LoopMeta):
+    skip_loop_error = (FactorEmptyError, CoderError)
+    skip_loop_error_stepname = "feedback"
     def __init__(self, report_folder: str = None, minimal_mode: bool = True, report_paths: list[str] | None = None):
         super().__init__(PROP_SETTING=FACTOR_FROM_REPORT_PROP_SETTING)
         os.environ.setdefault("RDAGENT_PAPER_FACTOR_SKIP_LOW_IC_REPAIR", "1")
@@ -1274,13 +1339,15 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
             self.report_cursor += 1
             logger.info(f"Processing report {self.report_cursor}: {report_file_path}")
 
+            # 跳过深度学习研报（模板尚未支持）
+            if self._is_deep_learning_report(report_file_path):
+                logger.info(f"Skipping deep learning report: {report_file_path.name}")
+                self.shift_report += 1
+                continue
             # 根据研报类型调整并行度
             _base_parallel = int(os.environ.get("RDAGENT_PAPER_FACTOR_PARALLEL_FACTORS", "3"))
             _dl_parallel = int(os.environ.get("RDAGENT_PAPER_FACTOR_DL_PARALLEL_FACTORS", "2"))
-            if self._is_deep_learning_report(report_file_path):
-                self.parallel_factor_n = _dl_parallel
-            else:
-                self.parallel_factor_n = _base_parallel
+            self.parallel_factor_n = _base_parallel
             RD_AGENT_SETTINGS.step_semaphore = {
                 "direct_exp_gen": 1,
                 "coding": self.parallel_factor_n,
@@ -1338,8 +1405,18 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
         data_profile = _load_local_factor_data_profile()
         source_task = source_exp.sub_tasks[factor_idx]
         domain_knowledge = _load_paper_factor_domain_knowledge(source_task)
-        availability = _judge_factor_data_availability_with_llm(source_task, data_profile, domain_knowledge)
-        skip_reason = availability if availability is not None and availability.startswith("DATA_UNAVAILABLE:") else None
+        # 先检查 lookback_days 是否超出可用交易日数
+        _available_trade_dates = _count_available_trade_dates()
+        _task_lb = getattr(source_task, "lookback_days", 0)
+        if _task_lb > 0 and _available_trade_dates > 0 and _task_lb > _available_trade_dates:
+            skip_reason = (
+                f"DATA_UNAVAILABLE: 该因子需要 {_task_lb} 个交易日的历史数据进行计算，"
+                f"但当前本地数据子集仅有 {_available_trade_dates} 个交易日，无法满足最低数据要求。"
+            )
+            logger.info(f"Skipping {source_task.factor_name}: lookback_days={_task_lb} > available={_available_trade_dates}")
+        else:
+            availability = _judge_factor_data_availability_with_llm(source_task, data_profile, domain_knowledge)
+            skip_reason = availability if availability is not None and availability.startswith("DATA_UNAVAILABLE:") else None
         adapted_task = deepcopy(source_task) if skip_reason is not None else _adapt_report_task_for_available_data(source_task)
         single_exp.sub_tasks = [adapted_task]
         if skip_reason is not None:
@@ -1454,7 +1531,7 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
         if exp is not None and getattr(exp, "prop_dev_feedback", None) is not None:
             source_report_path = getattr(exp, "source_report_path", None)
             source_report_title = getattr(exp, "source_report_title", None)
-            # Collect accepted factor export jobs for parallel execution
+            # Collect factor export jobs — export ALL factors that ran, regardless of IC
             export_jobs = []
             for task, workspace, task_feedback in zip(exp.sub_tasks, exp.sub_workspace_list, exp.prop_dev_feedback):
                 if task_feedback is None:
@@ -1474,9 +1551,9 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
                         print(f"paper_factor: skipped {task.factor_name} (DATA_UNAVAILABLE: {reason})", flush=True)
                     else:
                         print(f"paper_factor: rejected {task.factor_name} (实现检查未通过).", flush=True)
-                    continue
                 if workspace is None:
                     continue
+                # Export all factors that have a workspace (ran successfully), not just accepted ones
                 export_jobs.append((task, workspace, task_feedback, source_report_path, source_report_title))
 
             # Run accepted factor exports in parallel
@@ -1498,6 +1575,14 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
                         except Exception as exc:
                             logger.warning(f"Failed to export factor {factor_name}: {exc}")
 
+                # Refresh dashboard once after all exports, not per-factor
+                if exported_count > 0:
+                    try:
+                        from rdagent.scenarios.qlib.developer.factor_dashboard import refresh_factor_dashboard
+                        refresh_factor_dashboard()
+                    except Exception:
+                        pass
+
         self.trace.sync_dag_parent_and_hist((exp, feedback), prev_out[self.LOOP_IDX_KEY])
         logger.info(
             f"Factor report loop recorded. Accepted reviewed factor exports: {exported_count}. "
@@ -1506,9 +1591,13 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
 
 
 def _export_single_factor(task, workspace, task_feedback, source_report_path, source_report_title) -> bool:
-    """Export a single accepted factor. Returns True if exported successfully."""
+    """Export a single factor (accepted or rejected) to local and remote.
+
+    Fast path: if execute() result is cached (from CoSTEER), load from pickle.
+    Otherwise re-execute. Skip IC evaluation entirely for speed.
+    """
     try:
-        _, df = workspace.execute("All")
+        _, df = workspace.execute("Debug")
     except (OSError, ValueError) as exc:
         logger.warning(
             f"Failed to reload report-derived factor dataframe for reviewed export: "
@@ -1517,71 +1606,34 @@ def _export_single_factor(task, workspace, task_feedback, source_report_path, so
         return False
     if df is None or df.empty:
         return False
-    ic_feedback, full_sample_ic = evaluate_factor_ic_from_workspace(
-        workspace,
-        data_type="All",
-        gen_df=df,
-    )
+    is_accepted = bool(getattr(task_feedback, "final_decision", False))
     logic_summary = task.factor_description
     review_notes = "\n".join(
         part
-        for part in [task_feedback.execution, task_feedback.return_checking, task_feedback.code, ic_feedback]
+        for part in [task_feedback.execution, task_feedback.return_checking, task_feedback.code]
         if part
     )
     tags = _infer_report_factor_registry_tags(task, task_feedback)
-    if full_sample_ic is not None and abs(full_sample_ic) >= FACTOR_COSTEER_SETTINGS.min_abs_ic:
-        tags.append("ic_passed")
-    elif full_sample_ic is not None:
-        tags.append("ic_recorded_only")
-    else:
-        tags.append("ic_unavailable")
+    if not is_accepted:
+        tags.append("rejected")
     tags = sorted(set(tags))
     workspace.export_reviewed_factor(
         df,
-        accepted=True,
+        accepted=is_accepted,
         logic_summary=logic_summary,
         tags=tags,
         review_notes=review_notes,
-        ic_score=full_sample_ic,
+        ic_score=None,
         source_type="literature_report",
         source_report_path=source_report_path,
         source_report_title=source_report_title,
+        source_excerpt=str(getattr(task, "source_excerpt", "") or ""),
     )
 
-    # Also export to remote mount: /mnt/remote_e/paper_factors/文献因子/<ReportTitle>/
-    remote_base = Path("/mnt/remote_e/paper_factors/文献因子")
-    if remote_base.exists():
-        try:
-            report_title_slug = FactorFBWorkspace._sanitize_factor_name(
-                source_report_title or Path(source_report_path).stem
-            ) if (source_report_title or source_report_path) else "unknown_report"
-            remote_dir = remote_base / report_title_slug
-            remote_dir.mkdir(parents=True, exist_ok=True)
+    if is_accepted:
+        pass
 
-            factor_name = FactorFBWorkspace._sanitize_factor_name(str(df.columns[0]))
-            remote_parquet = remote_dir / f"{factor_name}.parquet"
-            df.to_parquet(remote_parquet, engine="pyarrow")
-
-            remote_meta = remote_dir / f"{factor_name}.meta.json"
-            metadata = {
-                "factor_name": factor_name,
-                "display_name": str(df.columns[0]),
-                "factor_description": getattr(task, "factor_description", None),
-                "factor_formulation": getattr(task, "factor_formulation", None),
-                "variables": getattr(task, "variables", None),
-                "rows": len(df),
-                "non_null": int(df.iloc[:, 0].notna().sum()),
-                "ic_score": full_sample_ic,
-                "tags": tags,
-                "export_time": datetime.now().isoformat(timespec="seconds"),
-            }
-            if source_report_title:
-                metadata["source_report_title"] = source_report_title
-            if source_report_path:
-                metadata["source_report_path"] = str(source_report_path)
-            remote_meta.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-        except (OSError, ValueError) as exc:
-            logger.warning(f"Failed to export factor to remote mount {remote_base}: {exc}")
+    # 远程同步已移除 — 用 scripts/sync_factors_to_remote.py 单独执行
     return True
 
 
@@ -1619,6 +1671,82 @@ def _infer_report_factor_registry_tags(task, feedback) -> list[str]:
         tags.add("leakage_checked")
     tags.add("ic_passed")
     return sorted(tags)
+
+
+def _run_llm_review_for_factor(task: FactorTask, source_report_title: str | None) -> None:
+    """在测试阶段对因子做LLM逻辑正确性审查，结果写入meta.json。
+
+    优先使用生成阶段 `_review_factor_logic` 的审查结果（task.llm_review），
+    避免重复调 API。如果生成阶段未做审查，再调 API 做独立审查。
+    """
+    from rdagent.components.coder.factor_coder.factor import FactorFBWorkspace
+
+    factor_name_slug = FactorFBWorkspace._sanitize_factor_name(str(getattr(task, "factor_name", "")))
+    if not factor_name_slug:
+        return
+    report_title_slug = FactorFBWorkspace._sanitize_factor_name(
+        source_report_title or "unknown_report"
+    )
+    # meta.json 路径: EXPORTED_PARQUET_DIR / "literature_reports" / report_title_slug / factor_name_slug.meta.json
+    meta_path = (
+        FactorFBWorkspace.EXPORTED_PARQUET_DIR
+        / "literature_reports"
+        / report_title_slug
+        / factor_name_slug
+        / f"{factor_name_slug}.meta.json"
+    )
+    if not meta_path.exists():
+        logger.warning(f"LLM review skipped: meta.json not found at {meta_path}")
+        return
+
+    code_path = meta_path.with_suffix(".code.py")
+    if not code_path.exists():
+        logger.warning(f"LLM review skipped: code.py not found at {code_path}")
+        return
+
+    # 优先用生成阶段的审查结果
+    existing_review = getattr(task, "llm_review", None)
+    if existing_review is not None and isinstance(existing_review, dict) and existing_review.get("verdict"):
+        result = existing_review
+        logger.info(f"LLM review reused from generation stage: {result.get('verdict')}")
+    else:
+        from rdagent.oai.llm_utils import APIBackend
+
+        try:
+            # 构建审查prompt
+            system_prompt = """你是一个量化因子审查专家。审查因子的代码实现是否与研报定义一致。
+
+只需输出 concise JSON verdict：
+{
+  "verdict": "正确/部分正确/错误",
+  "summary": "<一句话说明代码是否按研报公式正确实现了因子计算，简洁扼要>"
+}"""
+            user_prompt = (
+                f"## 因子信息\n- 因子名称: {getattr(task, 'factor_name', '')}\n"
+                f"- 研报标题: {source_report_title or ''}\n\n"
+                f"## 因子描述\n{getattr(task, 'factor_description', '')}\n\n"
+                f"## 因子公式\n{getattr(task, 'factor_formulation', '')}\n\n"
+                f"## 变量说明\n{json.dumps(getattr(task, 'variables', {}), ensure_ascii=False, indent=2)}\n\n"
+                f"## 因子代码\n```python\n{code_path.read_text(encoding='utf-8')}\n```\n"
+            )
+            response = APIBackend().build_messages_and_create_chat_completion(
+                user_prompt=user_prompt,
+                system_prompt=system_prompt,
+                json_mode=True,
+                json_target_type=dict,
+            )
+            result = json.loads(response)
+            if not result:
+                return
+        except Exception as exc:
+            logger.warning(f"LLM review failed for {task.factor_name}: {exc}")
+            return
+
+    # 写入meta.json
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["llm_review"] = result
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info(f"LLM review for {task.factor_name}: {result.get('verdict', 'N/A')}")
 
 
 def main(report_folder=None, path=None, all_duration=None, checkout=True, minimal_mode=True, report_paths=None):

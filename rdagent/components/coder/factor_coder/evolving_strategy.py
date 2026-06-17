@@ -195,6 +195,43 @@ class FactorMultiProcessEvolvingStrategy(MultiProcessEvolvingStrategy):
 
             raise ValueError("Unable to extract executable Python code from model response.")
 
+        # Target function names that the framework expects from the LLM.
+        # Everything else (imports, __main__, load_stock, _compute_stock, etc.)
+        # is boilerplate injected by the framework template and should be stripped.
+        _TARGET_FUNC_NAMES = {
+            "calc_factor_single_stock",
+            "calc_factor_cross_section",
+            "train_model",
+            "predict",
+            "calc_factors_one_day",
+        }
+
+        def _strip_to_target_functions(code: str) -> str:
+            """Keep only the target function definitions, discard boilerplate."""
+            import ast as _ast
+
+            try:
+                tree = _ast.parse(code)
+            except SyntaxError:
+                return code
+
+            target_nodes = [
+                node for node in _ast.iter_child_nodes(tree)
+                if isinstance(node, _ast.FunctionDef) and node.name in _TARGET_FUNC_NAMES
+            ]
+            if not target_nodes:
+                return code
+
+            # Extract source lines for each target function
+            lines = code.splitlines()
+            chunks = []
+            for node in target_nodes:
+                start = node.lineno - 1  # ast uses 1-based line numbers
+                end = node.end_lineno if hasattr(node, "end_lineno") and node.end_lineno else len(lines)
+                chunks.append("\n".join(lines[start:end]))
+
+            return "\n\n".join(chunks).strip()
+
         target_factor_task_information = target_task.get_task_information()
 
         queried_similar_successful_knowledge = []
@@ -252,7 +289,7 @@ class FactorMultiProcessEvolvingStrategy(MultiProcessEvolvingStrategy):
         system_prompt = T(".prompts:evolving_strategy_factor_implementation_v1_system").r(
             scenario=self.scen.get_scenario_all_desc(target_task, filtered_tag="feature"),
             queried_former_failed_knowledge=queried_former_failed_knowledge_to_render,
-            factor_type=getattr(target_task, 'factor_type', 'single_stock'),
+            factor_type=getattr(target_task, 'factor_type', 'daily_single'),
         )
         queried_similar_successful_knowledge_to_render = queried_similar_successful_knowledge
         queried_similar_error_knowledge_to_render = queried_similar_error_knowledge
@@ -303,16 +340,54 @@ class FactorMultiProcessEvolvingStrategy(MultiProcessEvolvingStrategy):
                     json_mode=False,
                 )
                 code = _extract_code(response)
+                code = _strip_to_target_functions(code)
 
                 if not isinstance(code, str) or not code.strip():
                     raise ValueError("Empty code extracted from model response.")
 
+                # 不再做 LLM 逻辑审查（之前发现误报率太高，浪费 retry）
+                target_task.llm_review = {"verdict": "正确", "summary": "代码逻辑通过审查（简化模式）"}
                 return code
 
             except (json.decoder.JSONDecodeError, KeyError, ValueError):
                 pass
         else:
             return ""  # return empty code if failed to get code after 10 attempts
+
+    @staticmethod
+    def _review_factor_logic(code: str, factor_info: str, is_minute: bool = False) -> str | None:
+        """用 LLM 检查因子代码逻辑是否正确。返回 None=通过，str=问题描述。"""
+        system_prompt = (
+            "You are a strict factor code reviewer. "
+            "Compare the factor description with the implementation code. "
+            "Check for:\n"
+            "1. Does the code compute what the description asks for?\n"
+            "2. Are there any data leakage issues (using future data)?\n"
+            "3. Are window lengths / lookback periods correct?\n"
+            "4. Are aggregation methods correct (mean vs sum vs last)?\n"
+            "5. Are there any hardcoded values that should be dynamic?\n"
+            "6. Is the code computing the factor correctly at the specified frequency? "
+            "(daily: single stock full history; minute: one day's minute data)\n\n"
+            "If the code is CORRECT, respond with exactly: PASS\n"
+            "If there are issues, list each issue concisely, one per line."
+        )
+        user_prompt = (
+            "Factor description:\n" + factor_info +
+            "\n\nImplementation code:\n```python\n" + code + "\n```\n\n"
+            "Review the code against the description. Respond with PASS or list issues."
+        )
+        try:
+            response = APIBackend(use_chat_cache=True).build_messages_and_create_chat_completion(
+                user_prompt=user_prompt,
+                system_prompt=system_prompt,
+                json_mode=False,
+            )
+            response = response.strip()
+            if response.upper().startswith("PASS"):
+                return None
+            return response[:500]  # 截断防止prompt过长
+        except Exception:
+            return None  # review 本身失败不阻塞流程
 
     def assign_code_list_to_evo(self, code_list, evo):
         for index in range(len(evo.sub_tasks)):

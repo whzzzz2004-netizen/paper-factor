@@ -7,11 +7,11 @@ RUN if [ "$USE_CHINA_MIRROR" = "true" ]; then \
       && sed -i 's|http://deb.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list.d/debian.sources \
       && apt-get clean \
       && apt-get update \
-      && apt-get install -y --no-install-recommends libgomp1 \
+      && apt-get install -y --no-install-recommends libgomp1 procps \
       && rm -rf /var/lib/apt/lists/*; \
     else \
       apt-get update \
-      && apt-get install -y --no-install-recommends libgomp1 \
+      && apt-get install -y --no-install-recommends libgomp1 procps \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 
@@ -22,8 +22,8 @@ RUN if [ "$USE_CHINA_MIRROR" = "true" ]; then \
     && python -m pip install --upgrade pip setuptools wheel
 
 RUN python -m pip install --prefer-binary --retries 5 --timeout 120 \
-    pandas \
-    numpy \
+    "pandas<2.2" \
+    "numpy<2" \
     scipy \
     scikit-learn \
     tables \
@@ -52,5 +52,11 @@ RUN python -m pip install --prefer-binary --retries 5 --timeout 120 \
     torch \
     --index-url https://download.pytorch.org/whl/cu121 \
     --trusted-host download.pytorch.org
+
+RUN python -m pip install --prefer-binary --retries 5 --timeout 120 jqdatasdk
+
+# JoinQuant credentials (read from env at runtime, not baked in)
+ENV JQ_USER=""
+ENV JQ_PASS=""
 
 WORKDIR /workspace/factor_workspace

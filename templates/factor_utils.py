@@ -23,7 +23,11 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 # === 默认数据路径 ===
-DEFAULT_DATA_DIR = Path(__file__).parent.parent / "git_ignore_folder" / "factor_implementation_source_data" / "stock_data"
+_ROOT = Path(__file__).parent.parent
+DEFAULT_DATA_DIR = Path(os.environ.get(
+    "FACTOR_DATA_DIR",
+    str(_ROOT / "git_ignore_folder" / "factor_implementation_source_data_1000"),
+)) / "stock_data"
 
 
 def get_stock_list(data_dir=None, freq="daily"):

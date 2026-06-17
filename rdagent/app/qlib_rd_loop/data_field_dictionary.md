@@ -21,6 +21,7 @@
 | $pct_chg | 涨跌幅(%) | |
 | $pre_close | 前收盘价 | |
 | $turnover_rate | 换手率(%) | 注意：列名是 $turnover_rate，不是 $turnover |
+| $jhjj_hsl | 集合竞价换手率(%) | 开盘前集合竞价阶段的换手率 |
 
 ### minute_pv.parquet（分钟频数据，全量，Parquet + zstd 压缩）
 

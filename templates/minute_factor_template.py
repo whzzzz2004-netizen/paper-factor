@@ -10,7 +10,7 @@
 
 输入说明：
     df —— 单只股票某一天的全部分钟线数据（按时间排序），普通 DatetimeIndex
-         可用列: open, high, low, close, volume, vwap
+         可用列: open, high, low, close, volume, vwap, return（分钟收益率）, factor（复权因子）
          每天 240 个 bar（9:30-11:30 + 13:00-15:00）
 
 返回说明：

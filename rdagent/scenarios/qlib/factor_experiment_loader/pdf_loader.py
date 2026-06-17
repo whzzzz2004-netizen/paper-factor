@@ -178,6 +178,7 @@ def __extract_core_factor_dict_from_one_report(
             "description": normalized_description,
             "formulation": normalized_formulation,
             "variables": variables,
+            "source_excerpt": str(factor_data.get("source_excerpt") or "").strip(),
         }
     return final_factor_dict_to_one_report
 

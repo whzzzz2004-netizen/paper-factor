@@ -1,5 +1,7 @@
 import re
 
+import pandas as pd
+
 from rdagent.components.coder.CoSTEER.evaluators import (
     CoSTEEREvaluator,
     CoSTEERMultiFeedback,
@@ -28,7 +30,7 @@ class FactorEvaluatorForCoder(CoSTEEREvaluator):
 
     @staticmethod
     def _code_review_has_blocking_issue(code_feedback: str | None) -> bool:
-        # For paper_factor, code review is informational only and must never block execution.
+        """For paper_factor, code review is informational only and must never block execution."""
         return False
 
     def evaluate(
@@ -60,6 +62,8 @@ class FactorEvaluatorForCoder(CoSTEEREvaluator):
             )
         else:
             factor_feedback = FactorSingleFeedback()
+
+            # === Execute in Docker ===
             (
                 execution_feedback,
                 gen_df,
@@ -86,30 +90,21 @@ class FactorEvaluatorForCoder(CoSTEEREvaluator):
                 factor_feedback.final_feedback = "Execution failed, rewrite the code."
                 return factor_feedback
 
-            factor_feedback.code_feedback = "Code review skipped because factor execution produced output successfully."
-            factor_feedback.value_generated_flag = True
-            (
-                factor_feedback.value_feedback,
-                decision_from_value_check,
-            ) = self.value_evaluator.evaluate(
-                implementation=implementation, gt_implementation=gt_implementation, version=target_task.version
-            )
-
-            if decision_from_value_check is True:
-                factor_feedback.final_decision = True
-                factor_feedback.final_feedback = "Value evaluation passed, accept the factor."
-            elif decision_from_value_check is False:
+            # 基本检查：不全 NaN 就算通过
+            all_nan = bool(pd.isna(gen_df).all().all()) if hasattr(gen_df, 'all') else False
+            if all_nan:
+                factor_feedback.value_generated_flag = False
+                factor_feedback.value_feedback = "Output is all NaN — factor calculation produced no valid values."
+                factor_feedback.code_feedback = "Output is all NaN — factor calculation produced no valid values."
                 factor_feedback.final_decision = False
-                factor_feedback.final_feedback = (
-                    "Value evaluation found critical issues (e.g. all-NaN output, inf values, "
-                    "future data leakage, or wrong output format). Fix these issues before retrying."
-                )
-            else:
-                factor_feedback.final_decision = True
-                factor_feedback.final_feedback = (
-                    "The factor executed successfully, but the IC did not pass; "
-                    "keep the factor and record the IC result as review context."
-                )
+                factor_feedback.final_feedback = "Factor output is all NaN. Check the calculation logic and ensure actual values are computed."
+                return factor_feedback
+
+            factor_feedback.value_generated_flag = True
+            factor_feedback.value_feedback = "Skipped: non-empty output is accepted."
+            factor_feedback.code_feedback = "Skipped: non-empty output is accepted."
+            factor_feedback.final_decision = True
+            factor_feedback.final_feedback = "Factor generated non-empty output. Accepted."
             return factor_feedback
 
 

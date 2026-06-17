@@ -6,12 +6,17 @@ nodes:
       - 证券代码
       - instrument
       - 688
+      - 300
+      - 8开头
       - 科创板
+      - 创业板
+      - 北交所
       - star market
+      - chinext
     requires: []
     content: |-
       市场板块判断以六位 A 股证券代码为准。常见代码形态包括纯六位代码、带交易所后缀的代码、带交易所前缀的代码。
-      若六位证券代码以 688 开头，本地 paper_factor 默认按科创板处理；其他代码默认按非科创板处理。
+      若六位证券代码以 8 开头，本地 paper_factor 默认按北交所处理（涨跌幅限制30%）；以 688 开头按科创板处理（20%）；以 300 开头按创业板处理（20%）；其他代码默认按主板处理（10%）。
 
   limit_up_rule:
     title: 中国 A 股涨停规则
@@ -29,7 +34,7 @@ nodes:
     content: |-
       “涨停”指交易所规定的、相对于前一交易日收盘价的当日最高涨幅限制，不等同于任意较大的正收益。
       当前本地复现先忽略 ST/*ST 状态和上市初期无涨跌幅限制阶段。
-      若任务涉及涨停价或涨停日，默认使用可由证券代码判断的简化规则：科创板 688 使用 20%，其他股票使用 10%。不要因为缺少 ST 状态而直接跳过涨停价类因子。
+      若任务涉及涨停价或涨停日，默认使用可由证券代码判断的简化规则：北交所 8 开头使用 30%，科创板 688 开头和创业板 300 开头使用 20%，其他股票使用 10%。不要因为缺少 ST 状态而直接跳过涨停价类因子。
       涨停价由前一交易日收盘价和对应涨跌幅上限决定。
 
   one_line_board:
@@ -152,8 +157,95 @@ nodes:
       - 成长因子
     requires: []
     content: |-
-      当前 paper_factor 本地数据包括：日频价量数据（daily_pv.h5）、分钟频价量数据（minute_pv.h5）、以及 111 个预计算的基本面因子（存储在 daily_pv.h5 中）。
+      当前 paper_factor 本地数据包括：日频价量数据（daily_pv.h5）、分钟频价量数据（minute_pv.h5）、111 个预计算的基本面因子（存储在 daily_pv.h5 中）、申万一级行业分类数据（industry.json）、以及可通过聚宽接口按需下载的指数数据。
       日频可用列：$open, $close, $high, $low, $volume, $factor, $pct_chg, $pre_close, $turnover_rate。
       分钟频可用列：$open, $close, $high, $low, $volume, $vwap, $factor, $return。
       基本面因子列名格式：$盈利因子1~$盈利因子14, $价值因子1~$价值因子12, $成长因子1~$成长因子16, $运营因子1~$运营因子22, $杠杆因子1~$杠杆因子8, $质量因子1~$质量因子15, $现金流因子1~$现金流因子9, $其他因子1~$其他因子13, $股本因子1~$股本因子5, $动量因子1~$动量因子3, $特殊因子1~$特殊因子4。
+      行业分类：使用 INDUSTRY_DICT[stock] 获取股票所属申万一级行业（如 "银行I"、"食品饮料I"）。
+      指数数据：使用 get_jq_data(symbol, 'price') 获取指数行情，symbol 为聚宽格式（如 '000905.XSHG' 为中证500）。
       当论文因子依赖本地不存在的数据时，正确做法是跳过该因子并报告缺失的数据，而不是用无关代理变量替代。
+
+  industry_classification:
+    title: 行业分类数据
+    aliases:
+      - 申万行业
+      - 行业分类
+      - 行业分组
+      - 行业中性化
+      - 行业排名
+      - 行业动量
+      - 行业均值
+      - 申万一级
+      - Shenwan industry
+      - SW industry
+      - sector
+    requires:
+      - local_data_discipline
+    content: |-
+      行业分类采用申万一级行业标准，共 31 个行业（银行I、房地产I、医药生物I、电子I、计算机I 等）。
+      框架自动加载为 INDUSTRY_DICT 字典，key 为股票代码（如 "1"、"600519"），value 为行业名称。
+      因子代码中直接使用 INDUSTRY_DICT[stock] 获取股票所属行业。
+      用途：行业中性化、行业分组统计、行业内排名、行业动量、行业轮动等因子。
+      行业名称带 "I" 后缀表示一级行业，这是申万分类的标准命名。
+
+  index_data:
+    title: 指数数据
+    aliases:
+      - 基准指数
+      - 指数收益
+      - 市场收益
+      - 超额收益
+      - beta
+      - 相对强弱
+      - 中证500
+      - 沪深300
+      - 上证指数
+      - ZZ500
+      - CSI300
+      - benchmark
+      - index return
+      - market return
+    requires:
+      - local_data_discipline
+    content: |-
+      指数数据通过聚宽（JoinQuant）接口按需下载，首次调用后自动缓存为 parquet 文件。
+      框架提供 get_jq_data(symbol, data_type) 函数，获取指数行情用 get_jq_data(symbol, 'price')。
+      symbol 使用聚宽格式：'000905.XSHG'=中证500, '000300.XSHG'=沪深300, '000001.XSHG'=上证指数, '399006.XSHE'=创业板指。
+      返回 DataFrame，列：open, close, high, low, volume, money。
+      用途：市场收益、超额收益、Beta、相对强弱、CAPM 模型等需要基准指数的因子。
+      注意：首次调用需要联网下载，后续调用直接读缓存，无网络开销。
+
+  jqdata_fallback:
+    title: 聚宽通用数据获取
+    aliases:
+      - 成分股
+      - 指数成分
+      - 中证500成分
+      - 沪深300成分
+      - 创业板成分
+      - 行业成分
+      - 板块成分
+      - 指数列表
+      - 股票列表
+      - 聚宽
+      - JoinQuant
+      - jqdatasdk
+      - 聚宽数据
+      - 在线数据
+      - 联网获取
+      - 下载数据
+      - 数据缺失
+      - 本地没有
+      - 本地不存在
+      - additional data
+      - index constituents
+      - index members
+      - stock list
+    requires:
+      - local_data_discipline
+    content: |-
+      当因子需要本地数据中不存在的字段或标的时，可使用 get_jq_data(symbol, data_type) 通过聚宽在线获取并自动缓存。
+      - get_jq_data('000905.XSHG', 'index_components') 返回中证500成分股列表
+      - get_jq_data('600519.XSHG', 'price') 返回个股行情（本地无此标的时使用）
+      - 优先检查本地缓存，已有则跳过下载。
+      - 需要 JQ_USER / JQ_PASS 环境变量（已注入 Docker 容器）。

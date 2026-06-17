@@ -1,40 +1,89 @@
 
 extract_core_factors_system: |-
     从金融工程研报中抽取可复现的 alpha 因子。每个因子独立提取，不要合并。
+    你的核心目标是**全面概括这篇研报提出的全部因子，不能遗漏**。宁可多提，不可漏提。
+
+    【formulation 字段的核心要求】
+    formulation 必须是**从原始行情数据字段出发的完整数学表达式**，逐步骤写出计算过程：
+    - 必须引用实际数据字段：close, high, low, open, volume, vwap, return, pct_chg, turnover_rate 等
+    - 必须包含具体的数学运算（mean, std, sum, rank, corr, cov, sign, max, min, diff 等）
+    - 必须包含具体的窗口长度和参数值（如 MA(20)、corr(close, volume, 5)）
+    - **绝对禁止**出现以下占位符：`f(\cdot)`、`g(\dots)`、`\text{具体形式缺失}`、`\text{待定}`、`h(variable)`、`\text{因子名} = f(\text{变量})` 等任何无实际内容的表达式
+    - 如果 formulation 不满足上述要求，该因子不返回（跳过）
+
+    【方法论类研报的处理】
+    如果研报提出一种方法论/框架（如”切割””分解””回归””打分””排序分组”等）并应用于多个目标变量：
+    1. 提取该方法论的核心计算步骤（如何分组、如何设阈值、如何聚合）
+    2. 为每个因子写出**基于这些字段**的具体公式。例如”切割”方法论的标准实现为：
+       `\text{Factor} = \frac{1}{N_{high}} \sum_{d \in high} R_d - \frac{1}{N_{low}} \sum_{d \in low} R_d`
+    3. 如果研报没有给出具体阈值，使用中位数（median）作为默认切割阈值
+    4. 在 description 中说明”研报未给出显式公式，该公式是根据文中描述的切割方法论推断得到的”
 
     【提取规则】
-    1. 最多返回 10 个因子，优先选有公式、有检验、参与选股评分的变量
+    1. 最多返回 15 个因子，必须覆盖研报中提出的所有因子
     2. 子因子单独提取（量比、回调幅度、均线排列等），不要合并成大因子
-    3. description 要说明实际计算步骤，不只是金融含义
-    4. formulation 用 LaTeX，变量要明确时间锚点和输入字段
+    3. description 必须写出**从原始数据到最终因子值的完整计算步骤**（至少3-5步），不能只说金融含义
+    4. formulation 用 LaTeX，变量名用下划线连接（如 R_t、VWAP_{t}），时间锚点要明确
     5. 不要引用”同上””见研报”等，每个因子必须自包含
-    6. 阈值、窗口长度等参数必须给出具体数值
-    7. 事件因子（涨停、首板等）要说明如何从行情数据计算
+    6. 阈值、窗口长度等参数必须给出具体数值；研报没给时使用合理默认值并在 description 中标注
+    7. 事件因子（涨停、首板等）要说明如何从行情数据计算（如 close >= 1.095 * pre_close 判定涨停）
     8. 深度学习因子要写出模型结构、输入窗口、loss、训练方式
-    9. 缺失数据或不完整定义要明确标注
+    9. **禁止提取合成因子**（如”等权合成””IC加权””Z-score标准化后相加”等）
+    10. 每个因子的 formulation 必须是**从原始行情数据出发**的完整计算过程，不能以其他因子的输出作为输入
+    11. **source_excerpt**：从研报原文中直接复制该因子相关的段落，包括因子定义、计算公式、参数说明。必须**原文复制**，不做概括。如果因子定义分布在多个段落，复制所有相关段落。
+    12. **特殊条件（special_conditions）**：提取所有数据过滤/剔除条件，无则写”无”
+
+    【好公式 vs 坏公式示例】
+    坏公式：`\text{聪明钱因子} = f(\text{机构参与痕迹}, \text{成交均价})`
+    好公式：`\text{SmartMoney} = \frac{1}{|D_{high}|} \sum_{t \in D_{high}} \text{VWAP}_t - \frac{1}{|D_{low}|} \sum_{t \in D_{low}} \text{VWAP}_t`
+    其中 D_{high} = \{t | \text{volume}_t > \text{median}(\text{volume}_{t-20:t})\}
+
+    坏公式：`\text{APM因子} = g(\text{日内时段}, \text{涨跌幅})`
+    好公式：`\text{APM} = \frac{1}{N_{morning}} \sum_{t \in morning} \text{return}_t - \frac{1}{N_{afternoon}} \sum_{t \in afternoon} \text{return}_t`
+    其中 morning = 9:30-11:30 的分钟数据, afternoon = 13:00-15:00 的分钟数据
 
     json schema:
     {
         “summary”: “研报摘要”,
         “factors”: {
             “factor_name_1”: {
-                “description”: “因子描述”,
-                “formulation”: “LaTeX公式”,
-                “variables”: {“var_1”: “变量说明”}
+                “description”: “因子描述（含完整计算步骤）”,
+                “formulation”: “LaTeX公式（必须完整，禁止占位符）”,
+                “variables”: {“var_1”: “变量说明”},
+                “source_excerpt”: “直接从研报原文中复制与该因子定义、计算公式、构建方法相关的段落（至少包含完整句子，保留具体参数数值和阈值）”,
+                “special_conditions”: “剔除停牌日、剔除ST股”
             }
         }
     }
 
 classify_factor_type_system: |-
-    对以下每个因子，判断其计算方式属于哪种类型，返回 JSON。
-    - “single_stock”: 只需单只股票数据（动量、反转、均线等）
-    - “cross_section”: 需要多只股票数据（行业排名、截面分位等）
+    对以下每个因子，判断其计算方式属于哪种类型，以及计算该因子需要往前看多少个交易日（lookback_days），返回 JSON。
+
+    类型定义（⚠️ 必须先判断数据源再选类型）：
+    - “daily_single”: 使用**日线**数据，单只股票计算（动量、反转、均线等）
+    - “cross_section”: 使用**日线**数据，需要多只股票一起计算（行业排名、截面分位等）
+    - “minute”: 使用**分钟**数据，单只股票计算
+    - “minute_cross_section”: 使用**分钟**数据，需要多只股票或全市场截面处理
     - “deep_learning”: 需要训练神经网络（GRU、TCN、LSTM等）
+
+    ⚠️ 关键判断顺序：
+    1. 先看因子描述/公式中用的是什么数据（”分钟””1分钟K线””日内””intraday”→分钟；”日””收盘价””日收益率”→日线）
+    2. 如果是分钟数据，只能选 minute 或 minute_cross_section，**绝不能选 daily_single 或 cross_section**
+    3. 如果是日线数据，只能选 daily_single 或 cross_section，**绝不能选 minute 或 minute_cross_section**
+    4. 再看是否需要跨股票的截面操作来决定选哪个
+
+    lookback_days 说明：
+    - lookback_days 只控制**时间维度**：每只股票在 trade_date 之前需要多少个交易日的数据
+    - 例：RSI(14) 需要 14 天 → lookback_days=14；MACD 需要 26 天 → lookback_days=26
+    - ⚠️ 股票数量（股票池）由框架自动处理，所有因子默认使用全市场股票，无需因为”需要全市场”而设 lookback_days=0
+    - 只有深度学习因子等确实需要全部历史做训练时才设 lookback_days=0
+    - **分钟线因子只用当天数据时，lookback_days 必须设为 1**（不是 0）。需要跨天分钟数据时设更大值
 
     json schema:
     {
-        “factor_name_1”: “single_stock”,
-        “factor_name_2”: “deep_learning”
+        “factor_name_1”: {“type”: “daily_single”, “lookback_days”: 14},
+        “factor_name_2”: {“type”: “minute_cross_section”, “lookback_days”: 5},
+        “factor_name_3”: {“type”: “deep_learning”, “lookback_days”: 0}
     }
 
 classify_factor_type_user: |-
@@ -51,14 +100,15 @@ extract_factor_formulation_system: |-
     3. 括号中的短语也属于变量定义的一部分。例如变量被描述为 "T-2 day (limit-up day) volume" 时，T-2 必须是涨停事件日，而不是普通的 T-2 日成交量。
     4. 如果研报在事件样本上定义因子，请把事件条件或 indicator 写入公式，确保后续代码复现时不会丢失该条件。
     5. 每个因子在时间、样本过滤和所需输入上都必须自包含。不要把 Stage_t_raw、Stage_smooth、PullbackDay、FirstBoardDay、market sentiment 等未定义中间概念当作已有字段。如果研报定义了这些概念，请保留定义；如果研报没有定义，请明确标记缺少定义，不要在公式抽取阶段发明新规则。
-    6. 禁止在 formulation 或 variables 中使用“同 XXX”“同上”“其他参数同”“具体架构见研报”“参考前文”“见表 X/图 X”等引用式描述。后续代码生成只依赖当前 JSON，不会再读取研报或其他因子，因此所有共享设定都必须在当前因子内完整展开；无法展开时明确标记缺少哪些架构、参数、标签或数据定义。
-    7. 对机器学习/深度学习因子，必须在当前因子中完整说明模型结构和训练目标，包括输入字段、输入窗口、预测 horizon、标签定义、样本构造、标准化/去极值方式、模型类型、层数、隐藏维度、loss、训练/验证切分、随机种子或复现实验需要的固定参数。不能只写“同某模型”“newloss”“seed3”或“具体见研报”。
+    6. 禁止在 formulation 或 variables 中使用”同 XXX””同上””其他参数同””具体架构见研报””参考前文””见表 X/图 X”等引用式描述。后续代码生成只依赖当前 JSON，不会再读取研报或其他因子，因此所有共享设定都必须在当前因子内完整展开；无法展开时明确标记缺少哪些架构、参数、标签或数据定义。
+    7. 对机器学习/深度学习因子，必须在当前因子中完整说明模型结构和训练目标，包括输入字段、输入窗口、预测 horizon、标签定义、样本构造、标准化/去极值方式、模型类型、层数、隐藏维度、loss、训练/验证切分、随机种子或复现实验需要的固定参数。不能只写”同某模型””newloss””seed3”或”具体见研报”。
+    8. 每个因子必须提取 special_conditions，包括研报中对该因子的所有数据过滤/剔除条件（剔除停牌、剔除ST、剔除上市不满N天、剔除涨跌停日、剔除特殊板块等）。无特殊条件则写”无”。
 
-    本地复现可使用以下数据源：
+    本地复现可使用以下数据源（按股票分割的 parquet 文件，列名无 $ 前缀）：
 
-    1. 日频价量数据（daily_pv.h5）：$open、$close、$high、$low、$volume、$factor（复权因子）、$pct_chg（涨跌幅）、$pre_close（前收盘价）、$turnover_rate（换手率）。
-    2. 日频基本面因子（daily_pv.h5 中共111个）：$盈利因子1~$盈利因子14、$价值因子1~$价值因子12、$成长因子1~$成长因子16、$运营因子1~$运营因子22、$杠杆因子1~$杠杆因子8、$质量因子1~$质量因子15、$现金流因子1~$现金流因子9、$其他因子1~$其他因子13、$股本因子1~$股本因子2。
-    3. 分钟线数据（minute_pv.h5）：$open、$close、$high、$low、$volume、$vwap、$factor（复权因子）、$return（分钟收益率）。
+    1. 日频价量数据：open、close、high、low、volume、factor（复权因子）、pct_chg（涨跌幅）、pre_close（前收盘价）、turnover_rate（换手率）、jhjj_hsl（集合竞价换手率）。
+    2. 日频基本面因子（共14个，英文列名）：roe（净资产收益率）、roa（总资产收益率）、pe_ttm（市盈率TTM）、pb（市净率）、revenue_yoy（营收同比增速）、profit_yoy（净利润同比增速）、gross_margin（毛利率）、net_margin（净利率）、debt_to_asset（资产负债率）、ocf_per_share（每股经营现金流）、market_cap（总市值/亿元）、circulating_market_cap（流通市值/亿元）、total_shares（总股本/万股）、float_shares（流通股本/万股）。
+    3. 分钟线数据：open、close、high、low、volume、vwap、factor（复权因子）、return（分钟收益率）。
 
     请只使用可用的日频/分钟价量数据展开公式。如果某个因子需要不可用数据或未定义中间概念，请保留论文公式，但在变量解释中明确标记所需变量不可用，并说明该因子应跳过，而不是用无关的价量代理变量近似。若因子数量超过 token 限制，在不超过限制的前提下尽可能多抽取公式。注意避免 JSON 中的特殊字符语法错误，尤其是 LaTeX 中的反斜杠和下划线。
 
@@ -69,14 +119,16 @@ extract_factor_formulation_system: |-
             "variables": {
                 "变量或函数名 1": "变量或函数 1 的中文说明",
                 "变量或函数名 2": "变量或函数 2 的中文说明"
-            }
+            },
+            "special_conditions": "剔除停牌日、剔除ST股等过滤条件，无则写'无'"
         },
         "factor name 2": {
             "formulation": "因子 2 的 LaTeX 公式",
             "variables": {
                 "变量或函数名 1": "变量或函数 1 的中文说明",
                 "变量或函数名 2": "变量或函数 2 的中文说明"
-            }
+            },
+            "special_conditions": "剔除上市不满60个交易日的次新股"
         }
     }
 
@@ -122,10 +174,10 @@ factor_viability_system: |-
     3. LaTeX 格式的因子公式；
     4. 因子公式中变量和函数的说明。
 
-    用户拥有以下源数据：
-    1. 日频价量数据（daily_pv.h5）：$open、$close、$high、$low、$volume、$factor（复权因子）、$pct_chg（涨跌幅）、$pre_close（前收盘价）、$turnover_rate（换手率）；
-    2. 日频基本面因子（daily_pv.h5 中共111个预计算因子）：包括盈利、价值、成长、运营、杠杆、质量、现金流、其他、股本等大类。列名格式为 $盈利因子1、$价值因子1 等；
-    3. 分钟线数据（minute_pv.h5）：$open、$close、$high、$low、$volume、$vwap、$factor（复权因子）、$return（分钟收益率）。
+    用户拥有以下源数据（按股票分割的 parquet 文件，列名无 $ 前缀）：
+    1. 日频价量数据：open、close、high、low、volume、factor（复权因子）、pct_chg（涨跌幅）、pre_close（前收盘价）、turnover_rate（换手率）、jhjj_hsl（集合竞价换手率）；
+    2. 日频基本面因子（共14个，英文列名）：roe、roa、pe_ttm、pb、revenue_yoy、profit_yoy、gross_margin、net_margin、debt_to_asset、ocf_per_share、market_cap（总市值/亿元）、circulating_market_cap（流通市值/亿元）、total_shares（总股本/万股）、float_shares（流通股本/万股）；
+    3. 分钟线数据：open、close、high、low、volume、vwap、factor（复权因子）、return（分钟收益率）。
 
 
     可实现因子应满足以下条件：

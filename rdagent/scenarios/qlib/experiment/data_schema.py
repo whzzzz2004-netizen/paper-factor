@@ -154,14 +154,18 @@ def filter_field_schema(
     available_columns: list[str] | tuple[str, ...] | set[str],
 ) -> dict[str, dict[str, str]]:
     available = {str(column) for column in available_columns}
-    return {column: value for column, value in schema.items() if column in available}
+    # Also add $-prefixed versions for matching (schema keys have $ prefix, parquet columns don't)
+    available_with_dollar = available | {f"${c}" for c in available}
+    return {column: value for column, value in schema.items() if column in available_with_dollar}
 
 
 def format_field_schema_for_prompt(schema: dict[str, dict[str, str]], max_items: int | None = None) -> str:
     lines: list[str] = []
     for column in sorted(schema, key=lambda x: [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", x)]):
         item = schema[column]
-        parts = [column]
+        # Strip $ prefix for display since parquet columns don't have it
+        display_col = column.lstrip("$") if column.startswith("$") else column
+        parts = [display_col]
         if item.get("short_name"):
             parts.append(item["short_name"])
         if item.get("formula"):

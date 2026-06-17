@@ -70,7 +70,7 @@ def run_paper_factor(
         help="Use the lowest-cost extraction path by skipping report classification and extra hypothesis generation.",
     ),
     llm_max_retry: int = typer.Option(1, "--llm-max-retry", min=1),
-    max_factors_per_paper: int = typer.Option(10, "--max-factors-per-paper", min=1, max=10),
+    max_factors_per_paper: int = typer.Option(15, "--max-factors-per-paper", min=1, max=15),
     extract_only: bool = typer.Option(
         False,
         "--extract-only/--run-full-pipeline",
@@ -178,7 +178,7 @@ def start_paper_factor(
             checkout=checkout,
             minimal_mode=minimal_mode,
             llm_max_retry=llm_max_retry,
-            max_factors_per_paper=10,
+            max_factors_per_paper=15,
             extract_only=False,
         )
 

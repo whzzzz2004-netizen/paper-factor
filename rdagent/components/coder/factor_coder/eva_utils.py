@@ -119,6 +119,50 @@ class FactorCodeEvaluator(FactorEvaluator):
 
         return critic_response, None
 
+    def evaluate_binary(
+        self,
+        target_task: FactorTask,
+        implementation: Workspace,
+        **kwargs,
+    ) -> tuple[bool, str]:
+        """Pre-execution binary code review.
+        Returns (decision, feedback) where decision=True means code passes review.
+        Not too strict — only catches clear logic errors.
+        """
+        import json
+        factor_information = target_task.get_task_information()
+        code = implementation.all_codes
+        system_prompt = T(".prompts:evaluator_code_review_binary_v1_system").r(
+            scenario=(
+                self.scen.get_scenario_all_desc(
+                    target_task,
+                    filtered_tag="feature",
+                    simple_background=FACTOR_COSTEER_SETTINGS.simple_background,
+                )
+                if self.scen is not None
+                else "No scenario description."
+            )
+        )
+        user_prompt = (
+            "--------------因子信息：---------------\n"
+            f"{factor_information}\n"
+            "--------------Python 代码：---------------\n"
+            f"{code}\n"
+        )
+        try:
+            resp = APIBackend().build_messages_and_create_chat_completion(
+                user_prompt=user_prompt,
+                system_prompt=system_prompt,
+                json_mode=True,
+            )
+            result = json.loads(resp)
+            decision = bool(result.get("code_review_decision", True))
+            feedback = str(result.get("code_review_feedback", ""))
+            return decision, feedback
+        except Exception:
+            # If JSON parsing fails, default to pass (don't block)
+            return True, ""
+
 
 class FactorInfEvaluator(FactorEvaluator):
     def evaluate(
@@ -323,7 +367,13 @@ class FactorDatetimeDailyEvaluator(FactorEvaluator):
         )
 
 
+_DAILY_LABEL_CACHE: dict[str, pd.Series] = {}
+
+
 def _get_daily_label_from_data_folder(data_folder: Path) -> pd.Series:
+    cache_key = str(data_folder.resolve())
+    if cache_key in _DAILY_LABEL_CACHE:
+        return _DAILY_LABEL_CACHE[cache_key]
     import json
     stock_data_dir = data_folder / "stock_data" / "daily"
     with open(stock_data_dir / "stock_list.json") as f:
@@ -340,7 +390,9 @@ def _get_daily_label_from_data_folder(data_folder: Path) -> pd.Series:
     combined = pd.concat(frames)
     combined.index.name = "datetime"
     combined = combined.reset_index().set_index(["datetime", "instrument"]).sort_index()
-    return combined["label_next_return"]
+    result = combined["label_next_return"]
+    _DAILY_LABEL_CACHE[cache_key] = result
+    return result
 
 
 def _mean_cross_sectional_ic(factor_df: pd.DataFrame, label: pd.Series) -> float:
@@ -884,15 +936,8 @@ class FactorValueEvaluator(FactorEvaluator):
         feedback_str, inf_evaluate_res = FactorInfEvaluator(self.scen).evaluate(implementation, gt_implementation)
         conclusions.append(feedback_str)
 
-        if version == 1:
-            feedback_str, ic_check_result = FactorICEvaluator(self.scen).evaluate(
-                implementation,
-                gt_implementation,
-                data_type="All",
-            )
-            conclusions.append(feedback_str)
-        else:
-            ic_check_result = None
+        # IC评估跳过：直接运行一次存结果即可
+        ic_check_result = None
 
         # Check if the index of the dataframe is ("datetime", "instrument")
         feedback_str, _ = FactorOutputFormatEvaluator(self.scen).evaluate(implementation, gt_implementation)

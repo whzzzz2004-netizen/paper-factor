@@ -16,15 +16,33 @@ hypothesis_generation:
     {{ report_content }}
 
 classify_factor_type_system: |-
-    对以下每个因子，判断其计算方式属于哪种类型，返回 JSON。
-    - "single_stock": 只需单只股票数据（动量、反转、均线等）
-    - "cross_section": 需要多只股票数据（行业排名、截面分位等）
+    对以下每个因子，判断其计算方式属于哪种类型，以及计算该因子需要往前看多少个交易日（lookback_days），返回 JSON。
+
+    类型定义（⚠️ 必须先判断数据源再选类型）：
+    - "daily_single": 使用**日线**数据，单只股票计算（动量、反转、均线等）
+    - "cross_section": 使用**日线**数据，需要多只股票一起计算（行业排名、截面分位等）
+    - "minute": 使用**分钟**数据，单只股票计算
+    - "minute_cross_section": 使用**分钟**数据，需要多只股票或全市场截面处理
     - "deep_learning": 需要训练神经网络（GRU、TCN、LSTM等）
+
+    ⚠️ 关键判断顺序：
+    1. 先看因子描述/公式中用的是什么数据（"分钟""1分钟K线""日内""intraday"→分钟；"日""收盘价""日收益率"→日线）
+    2. 如果是分钟数据，只能选 minute 或 minute_cross_section，**绝不能选 daily_single 或 cross_section**
+    3. 如果是日线数据，只能选 daily_single 或 cross_section，**绝不能选 minute 或 minute_cross_section**
+    4. 再看是否需要跨股票的截面操作来决定选哪个
+
+    lookback_days 说明：
+    - lookback_days 只控制**时间维度**：每只股票在 trade_date 之前需要多少个交易日的数据
+    - 例：RSI(14) 需要 14 天 → lookback_days=14；MACD 需要 26 天 → lookback_days=26
+    - ⚠️ 股票数量（股票池）由框架自动处理，所有因子默认使用全市场股票，无需因为"需要全市场"而设 lookback_days=0
+    - 只有深度学习因子等确实需要全部历史做训练时才设 lookback_days=0
+    - **分钟线因子只用当天数据时，lookback_days 必须设为 1**（不是 0）。需要跨天分钟数据时设更大值
 
     json schema:
     {
-        "factor_name_1": "single_stock",
-        "factor_name_2": "deep_learning"
+        "factor_name_1": {"type": "daily_single", "lookback_days": 14},
+        "factor_name_2": {"type": "minute_cross_section", "lookback_days": 5},
+        "factor_name_3": {"type": "deep_learning", "lookback_days": 0}
     }
 
 classify_factor_type_user: |-

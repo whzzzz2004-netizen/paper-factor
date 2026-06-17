@@ -18,6 +18,7 @@ class FactorExperimentLoaderFromDict(FactorExperimentLoader):
                 factor_description=factor_data["description"],
                 factor_formulation=factor_data["formulation"],
                 variables=factor_data["variables"],
+                source_excerpt=str(factor_data.get("source_excerpt") or ""),
             )
             task_l.append(task)
         exp = QlibFactorExperiment(sub_tasks=task_l)

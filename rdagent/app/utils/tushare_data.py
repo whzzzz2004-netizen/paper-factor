@@ -12,7 +12,8 @@ import pandas as pd
 
 
 ROOT = Path.cwd()
-FACTOR_DATA_DIR = ROOT / "git_ignore_folder" / "factor_implementation_source_data"
+import os
+FACTOR_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(ROOT / "git_ignore_folder" / "factor_implementation_source_data_1000")))
 FACTOR_DATA_DEBUG_DIR = ROOT / "git_ignore_folder" / "factor_implementation_source_data_debug"
 META_FILENAME = "tushare_data_meta.json"
 PROFILE_META_FILENAME = "jq_data_meta.json"
