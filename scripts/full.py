@@ -21,6 +21,7 @@
   python3 scripts/full.py --skip-eval         # 跳过评估/绘图
   python3 scripts/full.py --llm-review        # 全量运行后对效果差的因子做LLM审查
   python3 scripts/full.py --ic-threshold 0.01 --sharpe-threshold -0.5  # LLM审查触发阈值（默认IC<0.01 或 多空Sharpe<-1）
+  python3 scripts/full.py --barra-r2-threshold 0.25 --barra-t-threshold 3.0 --barra-min-factors 3  # Barra极度偏离触发（默认R²>0.25且≥3个因子|t|>3）
 """
 
 import argparse
@@ -465,14 +466,20 @@ def post_process(factor: dict, skip_eval: bool = False) -> bool:
 
 
 def llm_review_and_decide(factor: dict, meta: dict, ic_threshold: float = 0.01,
-                          sharpe_threshold: float = -1.0) -> bool:
+                          sharpe_threshold: float = -1.0,
+                          barra_r2_threshold: float = 0.25,
+                          barra_t_threshold: float = 3.0,
+                          barra_min_factors: int = 3) -> bool:
     """LLM 审查因子：对比研报原文 vs 代码实现。
 
     Args:
         factor: 因子信息 dict。
         meta: 已写入的 full meta dict。
-        ic_threshold: IC 均值低于此值时触发审查。
+        ic_threshold: |IC| 低于此值时触发审查。
         sharpe_threshold: 多空 Sharpe 低于此值时触发审查（负值表示反指）。
+        barra_r2_threshold: Barra R² 超过此值且多个因子 |t|>barra_t_threshold 时触发。
+        barra_t_threshold: Barra 暴露 t 统计量阈值。
+        barra_min_factors: 同时满足 |t|>barra_t_threshold 的最少因子数。
 
     Returns:
         True = 接受因子（代码与原文一致，或原文不可用）；False = 需要人工介入。
@@ -496,14 +503,35 @@ def llm_review_and_decide(factor: dict, meta: dict, ic_threshold: float = 0.01,
 
     # 检查是否需要触发审查
     needs_review = False
+    review_reasons = []
     if abs(ic_mean) < ic_threshold:
         needs_review = True
+        review_reasons.append(f"IC={ic_mean:.4f} < {ic_threshold}")
     if ls_sharpe is not None and ls_sharpe < sharpe_threshold:
         needs_review = True
+        review_reasons.append(f"多空Sharpe={ls_sharpe:.2f} < {sharpe_threshold}")
+
+    # Barra 极度偏离检查：R² 高 + 多个因子暴露显著
+    barra = meta.get("barra_analysis")
+    if barra and "error" not in barra:
+        r2 = barra.get("r_squared", 0)
+        if r2 > barra_r2_threshold:
+            strong_exposures = []
+            for name, exp in barra.get("exposures", {}).items():
+                if name != "alpha" and abs(exp.get("tstat", 0)) > barra_t_threshold:
+                    strong_exposures.append(f"{name}(t={exp['tstat']:.1f})")
+            if len(strong_exposures) >= barra_min_factors:
+                needs_review = True
+                review_reasons.append(
+                    f"Barra R²={r2:.2%}, {len(strong_exposures)}个因子|t|>{barra_t_threshold}"
+                )
+                print(f"  ⚠️ Barra 极度偏离: {', '.join(strong_exposures)}", flush=True)
 
     if not needs_review:
         print(f"  因子效果达标 (IC={ic_mean:.4f}, Sharpe={ls_sharpe:.2f})，跳过 LLM 审查", flush=True)
         return True
+
+    print(f"  触发审查: {'; '.join(review_reasons)}", flush=True)
 
     if not source_excerpt:
         print(f"  ⚠️ 无 source_excerpt，无法做 LLM 审查", flush=True)
@@ -732,6 +760,12 @@ def main():
     parser.add_argument("--llm-review", action="store_true", help="全量运行后对效果差的因子做LLM审查")
     parser.add_argument("--ic-threshold", type=float, default=0.01, help="IC均值阈值（低于此值触发审查，默认0.01）")
     parser.add_argument("--sharpe-threshold", type=float, default=-1.0, help="多空Sharpe阈值（低于此值触发审查，默认-1.0）")
+    parser.add_argument("--barra-r2-threshold", type=float, default=0.25,
+                        help="Barra R²阈值+R²超过此值且≥N个因子|t|>阈值时触发（默认0.25）")
+    parser.add_argument("--barra-t-threshold", type=float, default=3.0,
+                        help="Barra 暴露t统计量阈值（默认3.0）")
+    parser.add_argument("--barra-min-factors", type=int, default=3,
+                        help="Barra 极度偏离最少因子数（默认3）")
     args = parser.parse_args()
 
     t_start = time.time()
@@ -823,6 +857,9 @@ def main():
                         factor, full_meta,
                         ic_threshold=args.ic_threshold,
                         sharpe_threshold=args.sharpe_threshold,
+                        barra_r2_threshold=args.barra_r2_threshold,
+                        barra_t_threshold=args.barra_t_threshold,
+                        barra_min_factors=args.barra_min_factors,
                     )
                     if not review_ok:
                         print(f"  ⚠️ {factor_name} LLM 审查建议人工复核", flush=True)
