@@ -94,7 +94,7 @@ def run_other_factor(factor_name: str, factor_dir: Path, code_path: Path) -> boo
         env["PYTHONUNBUFFERED"] = "1"
 
         t0 = time.time()
-        log_path = factor_dir / f"{factor_name}.run.log"
+        log_path = Path(f"/tmp/{factor_name}.run.log")
         last_lines = []
         with open(log_path, "w") as log_f:
             proc = subprocess.Popen(
@@ -203,7 +203,7 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
         env["PYTHONUNBUFFERED"] = "1"
 
         t0 = time.time()
-        log_path = factor_dir / f"{factor_name}.run.log"
+        log_path = Path(f"/tmp/{factor_name}.run.log")
         last_lines = []
         with open(log_path, "w") as log_f:
             proc = subprocess.Popen(
