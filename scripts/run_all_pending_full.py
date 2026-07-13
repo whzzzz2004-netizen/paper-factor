@@ -8,6 +8,7 @@
   python scripts/run_all_pending_full.py --report "报告名"        # 只跑某份报告
   python scripts/run_all_pending_full.py --dry-run                # 只列出不运行
   python scripts/run_all_pending_full.py --no-mount               # 不自动挂载远程E盘
+  python scripts/run_all_pending_full.py --no-mount --remote-path Z:\\paper_factors\\文献因子_全量  # Windows: 手动映射网络驱动器后指定路径
 
 首次运行会自动尝试挂载远程 E 盘（192.168.1.13），挂载成功则自动设置数据路径。
 """
@@ -150,6 +151,8 @@ if __name__ == "__main__":
     parser.add_argument("--report", default=None, help="只跑指定报告（可选）")
     parser.add_argument("--dry-run", action="store_true", help="只列出待运行因子，不实际执行")
     parser.add_argument("--no-mount", action="store_true", help="不自动挂载远程 E 盘")
+    parser.add_argument("--remote-path", default=None,
+                        help="远程 文献因子_全量 目录路径（Windows: 映射网络驱动器后指定）")
     args = parser.parse_args()
 
     # ── 第一步：挂载远程 E 盘 ──
@@ -172,6 +175,14 @@ if __name__ == "__main__":
     global FULL_BASE
     if remote_full_base and remote_full_base.exists():
         FULL_BASE = remote_full_base
+    elif args.remote_path:
+        rp = Path(args.remote_path)
+        if rp.exists():
+            FULL_BASE = rp
+            remote_full_base = rp  # 让 output_base 也指向远程
+            print(f"使用远程路径: {FULL_BASE}")
+        else:
+            print(f"⚠️ 指定的远程路径不存在: {rp}")
     pending = find_pending_factors(report_filter=args.report)
 
     if not pending:

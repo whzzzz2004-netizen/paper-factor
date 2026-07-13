@@ -1,0 +1,66 @@
+{
+  "version": "1.2",
+  "data_dir": "git_ignore_folder/factor_implementation_source_data",
+  "remote": {
+    "host": "192.168.1.13",
+    "share": "E",
+    "user": "pc",
+    "daily_dir": "market_daily_daily_new",
+    "minute_dir": "market_minute_daily_new",
+    "daily_full_file": "dailyData.parquet",
+    "industry_file": "jq_swIndu_comp.csv",
+    "jhjj_hsl_file": "jhjjHsl.csv"
+  },
+  "daily": {
+    "format": "per_stock_parquet",
+    "stock_list_file": "stock_data/daily/stock_list.json",
+    "trade_dates_file": "stock_data/daily/trade_dates.json",
+    "industry_file": "stock_data/daily/industry.json",
+    "columns": {
+      "open": {"description": "开盘价", "source": "remote_daily"},
+      "close": {"description": "收盘价", "source": "remote_daily"},
+      "high": {"description": "最高价", "source": "remote_daily"},
+      "low": {"description": "最低价", "source": "remote_daily"},
+      "factor": {"description": "复权因子", "source": "remote_daily"},
+      "volume": {"description": "成交量", "source": "remote_daily"},
+      "pct_chg": {"description": "涨跌幅(%)", "source": "dailyData.parquet"},
+      "pre_close": {"description": "昨收价", "source": "dailyData.parquet"},
+      "turnover_rate": {"description": "换手率", "source": "dailyData.parquet"},
+      "roe": {"description": "净资产收益率", "source": "dailyData.parquet"},
+      "roa": {"description": "总资产收益率", "source": "dailyData.parquet"},
+      "pe_ttm": {"description": "市盈率(TTM)", "source": "dailyData.parquet"},
+      "pb": {"description": "市净率", "source": "dailyData.parquet"},
+      "revenue_yoy": {"description": "营收同比增速", "source": "dailyData.parquet"},
+      "profit_yoy": {"description": "净利润同比增速", "source": "dailyData.parquet"},
+      "gross_margin": {"description": "毛利率", "source": "dailyData.parquet"},
+      "net_margin": {"description": "净利率", "source": "dailyData.parquet"},
+      "debt_to_asset": {"description": "资产负债率", "source": "dailyData.parquet"},
+      "ocf_per_share": {"description": "每股经营现金流", "source": "dailyData.parquet"},
+      "market_cap": {"description": "总市值", "source": "dailyData.parquet"},
+      "circulating_market_cap": {"description": "流通市值", "source": "dailyData.parquet"},
+      "total_shares": {"description": "总股本", "source": "dailyData.parquet"},
+      "float_shares": {"description": "流通股本", "source": "dailyData.parquet"},
+      "adjusted_profit": {"description": "调整后净利润", "source": "dailyData.parquet"},
+      "EMA5": {"description": "5日指数移动平均", "source": "remote_daily"},
+      "EMA10": {"description": "10日指数移动平均", "source": "remote_daily"},
+      "EMA20": {"description": "20日指数移动平均", "source": "remote_daily"},
+      "gross_profit": {"description": "毛利润", "source": "dailyData.parquet"},
+      "jhjj_hsl": {"description": "集合竞价换手率", "source": "jhjjHsl.csv"},
+      "amount": {"description": "成交金额(元, 成交量×收盘价近似)", "source": "computed"}
+    }
+  },
+  "minute": {
+    "format": "per_date_parquet",
+    "stock_list_file": "stock_data/minute_by_date/stock_list.json",
+    "trade_dates_file": "stock_data/minute_by_date/trade_dates.json",
+    "columns": {
+      "open": {"description": "开盘价", "source": "remote_minute"},
+      "close": {"description": "收盘价", "source": "remote_minute"},
+      "high": {"description": "最高价", "source": "remote_minute"},
+      "low": {"description": "最低价", "source": "remote_minute"},
+      "volume": {"description": "成交量", "source": "remote_minute"},
+      "money": {"description": "成交额", "source": "remote_minute"},
+      "factor": {"description": "复权因子", "source": "remote_minute"}
+    }
+  }
+}

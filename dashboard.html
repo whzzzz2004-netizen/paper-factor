@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Paper Factor Dashboard</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; color: #333; }
+
+/* Layout */
+.app { display: flex; min-height: 100vh; }
+
+/* Sidebar */
+.sidebar { width: 280px; background: #1a1a2e; color: #fff; padding: 24px; flex-shrink: 0; }
+.sidebar h1 { font-size: 22px; margin-bottom: 4px; }
+.sidebar .caption { font-size: 13px; color: #8892b0; margin-bottom: 24px; }
+.metrics { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 20px; }
+.metric-card { background: rgba(255,255,255,0.08); border-radius: 8px; padding: 12px; text-align: center; }
+.metric-card .value { font-size: 24px; font-weight: 700; }
+.metric-card .label { font-size: 11px; color: #8892b0; margin-top: 2px; }
+.sidebar .info { font-size: 11px; color: #8892b0; margin-top: 24px; }
+
+/* Main */
+.main { flex: 1; padding: 24px; overflow-y: auto; }
+
+/* Tabs */
+.tabs { display: flex; gap: 0; border-bottom: 2px solid #e0e0e0; margin-bottom: 24px; }
+.tab-btn { padding: 10px 24px; background: none; border: none; font-size: 15px; cursor: pointer; color: #666; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; }
+.tab-btn:hover { color: #333; }
+.tab-btn.active { color: #1a1a2e; border-bottom-color: #1a1a2e; font-weight: 600; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* Summary row */
+.summary-row { font-size: 14px; color: #666; margin-bottom: 16px; }
+
+/* Report group */
+.report-group { margin-bottom: 16px; }
+.report-header { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: #1a1a2e; }
+
+/* Factor card */
+.factor-card { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); cursor: pointer; }
+.factor-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+.factor-card .top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.du-icon { cursor: pointer; font-size: 18px; user-select: none; color: #ccc; flex-shrink: 0; transition: color 0.15s, transform 0.15s; }
+.du-icon:hover { color: #666; transform: scale(1.2); }
+.du-icon.active { color: #e74c3c; }
+.factor-card .name { font-size: 15px; font-weight: 600; }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 500; }
+.badge-done { background: #d4edda; color: #155724; }
+.badge-test { background: #fff3cd; color: #856404; }
+.badge-pending { background: #e2e3e5; color: #383d41; }
+.badge-type { background: #cce5ff; color: #004085; }
+.factor-card .desc { font-size: 13px; color: #666; margin-top: 6px; }
+.factor-card .metrics { display: flex; gap: 16px; margin-top: 8px; font-size: 13px; display: flex; }
+.factor-card .metrics span { color: #555; }
+.factor-card .metrics strong { color: #1a1a2e; }
+
+/* Factor detail (expanded) */
+.factor-detail { display: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid #eee; }
+.factor-detail.open { display: block; }
+.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.detail-col h4 { font-size: 13px; color: #666; margin-bottom: 8px; }
+.eval-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.eval-item { background: #f8f9fa; border-radius: 6px; padding: 8px 12px; }
+.eval-item .label { font-size: 11px; color: #888; }
+.eval-item .value { font-size: 16px; font-weight: 600; color: #1a1a2e; }
+.decile-chart { max-width: 100%; border-radius: 6px; margin-top: 8px; }
+.code-block { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 6px; font-size: 12px; max-height: 300px; overflow: auto; white-space: pre; font-family: 'Consolas', 'Courier New', monospace; margin-top: 8px; }
+
+/* Factor table */
+.filter-row { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.filter-row select, .filter-row input { padding: 6px 12px; border: 1px solid #ccc; border-radius: 6px; font-size: 13px; background: #fff; }
+.factor-table { width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.factor-table th { background: #f0f0f0; padding: 10px 12px; text-align: left; cursor: pointer; user-select: none; font-weight: 600; color: #444; }
+.factor-table th:hover { background: #e5e5e5; }
+.factor-table td { padding: 10px 12px; border-top: 1px solid #eee; }
+.factor-table tr:hover td { background: #f8f9ff; }
+.factor-table .factor-row { cursor: pointer; }
+.sort-icon { font-size: 10px; margin-left: 4px; color: #999; }
+
+/* Add material */
+.add-section { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.add-section h3 { font-size: 16px; margin-bottom: 12px; }
+.form-group { margin-bottom: 12px; }
+.form-group label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 4px; color: #555; }
+.form-group input, .form-group textarea { width: 100%; padding: 8px 12px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; font-family: inherit; }
+.form-group textarea { resize: vertical; min-height: 100px; }
+.btn { padding: 8px 20px; background: #1a1a2e; color: #fff; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; }
+.btn:hover { background: #2a2a4e; }
+.btn-primary { width: 100%; padding: 10px; }
+
+/* Materials summary */
+.material-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+.mat-card { background: #fff; border-radius: 8px; padding: 16px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.mat-card .value { font-size: 28px; font-weight: 700; color: #1a1a2e; }
+.mat-card .label { font-size: 13px; color: #666; margin-top: 4px; }
+.idea-item { padding: 12px; border-bottom: 1px solid #eee; }
+.idea-item:last-child { border-bottom: none; }
+.idea-item .title { font-weight: 600; font-size: 14px; }
+.idea-item .text { font-size: 13px; color: #555; margin-top: 4px; white-space: pre-wrap; }
+
+/* Existing materials list */
+.material-list { background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden; }
+.material-list .item { padding: 10px 16px; border-bottom: 1px solid #eee; font-size: 13px; }
+.material-list .item:last-child { border-bottom: none; }
+
+/* Toast */
+.toast { position: fixed; bottom: 24px; right: 24px; background: #1a1a2e; color: #fff; padding: 12px 24px; border-radius: 8px; font-size: 14px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: none; z-index: 999; animation: slideIn 0.3s ease; }
+@keyframes slideIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* Loading */
+.loading { text-align: center; padding: 60px 20px; color: #888; }
+.loading .spinner { width: 40px; height: 40px; border: 4px solid #e0e0e0; border-top-color: #1a1a2e; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.error { text-align: center; padding: 40px; color: #dc3545; }
+.empty { text-align: center; padding: 40px; color: #888; }
+
+/* Daily Update */
+.du-summary { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+.du-stat { background: #fff; border-radius: 8px; padding: 14px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); text-align: center; min-width: 120px; }
+.du-stat .val { font-size: 22px; font-weight: 700; color: #1a1a2e; }
+.du-stat .lbl { font-size: 12px; color: #888; margin-top: 2px; }
+.du-actions { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+.du-factor-list { list-style: none; padding: 0; }
+.du-factor-item { background: #fff; border-radius: 8px; padding: 14px 18px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.du-factor-item .fname { font-weight: 600; font-size: 14px; min-width: 180px; }
+.du-factor-item .fmeta { font-size: 12px; color: #888; }
+.du-factor-item .fstatus { font-size: 12px; padding: 2px 8px; border-radius: 4px; }
+.du-status-ok { background: #d4edda; color: #155724; }
+.du-status-update { background: #fff3cd; color: #856404; }
+.du-status-error { background: #f8d7da; color: #721c24; }
+.du-status-pending { background: #e2e3e5; color: #383d41; }
+.du-progress { background: #f0f0f0; border-radius: 8px; padding: 14px 18px; margin-top: 16px; }
+.du-progress .bar { height: 6px; background: #1a1a2e; border-radius: 3px; transition: width 0.5s; }
+.du-add-row { display: flex; gap: 8px; margin-bottom: 16px; }
+.du-add-row select { flex: 1; padding: 6px 12px; border: 1px solid #ccc; border-radius: 6px; font-size: 13px; }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .app { flex-direction: column; }
+  .sidebar { width: 100%; }
+  .detail-grid { grid-template-columns: 1fr; }
+  .eval-metrics { grid-template-columns: repeat(2, 1fr); }
+  .material-summary { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <h1>Paper Factor</h1>
+    <div class="caption">研报因子管理 &amp; 回测 Dashboard</div>
+    <div class="metrics" id="sidebarMetrics">
+      <div class="metric-card"><div class="value">-</div><div class="label">待全量</div></div>
+      <div class="metric-card"><div class="value">-</div><div class="label">因子数</div></div>
+      <div class="metric-card"><div class="value">-</div><div class="label">全量完成</div></div>
+    </div>
+    <button class="btn" onclick="refreshData()" style="width:100%;margin-bottom:20px;">🔄 刷新数据</button>
+    <div class="info" id="footerInfo"></div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('dashboard',this)">📊 Dashboard</button>
+      <button class="tab-btn" onclick="switchTab('factors',this)">📈 因子详情</button>
+      <button class="tab-btn" onclick="switchTab('daily',this)">🔄 每日更新</button>
+      <button class="tab-btn" onclick="switchTab('add',this)">➕ 添加素材</button>
+    </div>
+
+    <!-- Tab: Dashboard -->
+    <div class="tab-content active" id="tabDashboard">
+      <div class="summary-row" id="summaryRow"></div>
+      <div id="dashboardContent"><div class="loading"><div class="spinner"></div>加载中...</div></div>
+    </div>
+
+    <!-- Tab: Factors -->
+    <div class="tab-content" id="tabFactors">
+      <div id="factorTableContainer"><div class="loading"><div class="spinner"></div>加载中...</div></div>
+    </div>
+
+    <!-- Tab: Daily Update -->
+    <div class="tab-content" id="tabDaily">
+      <div id="dailyUpdateContent"><div class="loading"><div class="spinner"></div>加载中...</div></div>
+    </div>
+
+    <!-- Tab: Add Material -->
+    <div class="tab-content" id="tabAdd">
+      <div id="addMaterialContent"><div class="loading"><div class="spinner"></div>加载中...</div></div>
+    </div>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── State ──
+let DATA = null;
+let factorSort = { col: 'name', asc: true };
+let factorFilter = { source: '全部', status: '全部', type: '全部', search: '' };
+
+// ── Data Loading ──
+async function refreshData() {
+  document.querySelectorAll('.tab-content .loading').forEach(el => {
+    el.innerHTML = '<div class="spinner"></div>加载中...';
+    el.style.display = '';
+  });
+  try {
+    const r = await fetch('/api/data');
+    DATA = await r.json();
+    renderAll();
+  } catch(e) {
+    document.querySelectorAll('.tab-content').forEach(el => el.innerHTML =
+      '<div class="error">❌ 无法加载数据，请确认服务器已启动</div>');
+  }
+}
+
+function renderAll() {
+  if (!DATA) return;
+  // Sidebar
+  document.getElementById('sidebarMetrics').innerHTML =
+    `<div class="metric-card"><div class="value">${DATA.full_done}</div><div class="label">因子数</div></div>` +
+    `<div class="metric-card"><div class="value">${DATA.full_done}</div><div class="label">全量完成</div></div>`;
+  document.getElementById('footerInfo').textContent =
+    `共 ${DATA.full_done} 个因子 | ${new Date().toLocaleString()}`;
+
+  renderDashboard();
+  renderFactorTable();
+  renderDailyUpdate();
+  renderAddMaterial();
+  bindDUCheckboxes();
+  loadDailyUpdateStatus();
+}
+
+// ── Tab switching ──
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('tab' + name.charAt(0).toUpperCase() + name.slice(1)).classList.add('active');
+}
+
+// ── Utility ──
+function fmt(val, d) { return val == null ? '-' : typeof val === 'number' ? val.toFixed(d||4) : val; }
+function pct(val) { return val == null ? '-' : (val*100).toFixed(2) + '%'; }
+function badge(s) {
+  if (s === 'done') return '<span class="badge badge-done">✅ 全量完成</span>';
+  if (s === 'test') return '<span class="badge badge-test">🟡 测试通过</span>';
+  return '<span class="badge badge-pending">⚪ 待处理</span>';
+}
+function typeLabel(t) {
+  const m = {minute:'分钟',daily:'日线',cross_section:'截面',minute_cross_section:'分钟截面',daily_single:'日线'};
+  return '<span class="badge badge-type">' + (m[t]||t) + '</span>';
+}
+function sourceIcon(tag) {
+  if (tag === 'paper') return '📄';
+  if (tag === 'idea') return '💡';
+  if (tag === 'website') return '🌐';
+  return '📄';
+}
+
+// ── Dashboard ──
+function renderDashboard() {
+  const factors = DATA.factors;
+  const groups = {};
+  for (const f of factors) {
+    const tag = sourceIcon(f.source_tag);
+    const key = tag + ' ' + (f.source_tag === 'paper' ? '研报' : f.source_tag === 'idea' ? '思路' : '网站');
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(f);
+  }
+
+  let html = `<div class="summary-row">共 ${factors.length} 个因子 | 待全量: ${DATA.pending_full} | 全量完成: ${DATA.full_done}</div>`;
+  for (const [gname, gfactors] of Object.entries(groups)) {
+    const done = gfactors.filter(f=>f.has_full).length;
+    html += `<div class="report-group"><div class="report-header">${gname} — ${done}/${gfactors.length} 全量完成</div>`;
+    for (const f of gfactors.filter(f => f.has_full)) {
+      const ev = f.evaluation || {};
+      const metrics = [];
+      if (ev.ic_mean != null) metrics.push(`IC: <strong>${fmt(ev.ic_mean)}</strong>`);
+      if (ev.rank_ic_mean != null) metrics.push(`RankIC: <strong>${fmt(ev.rank_ic_mean)}</strong>`);
+      if (ev.long_short_sharpe != null) metrics.push(`Sharpe: <strong>${fmt(ev.long_short_sharpe,2)}</strong>`);
+      if (ev.long_short_mean != null) metrics.push(`多空: <strong>${pct(ev.long_short_mean)}</strong>`);
+      const status = f.has_full ? 'done' : 'test';
+      const desc = f.description ? `<div class="desc">${escapeHtml(f.description)}</div>` : '';
+      html += `
+        <div class="factor-card" onclick="toggleDetail('d_${f.name}')">
+          <div class="top">
+            <span class="du-icon ${f.daily_update_enabled ? 'active' : ''}" data-du-key="${escapeHtml(f.report)}/${escapeHtml(f.name)}" onclick="event.stopPropagation();toggleDU('${escapeHtml(f.report)}/${escapeHtml(f.name)}',this)" title="${f.daily_update_enabled ? '已启用每日更新，点击取消' : '点击启用每日更新'}">⏱</span>
+            <span class="name">${escapeHtml(f.name)}</span>
+            ${badge(status)} ${typeLabel(f.type)}
+          </div>
+          <div class="metrics">${metrics.join(' | ') || '暂无评估'}</div>
+          ${desc}
+          <div class="factor-detail" id="d_${f.name}">
+            <div class="detail-grid">
+              <div class="detail-col">
+                <h4>评估指标</h4>
+                <div class="eval-metrics">${evalHtml(ev)}</div>
+                ${f.formulation ? `<h4 style="margin-top:12px;">公式</h4><div style="font-size:13px;color:#555;">${escapeHtml(f.formulation)}</div>` : ''}
+              </div>
+              <div class="detail-col">
+                <h4>十分组收益图</h4>
+                ${f.decile_url ? `<img class="decile-chart" src="${f.decile_url}" alt="decile">` : '<div style="color:#888;font-size:13px;">暂无图表</div>'}
+                ${f.code ? `<button class="btn" onclick="event.stopPropagation();showCode('${f.name}')">📄 查看代码</button>` : ''}
+                <div id="code_${f.name}" style="display:none;"><pre class="code-block">${escapeHtml(f.code)}</pre></div>
+              </div>
+            </div>
+          </div>
+        </div>`;
+    }
+    html += '</div>';
+  }
+  document.getElementById('dashboardContent').innerHTML = html;
+}
+
+function evalHtml(ev) {
+  if (!ev || Object.keys(ev).length === 0) return '<div style="color:#888;">暂无评估</div>';
+  const items = [
+    ['IC', fmt(ev.ic_mean)],
+    ['IR', fmt(ev.ic_ir,2)],
+    ['RankIC', fmt(ev.rank_ic_mean)],
+    ['RankIR', fmt(ev.rank_ic_ir,2)],
+    ['IC正天数比', pct(ev.ic_positive_ratio)],
+    ['多空Sharpe', fmt(ev.long_short_sharpe,2)],
+    ['多空收益', pct(ev.long_short_mean)],
+    ['Max DD', pct(ev.long_short_max_dd)],
+    ['天数', ev.n_dates],
+  ];
+  let html = '';
+  for (const [k,v] of items) {
+    if (v !== '-') html += `<div class="eval-item"><div class="label">${k}</div><div class="value">${v}</div></div>`;
+  }
+  // Decile returns
+  for (let i=1;i<=10;i++) {
+    const key = 'D'+i+'_mean';
+    if (ev[key] != null) html += `<div class="eval-item"><div class="label">D${i}</div><div class="value">${pct(ev[key])}</div></div>`;
+  }
+  return html;
+}
+
+function toggleDetail(id) {
+  const el = document.getElementById(id);
+  el.classList.toggle('open');
+}
+
+function showCode(name) {
+  const el = document.getElementById('code_'+name);
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+// ── Factor Table ──
+function renderFactorTable() {
+  let factors = [...DATA.factors].filter(f => f.has_full);
+  // Filter
+  if (factorFilter.source !== '全部') {
+    const m = {'研报':'paper','思路':'idea','网站':'website'};
+    factors = factors.filter(f => f.source_tag === m[factorFilter.source]);
+  }
+  if (factorFilter.status === '全量完成') factors = factors.filter(f => f.has_full);
+  else if (factorFilter.status === '测试通过') factors = factors.filter(f => !f.has_full);
+  if (factorFilter.type !== '全部') factors = factors.filter(f => f.type === factorFilter.type);
+  if (factorFilter.search) factors = factors.filter(f => f.name.includes(factorFilter.search) || (f.description||'').includes(factorFilter.search));
+
+  // Sort
+  const col = factorSort.col;
+  factors.sort((a,b) => {
+    let va,vb;
+    if (col === 'name') { va=a.name; vb=b.name; }
+    else if (col === 'report') { va=a.report; vb=b.report; }
+    else {
+      const eva = a.evaluation||{}, evb = b.evaluation||{};
+      va = eva[col] ?? -999; vb = evb[col] ?? -999;
+    }
+    if (typeof va === 'string') return factorSort.asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return factorSort.asc ? (va-vb) : (vb-va);
+  });
+
+  const sortIcon = (c) => factorSort.col === c ? (factorSort.asc ? ' ▲' : ' ▼') : '';
+
+  let html = `
+    <div class="filter-row">
+      <select onchange="factorFilter.source=this.value;renderFactorTable()">
+        <option>全部</option><option>研报</option><option>思路</option><option>网站</option>
+      </select>
+      <select onchange="factorFilter.status=this.value;renderFactorTable()">
+        <option>全部</option><option>全量完成</option><option>测试通过</option>
+      </select>
+      <select onchange="factorFilter.type=this.value;renderFactorTable()">
+        <option>全部</option><option>daily</option><option>minute</option><option>cross_section</option><option>minute_cross_section</option>
+      </select>
+      <input placeholder="搜索..." oninput="factorFilter.search=this.value;renderFactorTable()" style="flex:1;min-width:150px;">
+    </div>
+    <table class="factor-table">
+      <thead><tr>
+        <th style="width:30px;"></th>
+        <th onclick="sortBy('name')">因子名${sortIcon('name')}</th>
+        <th onclick="sortBy('report')">来源${sortIcon('report')}</th>
+        <th>类型</th>
+        <th>状态</th>
+        <th onclick="sortBy('ic_mean')">IC${sortIcon('ic_mean')}</th>
+        <th onclick="sortBy('rank_ic_mean')">RankIC${sortIcon('rank_ic_mean')}</th>
+        <th onclick="sortBy('ic_ir')">IR${sortIcon('ic_ir')}</th>
+        <th onclick="sortBy('long_short_sharpe')">Sharpe${sortIcon('long_short_sharpe')}</th>
+        <th onclick="sortBy('long_short_mean')">多空${sortIcon('long_short_mean')}</th>
+      </tr></thead>
+      <tbody>`;
+
+  for (const f of factors) {
+    const ev = f.evaluation||{};
+    html += `<tr class="factor-row" onclick="toggleDetail('td_${f.name}')">
+      <td><span class="du-icon ${f.daily_update_enabled ? 'active' : ''}" data-du-key="${escapeHtml(f.report)}/${escapeHtml(f.name)}" onclick="event.stopPropagation();toggleDU('${escapeHtml(f.report)}/${escapeHtml(f.name)}',this)" title="${f.daily_update_enabled ? '已启用每日更新，点击取消' : '点击启用每日更新'}">⏱</span></td>
+      <td><strong>${escapeHtml(f.name)}</strong></td>
+      <td>${sourceIcon(f.source_tag)} ${escapeHtml(f.report_human)}</td>
+      <td>${typeLabel(f.type)}</td>
+      <td>${f.has_full ? '✅' : '🟡'}</td>
+      <td>${fmt(ev.ic_mean)}</td>
+      <td>${fmt(ev.rank_ic_mean)}</td>
+      <td>${fmt(ev.ic_ir,2)}</td>
+      <td>${fmt(ev.long_short_sharpe,2)}</td>
+      <td>${pct(ev.long_short_mean)}</td>
+    </tr>
+    <tr style="display:none;" id="td_${f.name}">
+      <td colspan="10" style="padding:0;">
+        <div style="padding:12px 24px;background:#f8f9fa;display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+          <div>
+            ${f.description ? `<div style="margin-bottom:8px;font-size:13px;"><strong>描述:</strong> ${escapeHtml(f.description)}</div>` : ''}
+            ${f.formulation ? `<div style="margin-bottom:8px;font-size:13px;"><strong>公式:</strong> ${escapeHtml(f.formulation)}</div>` : ''}
+            <div class="eval-metrics">${evalHtml(ev)}</div>
+          </div>
+          <div style="text-align:center;">
+            ${f.decile_url ? `<img class="decile-chart" src="${f.decile_url}" style="max-height:200px;">` : '<div style="color:#888;font-size:13px;padding:20px;">暂无图表</div>'}
+          </div>
+        </div>
+      </td>
+    </tr>`;
+  }
+
+  html += '</tbody></table>';
+  if (factors.length === 0) html = '<div class="empty">无匹配因子</div>';
+  document.getElementById('factorTableContainer').innerHTML = html;
+}
+
+function sortBy(col) {
+  if (factorSort.col === col) factorSort.asc = !factorSort.asc;
+  else { factorSort.col = col; factorSort.asc = true; }
+  renderFactorTable();
+}
+
+// ── Add Material ──
+function renderAddMaterial() {
+  const m = DATA.materials || {};
+  const pdfs = m.pdfs || [];
+  const ideas = m.ideas || [];
+  const websites = m.websites || [];
+
+  let html = `
+    <div class="material-summary">
+      <div class="mat-card"><div class="value">${pdfs.length}</div><div class="label">📄 待处理 PDF</div></div>
+      <div class="mat-card"><div class="value">${ideas.length}</div><div class="label">💡 思路</div></div>
+      <div class="mat-card"><div class="value">${websites.length}</div><div class="label">🌐 网站</div></div>
+    </div>
+
+    <div class="add-section">
+      <h3>📄 上传研报 PDF</h3>
+      <input type="file" accept=".pdf" id="pdfInput" onchange="uploadPdf(this)" style="margin-bottom:8px;">
+      <div id="pdfStatus" style="font-size:13px;color:#888;margin-bottom:8px;"></div>
+      <div class="material-list" id="pdfList">
+        ${pdfs.length ? pdfs.map(p => '<div class="item">📄 ' + escapeHtml(p) + '</div>').join('') : '<div class="item" style="color:#888;">暂无 PDF</div>'}
+      </div>
+    </div>
+
+    <div class="add-section">
+      <h3>💡 输入因子思路</h3>
+      <div class="form-group"><label>思路标题（可选，不填则自动生成）</label><input id="ideaTitle" placeholder="e.g. 开盘30分钟量比因子"></div>
+      <div class="form-group"><label>思路描述</label><textarea id="ideaText" placeholder="描述因子逻辑、所需数据列、计算方式..." rows="4"></textarea></div>
+      <button class="btn btn-primary" onclick="addIdea()">保存思路</button>
+      <div id="ideaStatus" style="font-size:13px;margin-top:8px;"></div>
+      <div style="margin-top:16px;">
+        <h4 style="font-size:14px;margin-bottom:8px;">已有思路</h4>
+        <div class="material-list" id="ideaList">
+          ${ideas.length ? ideas.map(idea =>
+            '<div class="idea-item"><div class="title">💡 ' + escapeHtml(idea.title||'未命名') + '</div><div class="text">' + escapeHtml(idea.text||'') + '</div></div>'
+          ).join('') : '<div class="item" style="color:#888;">暂无思路</div>'}
+        </div>
+      </div>
+    </div>
+
+    <div class="add-section">
+      <h3>🌐 添加网站/公众号文章</h3>
+      <div class="form-group"><label>文章 URL</label><input id="websiteUrl" placeholder="https://mp.weixin.qq.com/..."></div>
+      <button class="btn btn-primary" onclick="addWebsite()">保存网址</button>
+      <div id="websiteStatus" style="font-size:13px;margin-top:8px;"></div>
+      <div style="margin-top:16px;">
+        <h4 style="font-size:14px;margin-bottom:8px;">已有网站</h4>
+        <div class="material-list" id="websiteList">
+          ${websites.length ? websites.map(w => '<div class="item">🔗 ' + escapeHtml(w) + '</div>').join('') : '<div class="item" style="color:#888;">暂无网站</div>'}
+        </div>
+      </div>
+    </div>`;
+
+  document.getElementById('addMaterialContent').innerHTML = html;
+}
+
+// ── Daily Update ──
+
+let dailyUpdateData = null;
+let dailyStatusTimer = null;
+
+async function loadDailyUpdate() {
+  try {
+    const r = await fetch('/api/daily-update');
+    dailyUpdateData = await r.json();
+  } catch(e) {
+    dailyUpdateData = null;
+  }
+}
+
+async function loadDailyUpdateStatus() {
+  try {
+    const r = await fetch('/api/daily-update/status');
+    const st = await r.json();
+    const el = document.getElementById('duProgress');
+    if (el) {
+      if (st.running) {
+        const pct = st.total ? Math.round((st.current / st.total) * 100) : 0;
+        el.innerHTML = `
+          <div style="margin-bottom:8px;font-size:13px;">⏳ ${st.message} (${st.current}/${st.total})</div>
+          <div style="background:#e0e0e0;border-radius:3px;height:6px;"><div class="bar" style="width:${pct}%;"></div></div>
+        `;
+        el.style.display = '';
+      } else {
+        el.style.display = 'none';
+      }
+    }
+  } catch(e) {}
+}
+
+function renderDailyUpdate() {
+  if (!DATA) return;
+  const container = document.getElementById('dailyUpdateContent');
+
+  // Build factor options for the add select
+  const allFactors = DATA.factors.filter(f => f.has_full && f.has_code);
+  const factorOpts = allFactors.map(f =>
+    `<option value="${f.report}/${f.name}">${f.report}/${f.name}</option>`
+  ).join('');
+
+  // Load daily update state
+  loadDailyUpdate().then(() => {
+    const du = dailyUpdateData || { enabled: [], history: [], factors: [], latest_date: null };
+    const factors = du.factors || [];
+    const latest = du.latest_date || '-';
+    const nEnabled = du.enabled.length;
+    const nUpdate = factors.filter(f => f.needs_update).length;
+
+    let html = `
+      <div class="du-summary">
+        <div class="du-stat"><div class="val">${nEnabled}</div><div class="lbl">已启用</div></div>
+        <div class="du-stat"><div class="val">${nUpdate}</div><div class="lbl">待更新</div></div>
+        <div class="du-stat"><div class="val">${latest}</div><div class="lbl">最新数据日期</div></div>
+      </div>
+
+      <div class="du-add-row">
+        <select id="duAddSelect"><option value="">-- 选择因子添加 --</option>${factorOpts}</select>
+        <button class="btn" onclick="addDailyFactor()">添加</button>
+      </div>
+
+      <div class="du-actions">
+        <button class="btn" onclick="runDailyUpdate(false)">▶ 执行更新</button>
+        <button class="btn" onclick="runDailyUpdate(true)" style="background:#555;">🔍 检查</button>
+        <button class="btn" onclick="undoDaily()" style="background:#888;">↩ 撤销</button>
+      </div>
+
+      <div class="du-progress" id="duProgress" style="display:none;"></div>
+    `;
+
+    if (factors.length === 0) {
+      html += `<div class="empty">暂无启用因子。从上方下拉框选择因子添加。</div>`;
+    } else {
+      html += `<ul class="du-factor-list">`;
+      for (const f of factors) {
+        const ev = f.evaluation || {};
+        const icStr = ev.ic_mean != null ? `IC: ${fmt(ev.ic_mean)}` : '';
+        const sharpeStr = ev.long_short_sharpe != null ? `Sharpe: ${fmt(ev.long_short_sharpe,2)}` : '';
+        const metaStr = [icStr, sharpeStr, f.total_dates ? `${f.total_dates}天` : ''].filter(Boolean).join(' | ');
+
+        let statusCls = 'du-status-pending';
+        let statusText = '待初始化';
+        if (f.has_data) {
+          if (f.needs_update) {
+            statusCls = 'du-status-update';
+            statusText = `需更新 (${f.last_date})`;
+          } else {
+            statusCls = 'du-status-ok';
+            statusText = `已最新 (${f.last_date})`;
+          }
+        } else if (f.has_full) {
+          statusCls = 'du-status-update';
+          statusText = '可从全量初始化';
+        }
+
+        html += `
+          <li class="du-factor-item">
+            <button class="btn" onclick="toggleDailyFactor('${f.key}')" style="padding:4px 12px;font-size:12px;background:#dc3545;">✕</button>
+            <span class="fname">${escapeHtml(f.name)}</span>
+            <span style="font-size:12px;color:#888;">${escapeHtml(f.report)}</span>
+            <span class="fmeta">${metaStr}</span>
+            <span class="fstatus ${statusCls}">${statusText}</span>
+          </li>`;
+      }
+      html += `</ul>`;
+    }
+
+    container.innerHTML = html;
+  });
+}
+
+async function addDailyFactor() {
+  const sel = document.getElementById('duAddSelect');
+  const val = sel.value;
+  if (!val) { showToast('请选择因子'); return; }
+  try {
+    const r = await fetch('/api/daily-update/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ factor: val }),
+    });
+    const res = await r.json();
+    if (res.ok) {
+      showToast(res.action === 'added' ? '已启用' : '已禁用');
+      sel.value = '';
+      renderDailyUpdate();
+      refreshData();
+    } else {
+      showToast('错误: ' + (res.error || ''));
+    }
+  } catch(e) {
+    showToast('请求失败: ' + e.message);
+  }
+}
+
+async function toggleDailyFactor(key) {
+  try {
+    const r = await fetch('/api/daily-update/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ factor: key }),
+    });
+    const res = await r.json();
+    if (res.ok) {
+      showToast(res.action === 'removed' ? '已移除' : '已启用');
+      renderDailyUpdate();
+      refreshData();
+    } else {
+      showToast('错误: ' + (res.error || ''));
+    }
+  } catch(e) {
+    showToast('请求失败: ' + e.message);
+  }
+}
+
+async function toggleDU(key, el) {
+  const wasActive = el.classList.contains('active');
+  el.textContent = '...';
+  try {
+    const r = await fetch('/api/daily-update/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ factor: key }),
+    });
+    const res = await r.json();
+    if (res.ok) {
+      const active = res.action === 'added';
+      // Sync all du-icon with same key on the page
+      document.querySelectorAll('.du-icon[data-du-key]').forEach(sp => {
+        if (sp.getAttribute('data-du-key') === key) {
+          sp.classList.toggle('active', active);
+          sp.textContent = '⏱';
+          sp.title = active ? '已启用每日更新，点击取消' : '点击启用每日更新';
+        }
+      });
+      showToast(active ? '已启用每日更新' : '已取消每日更新');
+      // 刷新另一个 tab 的因子列表
+      renderDailyUpdate();
+      renderFactorTable();
+      // 重新绑定本 tab 的 du-icon（renderFactorTable 会重建 DOM）
+      bindDUCheckboxes();
+    } else {
+      el.textContent = '⏱';
+      showToast('错误: ' + (res.error || ''));
+    }
+  } catch(e) {
+    el.textContent = '⏱';
+    showToast('请求失败: ' + e.message);
+  }
+}
+
+function bindDUCheckboxes() {}
+
+async function undoDaily() {
+  try {
+    const r = await fetch('/api/daily-update/undo', { method: 'POST' });
+    const res = await r.json();
+    if (res.ok) {
+      showToast('已撤销: ' + (res.undone?.action || ''));
+      renderDailyUpdate();
+      refreshData();
+    } else {
+      showToast('错误: ' + (res.error || ''));
+    }
+  } catch(e) {
+    showToast('请求失败: ' + e.message);
+  }
+}
+
+async function runDailyUpdate(dryRun) {
+  try {
+    const r = await fetch('/api/daily-update/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dry_run: dryRun }),
+    });
+    const res = await r.json();
+    if (res.ok) {
+      showToast(dryRun ? '检查已启动' : '更新已启动');
+      // Poll status
+      if (dailyStatusTimer) clearInterval(dailyStatusTimer);
+      dailyStatusTimer = setInterval(() => {
+        loadDailyUpdateStatus();
+        loadDailyUpdate().then(renderDailyUpdate);
+      }, 5000);
+    } else {
+      showToast('错误: ' + (res.error || ''));
+    }
+  } catch(e) {
+    showToast('请求失败: ' + e.message);
+  }
+}
+
+// ── API calls ──
+
+async function uploadPdf(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const status = document.getElementById('pdfStatus');
+  status.textContent = '上传中...';
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch('/api/upload-pdf', { method: 'POST', body: fd });
+    const result = await r.json();
+    if (result.ok) {
+      showToast('✅ PDF 已上传: ' + file.name);
+      status.textContent = '';
+      input.value = '';
+      await refreshData();
+    } else {
+      status.textContent = '❌ ' + (result.error || '上传失败');
+    }
+  } catch(e) {
+    status.textContent = '❌ 上传失败: ' + e.message;
+  }
+}
+
+async function addIdea() {
+  const title = document.getElementById('ideaTitle').value.trim();
+  const text = document.getElementById('ideaText').value.trim();
+  if (!text) { showToast('❌ 请输入思路描述'); return; }
+  const status = document.getElementById('ideaStatus');
+  status.textContent = '保存中...';
+  try {
+    const r = await fetch('/api/add-idea', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, text }),
+    });
+    const result = await r.json();
+    if (result.ok) {
+      showToast('✅ 思路已保存');
+      document.getElementById('ideaTitle').value = '';
+      document.getElementById('ideaText').value = '';
+      status.textContent = '';
+      await refreshData();
+    } else {
+      status.textContent = '❌ ' + (result.error || '保存失败');
+    }
+  } catch(e) {
+    status.textContent = '❌ 保存失败: ' + e.message;
+  }
+}
+
+async function addWebsite() {
+  const url = document.getElementById('websiteUrl').value.trim();
+  if (!url) { showToast('❌ 请输入 URL'); return; }
+  const status = document.getElementById('websiteStatus');
+  status.textContent = '保存中...';
+  try {
+    const r = await fetch('/api/add-website', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    const result = await r.json();
+    if (result.ok) {
+      showToast('✅ 网址已保存');
+      document.getElementById('websiteUrl').value = '';
+      status.textContent = '';
+      await refreshData();
+    } else {
+      status.textContent = '❌ ' + (result.error || '保存失败');
+    }
+  } catch(e) {
+    status.textContent = '❌ 保存失败: ' + e.message;
+  }
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', 3000);
+}
+
+function escapeHtml(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Init ──
+refreshData();
+setInterval(refreshData, 30000);
+</script>
+</body>
+</html>

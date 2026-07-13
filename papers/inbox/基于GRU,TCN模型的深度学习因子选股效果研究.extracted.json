@@ -1,0 +1,43 @@
+{
+  "title": "基于GRU、TCN模型的深度学习因子选股效果研究",
+  "source": "paper",
+  "extracted_at": "2026-07-07",
+  "factors": [
+    {
+      "name": "GRU_DL_10d",
+      "description": "用GRU（2层，hidden_size=64）模型，输入过去30日日线行情（6特征：high/open/low/close/vwap/turnover_rate），去量纲标准化，预测未来10日均价涨跌幅。滚动训练：每年用前9年训练、第10年验证，损失函数为预测值与真实收益率的相关系数取负。输出截面预测值作为因子值。",
+      "formulation": "GRU_2layer(input_shape=[T,6], hidden_size=64) → 输出1维预测值。输入特征: [high, open, low, close, vwap, turnover_rate]，T=30个交易日，每个特征做z-score标准化（用过去250日均值和标准差）。标签: (mean(close[t+1:t+6]) / close[t] - 1) 标准化。损失: -corr(y_pred, y_true)。因子值 = 模型输出的预测值。",
+      "type": "deep_learning",
+      "lookback": 30,
+      "cols": "open, close, high, low, volume, turnover_rate",
+      "source_excerpt": "输入数据集：30日行情、60日行情、30周行情，6个特征（高、开、低、收、均价、换手率）。预测标签：t+1日至t+11日的10日均价涨跌幅。训练过程：2017年以来，每年训练一个模型供下一年使用，使用前9年数据为训练集，第10年数据为验证集。损失函数：预测值和收益率的相关系数取负。GRU模型，层数2层。"
+    },
+    {
+      "name": "GRU_DL_5d",
+      "description": "用GRU（2层，hidden_size=64）模型，输入过去30日日线行情（6特征），预测未来5日均价涨跌幅。框架同GRU_DL_10d，仅预测窗口不同。",
+      "formulation": "同GRU_DL_10d框架，标签改为: (mean(close[t+1:t+6]) / close[t] - 1) 标准化（注意是t+1到t+6共5个交易日的均价涨跌幅）。因子值 = 模型输出的预测值。",
+      "type": "deep_learning",
+      "lookback": 30,
+      "cols": "open, close, high, low, volume, turnover_rate",
+      "source_excerpt": "预测标签：t+1日至t+6日的5日均价涨跌幅。GRU模型，层数2层；根据数据集时间长度确定sequence_length，day30为30。"
+    },
+    {
+      "name": "TCN_DL_10d",
+      "description": "用TCN（3层残差块，kernel_size=3，channels=[8,16,32]）模型，输入过去30日日线行情（6特征），预测未来10日均价涨跌幅。TCN使用因果卷积+扩张卷积，不依赖隐状态，可并行训练。",
+      "formulation": "TCN_3layer(kernel_size=3, num_channels=[8,16,32], causal=True, dilation_base=2) → 输出1维预测值。输入特征同GRU_DL_10d: [high, open, low, close, vwap, turnover_rate]，T=30。标签: 10日均价涨跌幅标准化。损失: -corr(y_pred, y_true)。",
+      "type": "deep_learning",
+      "lookback": 30,
+      "cols": "open, close, high, low, volume, turnover_rate",
+      "source_excerpt": "TCN模型对于时间长度60，卷积核大小kernel_size为3，使用4层网络num_channels=[8,16,32,64]；对于时间长度30，卷积核大小为3，使用3层网络num_channels=[8,16,32]。"
+    },
+    {
+      "name": "GRU_DL_60d_10d",
+      "description": "用GRU（2层）模型，输入过去60日日线行情（6特征），预测未来10日均价涨跌幅。更长的输入窗口可能捕捉更多长期依赖。",
+      "formulation": "同GRU_DL_10d，但sequence_length=60（使用60日历史数据）。TCN_4layer(kernel_size=3, channels=[8,16,32,64]) 同样可用。",
+      "type": "deep_learning",
+      "lookback": 60,
+      "cols": "open, close, high, low, volume, turnover_rate",
+      "source_excerpt": "输入数据集：30日行情(day30)、60日行情(day60)、30周行情(week30)，6个特征（高、开、低、收、均价、换手率）。GRU_2_day60_newloss_seed3_10d 在中证2000 rankIC达15.0%。"
+    }
+  ]
+}

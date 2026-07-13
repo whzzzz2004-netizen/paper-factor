@@ -1,0 +1,66 @@
+[
+  {
+    "title": "开盘30分钟量比因子（分钟）",
+    "text": "开盘30分钟量比因子（MorningVolumeRatio）。计算每只股票开盘后30分钟的成交量与过去5个交易日同一30分钟窗口的平均成交量的比值。使用分钟频数据，只需要volume列。lookback_days=5（需要5个交易日的分钟数据来算平均量），factor_type=minute。思路：如果开盘30分钟量比显著大于1，说明开盘活跃度异常高，可能有信息驱动。"
+  },
+  {
+    "title": "分钟已实现波动率排名（分钟截面）",
+    "text": "分钟已实现波动率截面排名因子（MinuteRealizedVol）。每只股票每日计算当天所有分钟bar的return列的标准差作为已实现波动率。然后在截面层对所有股票做rank标准化。使用分钟频数据，只需要return列。lookback_days=1（只用当天分钟数据），factor_type=minute_cross_section。"
+  },
+  {
+    "title": "上下影线比例因子（分钟）",
+    "text": "上下影线比例因子（CandleShadowRatio）。每只股票每日计算K线上下影线比例：上影线=high-max(open,close)，下影线=min(open,close)-low，因子值=(上影线-下影线)/(high-low)，反映日内买卖力量对比。正值表示上影线更长（卖方力量强），负值表示下影线更长（买方力量强）。使用分钟频数据，需要open、close、high、low列。lookback_days=1（只用当天分钟数据），factor_type=minute。"
+  },
+  {
+    "title": "尾盘成交量占比因子（分钟）",
+    "text": "尾盘成交量占比因子（CloseVolumeRatio）。每只股票每日计算最后30分钟成交量占全天成交量的比例，然后取过去20个交易日的滚动均值。尾盘成交量占比高可能反映机构调仓或信息交易者行为。使用分钟频数据，只需要volume列。lookback_days=20（需要20个交易日分钟数据来算滚动均值），factor_type=minute。"
+  },
+  {
+    "title": "分钟收益率偏度因子（分钟截面）",
+    "text": "分钟收益率偏度截面排名因子（MinuteReturnSkew）。每只股票每日计算当天所有分钟bar的return列的偏度（skewness），然后在截面层对所有股票做rank标准化。偏度>0表示日内正收益的分钟更多（上涨驱动），偏度<0表示负收益的分钟更多（下跌驱动）。使用分钟频数据，只需要return列。lookback_days=1（只用当天分钟数据），factor_type=minute_cross_section。"
+  },
+  {
+    "title": "分钟非流动性冲击因子（分钟）",
+    "text": "分钟非流动性冲击因子（MinuteAmihudIlliquidity）。每只股票每日计算每分钟的Amihud非流动性指标：abs(return)/sqrt(volume*vwap)（return是小数形式不是百分比），取每日中位数作为该股票的日频非流动性估计。该值越大表示单位成交量带来的价格冲击越大（流动性越差）。使用分钟频数据，需要return、volume、vwap列。lookback_days=1（只用当天分钟数据，每分钟独立计算），factor_type=minute。"
+  },
+  {
+    "title": "短期累计收益率因子（日线截面）",
+    "text": "短期累计收益率因子（ShortTermReturn）。每只股票计算过去10个交易日的累计涨跌幅（pct_chg之和），然后在截面层对所有股票做rank标准化到[0,1]。该因子捕捉A股短期反转效应：过去涨幅大的股票未来可能回调。使用日线数据，只需要pct_chg列。lookback_days=10，factor_type=cross_section。函数签名：def calc_factor_cross_section(all_data, trade_date): 遍历all_data每只股票的DataFrame，取pct_chg列最后10天的和，存入字典，然后做截面rank标准化。"
+  },
+  {
+    "title": "中期波动率因子（日线截面）",
+    "text": "中期波动率因子（MediumTermVolatility）。每只股票计算过去50个交易日pct_chg的标准差，然后在截面层对所有股票做rank标准化到[0,1]。高波动率股票通常有更高的预期收益（风险溢价）。使用日线数据，只需要pct_chg列。lookback_days=50，factor_type=cross_section。函数签名：def calc_factor_cross_section(all_data, trade_date): 遍历all_data每只股票的DataFrame，取pct_chg列最后50天的std，存入字典，然后做截面rank标准化。"
+  },
+  {
+    "title": "日内上影线有效长度",
+    "text": "计算上影线 Upper = High - Max(Close, Open) 和下影线 Lower = Min(Close, Open) - Low。\n如果Upper显著大于Lower，但Close > Open（阳线），说明上方抛压沉重，但多头强行收红。次日反转（下跌）概率高。\n构建日频因子：Factor = (Upper - Lower) / (High - Low) * Sign(Close - Open)。\n这是一个负向因子（值越高，次日收益越低）。\n\n然后，加入成交量修正：如果伴随巨量，反转效应更强。\n最终的因子值：Final_Factor = Factor * log(Volume / MA_Volume)"
+  },
+  {
+    "title": "分钟日内分段动量因子（分钟）",
+    "text": "分钟日内分段动量因子（MinuteSegmentedMomentum）。将全天分钟K线均匀分成4段（约60分钟一段），计算每段内return列的累计收益。因子值 = 后半2段累计收益之和 - 前半2段累计收益之和。正值表示日内趋势在后半段增强（动量延续），负值表示趋势衰竭或反转。对比简单首尾差，分段法能过滤单段噪声。使用分钟频数据，只需要return列。lookback_days=1（只用当天数据），factor_type=minute。"
+  },
+  {
+    "title": "分钟量价相关性因子（分钟）",
+    "text": "分钟量价相关性因子（MinuteVolumeReturnCorr）。计算当日每分钟return列与volume列之间的Spearman秩相关系数。正相关意味着上涨放量、下跌缩量（健康趋势），负相关意味着上涨缩量、下跌放量（量价背离），接近零意味着量价关系不明显。该因子捕捉市场微观结构中信息交易者对价格的推动模式。使用分钟频数据，需要return、volume列。lookback_days=1（只用当天数据），factor_type=minute。"
+  },
+  {
+    "title": "分钟成交量加权偏度因子（分钟）",
+    "text": "分钟成交量加权偏度因子（MinuteVolumeWeightedSkew）。计算当日每分钟return列的偏度（skewness），但以每分钟成交量占全天总成交量的比例为权重。相比普通偏度，加权偏度更能反映大单驱动的收益率分布特征：加权偏度>0表示大单驱动上涨为主力方向，加权偏度<0表示大单驱动下跌为主力方向。使用分钟频数据，需要return、volume列。lookback_days=1（只用当天数据），factor_type=minute。"
+  },
+  {
+    "title": "分钟波动率非对称因子（分钟）",
+    "text": "分钟波动率非对称因子（MinuteVolatilityAsymmetry）。将当日分钟K线按return正负分成两组，分别计算正收益分钟和负收益分钟的return标准差。因子 = std(return[return>0]) / std(return[return<0]) - 1。正值表示上涨波动率大于下跌波动率（多头分歧大），负值表示下跌波动率大于上涨波动率（空头分歧大/恐慌加剧）。该因子从波动率维度刻画多空分歧的不对称性，与单纯偏度不同的信息维度。使用分钟频数据，只需要return列。lookback_days=1（只用当天数据），factor_type=minute。"
+  },
+  {
+    "title": "测试：换手率乖离率因子",
+    "text": "换手率乖离率 = (当日换手率 - 过去20日平均换手率) / 过去20日换手率标准差。因子逻辑：换手率异常放大（乖离率>2）预示着短期反转风险，因子值越高未来5日收益越低。预期：负向因子，RankIC -4% ~ -5%"
+  },
+  {
+    "title": "测试：大单资金强度因子",
+    "text": "大单资金强度 = net_pct_main * (close / open - 1)。逻辑：主力资金净流入占比与日内涨幅的乘积，衡量有资金推动的上涨的纯度。大单净流入且涨幅适中（非涨停）时因子值最大，表示主力资金真实做多意愿强。预期：正向因子，RankIC 3% ~ 5%"
+  },
+  {
+    "title": "测试：市值调整的动量因子",
+    "text": "市值调整动量 = past_20d_return / sqrt(market_cap)。逻辑：小盘股的动量更可持续，用市值平方根对收益率做调整，偏向小盘高动量股票。预期：正向因子，RankIC 2% ~ 4%"
+  }
+]
