@@ -47,16 +47,17 @@ def ensure_mount(max_retries=2):
 
     for attempt in range(1, max_retries + 1):
         try:
-            subprocess.run(
-                ["sudo", "-n", "mount", "-t", "cifs",
-                 f"//{REMOTE_SERVER}/{REMOTE_SHARE}", MOUNT_POINT,
-                 "-o", (
-                     f"user={smb_user},password={smb_pass},"
-                     f"uid={os.getuid()},gid=os.getgid(),"
-                     f"file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"
-                 )],
-                capture_output=True, timeout=10,
-            )
+            mount_cmd = ["mount", "-t", "cifs",
+                         f"//{REMOTE_SERVER}/{REMOTE_SHARE}", MOUNT_POINT,
+                         "-o", (
+                             f"user={smb_user},password={smb_pass},"
+                             f"uid={os.getuid()},gid={os.getgid()},"
+                             f"file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"
+                         )]
+            # 如果非 root 用户，加 sudo
+            if os.geteuid() != 0:
+                mount_cmd = ["sudo", "-n"] + mount_cmd
+            subprocess.run(mount_cmd, capture_output=True, timeout=10)
             # 验证
             r = subprocess.run(["mountpoint", "-q", MOUNT_POINT], capture_output=True)
             if r.returncode == 0:
