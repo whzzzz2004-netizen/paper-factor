@@ -3,11 +3,10 @@ from typing import Optional
 
 from pydantic_settings import SettingsConfigDict
 
-from rdagent.components.coder.CoSTEER.config import CoSTEERSettings
 from rdagent.utils.env import CondaConf, Env, LocalEnv
 
 
-class FactorCoSTEERSettings(CoSTEERSettings):
+class FactorCoSTEERSettings:
     model_config = SettingsConfigDict(env_prefix="FACTOR_CoSTEER_")
 
     data_folder: str = "git_ignore_folder/factor_implementation_source_data_1000"
@@ -28,7 +27,7 @@ class FactorCoSTEERSettings(CoSTEERSettings):
     python_bin: str = "python"
     """Path to the Python binary"""
 
-    execution_backend: str = "docker"
+    execution_backend: str = "local"
     """Execution backend for factor code: conda/docker/local/auto"""
 
     execution_conda_env_name: str = "torch-pip"
@@ -39,6 +38,9 @@ class FactorCoSTEERSettings(CoSTEERSettings):
 
     min_abs_ic: float = 0.005
     """Minimum absolute cross-sectional IC required for a factor to be accepted into the pool"""
+
+    enable_filelock: bool = False
+    filelock_path: str = ""
 
 
 def get_factor_env(

@@ -19,7 +19,6 @@ import regex  # type: ignore[import-untyped]
 
 from rdagent.log import rdagent_logger as logger
 from rdagent.oai.llm_conf import LLM_SETTINGS
-from rdagent.utils.agent.tpl import T
 
 # Default timeout (in seconds) for all regex operations
 REGEX_TIMEOUT = 120.0
@@ -100,94 +99,10 @@ def filter_with_time_limit(regex_patterns: Union[str, list[str]], text: str) -> 
 def filter_redundant_text(stdout: str) -> str:
     """
     Filter out progress bars and other redundant patterns from stdout using regex-based trimming.
+    NOTE: This function uses rdagent.utils.agent.tpl.T which has been removed.
+          Kept as stub for backward compatibility.
     """
-    from rdagent.oai.llm_utils import APIBackend  # avoid circular import
-
-    # Compile a regex that matches common progress‐bar patterns
-    progress_bar_pattern = r"""(
-        \d+/\d+\s+[━]+\s+\d+s?\s+\d+ms/step.*?\u0008+ |  # e.g. "10/100 ━━━━━━ 3s 50ms/step"
-        \d+/\d+\s+[━]+\s+\d+s?\s+\d+ms/step |            # e.g. "10/100 ━━━━━━ 3s 50ms/step" (no backspaces)
-        \d+/\d+\s+[━]+\s+\d+s?\s+\d+ms/step.* |           # e.g. partial lines
-        \d+/\d+\s+[━]+.*?\u0008+ |                       # e.g. with backspaces
-        \d+/\d+\s+[━]+.* |                                # e.g. partial bars
-        [ ]*\u0008+ |                                     # stray backspaces
-        \d+%\|[█▏▎▍▌▋▊▉]+\s+\|\s+\d+/\d+\s+\[\d{2}:\d{2}<\d{2}:\d{2},\s+\d+\.\d+it/s\] |  # tqdm‐style
-        \d+%\|[█]+\|\s+\d+/\d+\s+\[\d{2}:\d{2}<\d{2}:\d{2},\s*\d+\.\d+it/s\]
-    )"""
-
-    filtered_stdout = try_regex_sub(r"\x1B\[[0-?]*[ -/]*[@-~]", stdout)
-    filtered_stdout = try_regex_sub(progress_bar_pattern, filtered_stdout, flags=regex.VERBOSE)
-
-    # Collapse any excessive blank lines/spaces
-    filtered_stdout = try_regex_sub(r"\s*\n", filtered_stdout, replace_with="\n")
-
-    # remove repeated lines
-    lines_to_count: dict[str, int] = {}
-    filtered_stdout_lines = filtered_stdout.splitlines()
-    for line in filtered_stdout_lines:
-        lines_to_count[line] = lines_to_count.get(line, 0) + 1
-    filtered_stdout = "\n".join(
-        [line for line in filtered_stdout_lines if lines_to_count[line] <= max(len(filtered_stdout_lines) // 10, 10)]
-    )
-
-    def _shrink_stdout_once(stdout: str) -> str:
-        head = stdout[: int(APIBackend().chat_token_limit * 0.3)]
-        tail = stdout[-int(APIBackend().chat_token_limit * 0.3) :]
-        return head + tail
-
-    # Iteratively ask the LLM for additional filtering patterns (up to 3 rounds)
-    for _ in range(3):
-        truncated_stdout = filtered_stdout
-        system_prompt = T(".prompts:filter_redundant_text.system").r()
-
-        # Try to shrink the stdout so its token count is manageable
-        for __ in range(10):
-            try:
-                user_prompt = T(".prompts:filter_redundant_text.user").r(stdout=truncated_stdout)
-                stdout_token_size = APIBackend().build_messages_and_calculate_token(
-                    user_prompt=user_prompt,
-                    system_prompt=system_prompt,
-                )
-                if stdout_token_size < APIBackend().chat_token_limit * 0.1:
-                    return truncated_stdout
-                elif stdout_token_size > APIBackend().chat_token_limit * 0.6:
-                    truncated_stdout = _shrink_stdout_once(truncated_stdout)
-                else:
-                    break
-            except ValueError as e:
-                # build_messages_and_calculate_token => tiktoken/core.py:self._core_bpe.encode
-                # will raise ValueError: Regex error while tokenizing: Error executing regex: Max stack size exceeded for backtracking
-                logger.warning(f"Shrink due to Error: {e}")
-                truncated_stdout = _shrink_stdout_once(truncated_stdout)
-
-        try:
-            response = json.loads(
-                APIBackend().build_messages_and_create_chat_completion(
-                    user_prompt=user_prompt,
-                    system_prompt=system_prompt,
-                    json_mode=True,
-                    json_target_type=dict,
-                )
-            )
-        except Exception as e:
-            logger.error(f"LLM filtering request failed: {e}")
-            break
-
-        needs_sub = response.get("needs_sub", True)
-        regex_patterns = response.get("regex_patterns", [])
-
-        try:
-            new_filtered = filter_with_time_limit(regex_patterns, truncated_stdout)
-        except Exception as e:
-            logger.error(f"Error applying LLM‐suggested patterns: {e}")
-            break
-
-        if not needs_sub:
-            return new_filtered
-
-        filtered_stdout = try_regex_sub(r"\s*\n\s*", new_filtered, replace_with="\n")
-
-    return filtered_stdout
+    return stdout
 
 
 def remove_path_info_from_str(base_path: Path, target_string: str) -> str:

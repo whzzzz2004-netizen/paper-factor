@@ -16,6 +16,7 @@ import argparse
 import json
 import sys
 import math
+import os
 from pathlib import Path
 
 import numpy as np
@@ -23,8 +24,8 @@ import pandas as pd
 import scipy.stats as stats
 
 PROJECT_ROOT = Path(__file__).parent.parent
-FULL_DATA_DIR = PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"
-DEFAULT_BARRA_DIR = PROJECT_ROOT / "git_ignore_folder" / "barra_model"
+FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data")))
+DEFAULT_BARRA_DIR = Path(os.environ.get("PAPER_FACTOR_BARRA_DIR", str(PROJECT_ROOT / "git_ignore_folder" / "barra_model")))
 
 # Trading Model 的 20 个风格因子（不含行业哑变量）
 STYLE_FACTORS = [

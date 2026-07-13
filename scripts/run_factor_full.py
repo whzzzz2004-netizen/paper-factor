@@ -16,6 +16,7 @@
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -25,16 +26,13 @@ from pathlib import Path
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).parent.parent
-FULL_DATA_DIR = PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"
+FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data")))
 OUTPUT_BASE = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
 
 try:
     from scripts.sync_utils import ensure_remote_mounted, REMOTE_BASE_FULL as REMOTE_BASE
 except ModuleNotFoundError:
     from sync_utils import ensure_remote_mounted, REMOTE_BASE_FULL as REMOTE_BASE  # type: ignore[import-unverified]
-DOCKER_IMAGE = "local_factor_exec:latest"
-
-
 def detect_factor_type(code_path: Path) -> str:
     code = code_path.read_text()
     if any(k in code for k in ('MINUTE_DATA_DIR', 'MINUTE_BY_DATE_DIR', 'minute_pv', 'calc_factors_one_day')):
@@ -42,7 +40,44 @@ def detect_factor_type(code_path: Path) -> str:
     return "daily"
 
 
-def run_in_docker(code_path: Path, workspace: Path, data_dir: Path) -> Path:
+def run_locally(code_path: Path, workspace: Path, data_dir: Path, timeout: int = 7200, factor_type: str = "daily") -> Path | None:
+    """本地运行因子代码（默认后端）"""
+    shutil.copy(code_path, workspace / "factor.py")
+    env = {k: str(v) for k, v in __import__('os').environ.items()}
+    env["FACTOR_DATA_DIR"] = str(data_dir)
+    env["HDF5_USE_FILE_LOCKING"] = "FALSE"
+    # 日线因子限制4核，避免多因子并行时loky进程过多导致OOM
+    if factor_type == "daily":
+        env.setdefault("FACTOR_N_WORKERS", "4")
+    print(f"  本地运行中... (数据: {data_dir})")
+    result = subprocess.run(
+        [sys.executable, "factor.py"],
+        cwd=workspace,
+        capture_output=True, text=True, timeout=timeout,
+        env=env
+    )
+    # 打印 stdout（因子代码自己的输出）
+    for line in result.stdout.split("\n"):
+        line = line.strip()
+        if line:
+            print(f"    {line}")
+    if result.returncode != 0:
+        print(f"  ❌ 本地运行失败:")
+        stderr = result.stderr[-500:] if len(result.stderr) > 500 else result.stderr
+        for line in stderr.split("\n"):
+            line = line.strip()
+            if line:
+                print(f"    {line}")
+        return None
+    output = workspace / "result.parquet"
+    if not output.exists():
+        print(f"  ❌ 未找到输出文件 result.parquet")
+        return None
+    return output
+
+
+def run_in_docker(code_path: Path, workspace: Path, data_dir: Path, timeout: int = 7200) -> Path | None:
+    """Docker运行因子代码（--docker 时使用）"""
     shutil.copy(code_path, workspace / "factor.py")
     cmd = [
         "docker", "run", "--rm",
@@ -53,11 +88,11 @@ def run_in_docker(code_path: Path, workspace: Path, data_dir: Path) -> Path:
         "-e", "FACTOR_DATA_DIR=/workspace/factor_data",
         "-e", "HDF5_USE_FILE_LOCKING=FALSE",
         "-w", "/workspace/factor_workspace",
-        DOCKER_IMAGE,
+        "local_factor_exec:latest",
         "python", "factor.py"
     ]
     print(f"  Docker运行中...")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         print(f"  ❌ Docker运行失败:")
         print(result.stderr[-500:] if len(result.stderr) > 500 else result.stderr)
@@ -133,9 +168,10 @@ def main():
     parser.add_argument("code", help="因子代码文件路径 (.code.py)")
     parser.add_argument("--output-dir", "-o", help="输出目录 (默认: 文献因子_全量)", default=None)
     parser.add_argument("--source-meta", help="原始元数据文件路径 (可选)", default=None)
-    parser.add_argument("--timeout", type=int, default=3600, help="Docker超时秒数 (默认: 3600)")
-    parser.add_argument("--skip-docker", action="store_true", help="跳过Docker运行 (已有parquet时使用)")
-    parser.add_argument("--parquet", help="已有parquet文件路径 (与--skip-docker配合)")
+    parser.add_argument("--timeout", type=int, default=7200, help="运行超时秒数 (默认: 7200)")
+    parser.add_argument("--docker", action="store_true", help="使用Docker运行 (默认: 本地直接运行)")
+    parser.add_argument("--skip-run", action="store_true", help="跳过运行 (已有parquet时使用)")
+    parser.add_argument("--parquet", help="已有parquet文件路径 (与--skip-run配合)")
     args = parser.parse_args()
 
     code_path = Path(args.code).resolve()
@@ -181,14 +217,14 @@ def main():
     factor_dir.mkdir(parents=True, exist_ok=True)
     print(f"输出目录: {factor_dir}")
 
-    # 运行Docker或使用已有的parquet
-    if args.skip_docker and args.parquet:
+    # 运行因子（本地默认 / Docker可选）
+    if args.skip_run and args.parquet:
         result_parquet = Path(args.parquet)
         if not result_parquet.exists():
             print(f"❌ 指定的parquet文件不存在: {result_parquet}")
             return 1
         print(f"使用已有parquet: {result_parquet}")
-    elif args.skip_docker:
+    elif args.skip_run:
         # 检查是否已有结果
         existing = factor_dir / f"{factor_name}.parquet"
         if existing.exists():
@@ -200,24 +236,27 @@ def main():
                 shutil.copy(code_path, target_code)
                 print(f"  已复制代码: {target_code}")
         else:
-            print(f"❌ --skip-docker但未找到已有parquet")
+            print(f"❌ --skip-run但未找到已有parquet")
             return 1
     else:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace = Path(tmpdir)
-            print(f"运行因子: {factor_name}")
-            result_parquet = run_in_docker(code_path, workspace, data_dir)
-            if result_parquet is None:
-                return 1
+        workspace = factor_dir  # 直接在因子目录运行，checkpoint实时可见
+        print(f"运行因子: {factor_name} (输出目录: {workspace})")
+        if args.docker:
+            result_parquet = run_in_docker(code_path, workspace, data_dir, args.timeout)
+        else:
+            result_parquet = run_locally(code_path, workspace, data_dir, args.timeout, factor_type)
+        if result_parquet is None:
+            return 1
 
-            # 复制基础文件到因子目录
-            dst_parquet = factor_dir / f"{factor_name}.parquet"
+        # 确保 result.parquet 以因子名命名
+        dst_parquet = factor_dir / f"{factor_name}.parquet"
+        if result_parquet != dst_parquet:
             shutil.copy(result_parquet, dst_parquet)
             result_parquet = dst_parquet
-            # 复制代码文件（可能已在目标目录）
-            dst_code = factor_dir / f"{factor_name}.code.py"
-            if code_path.resolve() != dst_code.resolve():
-                shutil.copy(code_path, dst_code)
+        # 复制代码文件（可能已在目标目录）
+        dst_code = factor_dir / f"{factor_name}.code.py"
+        if code_path.resolve() != dst_code.resolve():
+            shutil.copy(code_path, dst_code)
 
     # 创建元数据
     meta = create_metadata(factor_name, factor_type, result_parquet, code_path, source_meta)
@@ -264,7 +303,27 @@ def main():
     else:
         print(f"  ⚠️ 图表生成失败: {plot_result.stderr[-200:] if plot_result.stderr else 'unknown'}")
 
-    # --- 阶段3: 原始研报信息 ---
+    # --- 阶段3: Barra 暴露分析 ---
+    print(f"\n{'='*50}")
+    print(f"阶段3: Barra 暴露分析")
+    print(f"{'='*50}")
+    barra_result = subprocess.run(
+        [sys.executable, str(PROJECT_ROOT / "scripts" / "barra_evaluate.py"),
+         str(result_parquet), "--data-dir", str(data_dir)],
+        capture_output=True, text=True, timeout=300
+    )
+    if barra_result.returncode == 0:
+        for line in barra_result.stdout.split("\n"):
+            if any(k in line for k in ("Alpha", "显著因子", "tstat", "R²")):
+                print(f"  {line.strip()}")
+        # barra_evaluate.py 会自动更新 meta.json
+        meta_path = factor_dir / f"{factor_name}.meta.json"
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text())
+    else:
+        print(f"  ⚠️ Barra分析失败: {barra_result.stderr[-200:] if barra_result.stderr else 'unknown'}")
+
+    # --- 阶段4: 原始研报信息 ---
     if source_meta:
         report_md = create_source_report_md(source_meta, factor_name)
         report_path = factor_dir / f"{factor_name}.report.md"

@@ -27,6 +27,7 @@ REMOTE_SERVER = "192.168.1.13"
 REMOTE_SHARE = "E"
 MOUNT_POINT = "/mnt/remote_e"
 REMOTE_DATA_PATH = "_paper_factor_unified/factor_implementation_source_data"
+REMOTE_FACTOR_DIR = "paper_factors"  # 远程 E 盘上的因子目录
 
 
 def ensure_mount(max_retries=2):
@@ -100,7 +101,7 @@ def find_pending_factors(report_filter=None):
     return pending
 
 
-def run_one(factor_info, idx, total, dry_run=False):
+def run_one(factor_info, idx, total, dry_run=False, output_base=None):
     """对单个因子执行 run-full"""
     report = factor_info["report"]
     factor = factor_info["factor"]
@@ -114,6 +115,11 @@ def run_one(factor_info, idx, total, dry_run=False):
         "--factor-name", factor,
         "--report-name", report,
     ]
+
+    # 如果指定了远程输出目录，写到远程
+    if output_base:
+        output_dir = output_base / report / factor
+        cmd += ["--output", str(output_dir)]
 
     if dry_run:
         print(f"  [DRY-RUN] {' '.join(cmd)}")
@@ -147,12 +153,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # ── 第一步：挂载远程 E 盘 ──
+    remote_full_base = None
     if not args.no_mount and "FACTOR_DATA_DIR" not in os.environ:
         print("挂载远程 E 盘...", end=" ", flush=True)
         subprocess.run(["mkdir", "-p", MOUNT_POINT], capture_output=True)
         if ensure_mount():
             os.environ["FACTOR_DATA_DIR"] = str(Path(MOUNT_POINT) / REMOTE_DATA_PATH)
-            print("✅ 远程 E 盘已挂载")
+            remote_full_base = Path(MOUNT_POINT) / REMOTE_FACTOR_DIR / "文献因子_全量"
+            print(f"✅ 远程 E 盘已挂载，扫描: {remote_full_base}")
         else:
             print("⚠️ 远程 E 盘挂载失败，使用本地数据路径")
     elif "FACTOR_DATA_DIR" in os.environ:
@@ -160,7 +168,10 @@ if __name__ == "__main__":
     else:
         print("数据路径: 使用默认路径")
 
-    # ── 第二步：扫描待运行因子 ──
+    # ── 第二步：扫描待运行因子（远程优先，本地回退） ──
+    global FULL_BASE
+    if remote_full_base and remote_full_base.exists():
+        FULL_BASE = remote_full_base
     pending = find_pending_factors(report_filter=args.report)
 
     if not pending:
@@ -181,7 +192,7 @@ if __name__ == "__main__":
     failures = 0
 
     for i, p in enumerate(pending):
-        ok = run_one(p, i, total)
+        ok = run_one(p, i, total, output_base=remote_full_base)
         if ok:
             successes += 1
         else:

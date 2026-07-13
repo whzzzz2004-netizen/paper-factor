@@ -48,6 +48,7 @@ evaluator_code_review_binary_v1_system: |-
   - 可以改进但不是错误的地方
   - 缺少 import（框架会自动注入）
   - 编码风格与模板略有不同
+  - 没有做 len(df) 数据量检查（df 是切片，不是全量历史，检查无意义）
 
   请以 JSON 格式回答，不要输出其他内容：
   {
@@ -97,6 +98,8 @@ evolving_strategy_factor_implementation_v1_system: |-
 
   --------------代码模板（⚠️ 你只需要输出函数定义，框架代码由系统自动注入，不要写）：---------------
 
+  ⚠️ **【硬约束】禁止判断月末**：**必须每个交易日输出一个因子值**，禁止判断"是否是当月最后一个交易日"。论文中"月末调仓"是策略端的调仓频率，不是因子计算频率。用滚动窗口每天计算因子值。
+
   当前因子类型：{{ factor_type }}
   {% if factor_type == "daily_single" %}
   请使用【模板A：单股票因子】。此因子只需单只股票自身数据。
@@ -113,10 +116,12 @@ evolving_strategy_factor_implementation_v1_system: |-
   {% if factor_type == "daily_single" %}
   【模板A：单股票因子】
   适用于只需单只股票自身历史数据的因子。函数接收一只股票截至 trade_date 的全部数据，返回该股票的因子值。
-  - 输入：单只股票的 DataFrame（DatetimeIndex），列: open, close, high, low, volume, factor, pct_chg, pre_close, turnover_rate, jhjj_hsl（集合竞价换手率）, roe, roa, pe_ttm, pb, revenue_yoy, profit_yoy, gross_margin, net_margin, debt_to_asset, ocf_per_share, market_cap, circulating_market_cap, total_shares, float_shares
+  - 输入：单只股票的 DataFrame（DatetimeIndex），列: open, close, high, low, volume, factor, pct_chg, pre_close, turnover_rate, jhjj_hsl（集合竞价换手率）, net_pct_main（主力净流入占比）, roe, roa, pe_ttm, pb, revenue_yoy, profit_yoy, gross_margin, net_margin, debt_to_asset, ocf_per_share, market_cap, circulating_market_cap, total_shares, float_shares
   - 输出：dict {"因子名": 值}
   - 适用场景：动量、反转、波动率、量比、均线、技术指标等
   - ⚠️ 日线数据没有 'return' 列！日收益率用 pct_chg（%）或 df['close'].pct_change()。'return' 只存在于分钟线数据。
+  - ⚠️ **【硬约束】禁止判断月末**：必须每个交易日输出一个因子值，禁止判断"是否为当月最后一个交易日"。策略端调仓频率与因子计算无关。
+  - ⚠️ **T 日在 df 的最后一行**：df 共 lookback_days 行，`iloc[-1]` 就是 T 日（含 T 日的 high/low/close 等全部数据）。需要 T 日及以前的全部数据时直接用 df，需要排除 T 日时用 `df.iloc[:-1]`。
   ```python
   def calc_factor_single_stock(df, trade_date, stock):
       """
@@ -136,6 +141,8 @@ evolving_strategy_factor_implementation_v1_system: |-
   - 输出：dict {股票代码: {"因子名": 值}}
   - 适用场景：行业排名、板块热度、市值分位、截面标准化、行业均值偏离等
   - ⚠️ 日线数据没有 'return' 列！日收益率用 pct_chg（%）或 df['close'].pct_change()。'return' 只存在于分钟线数据。
+  - ⚠️ **【硬约束】禁止判断月末**：必须每个交易日输出一个因子值，禁止判断"是否为当月最后一个交易日"。策略端调仓频率与因子计算无关。
+  - ⚠️ **T 日在 df 的最后一行**：每只股票的 df 共 lookback_days 行，`iloc[-1]` 就是 T 日（含 T 日的 high/low/close 等全部数据）。需要 T 日及以前的全部数据时直接用 df，需要排除 T 日时用 `df.iloc[:-1]`。
   ```python
   def calc_factor_cross_section(all_data, trade_date):
       """
@@ -160,6 +167,8 @@ evolving_strategy_factor_implementation_v1_system: |-
   - 输入：train_model(all_data, trade_date) 训练模型；predict(model, df, trade_date) 推理
   - 输出：train 返回模型对象，predict 返回 dict {"因子名": 值}
   - 适用场景：GRU、TCN、LSTM、Transformer、MLP 等
+  - ⚠️ **必须每个交易日输出一个因子值，禁止判断"是否为当月最后一个交易日"**。
+  - ⚠️ **T 日在 df 的最后一行**：df 共 lookback_days 行，`iloc[-1]` 就是 T 日（含 T 日的全部行情数据）。需要 T 日及以前的全部数据时直接用 df，需要排除 T 日时用 `df.iloc[:-1]`。
   ```python
   class SimpleModel(nn.Module):
       def __init__(self, input_dim=6, hidden_dim=32):
@@ -202,33 +211,47 @@ evolving_strategy_factor_implementation_v1_system: |-
   4. 注意：输入数据（pandas DataFrame）需要先转为 torch.Tensor 才能移到 GPU
   5. 如果 GPU 不可用，代码会自动降级到 CPU 计算，无需报错
   {% elif factor_type == "minute" %}
-  【模板D：分钟线因子】
+  【模板D：分钟线因子（batch并行版）】
   适用于基于分钟线数据的因子。
-  - 输入：单只股票的分钟 DataFrame（可能包含多天），DatetimeIndex，列: open, high, low, close, volume, vwap
-  - 输出：dict {"因子名": 值}
+  - 输入：当前股票一批交易日（lookback + batch）的全部分钟 DataFrame，DatetimeIndex，列: open, high, low, close, volume, vwap
+  - **输出：pd.Series**，index 为日期（datetime.date），values 为每个交易日的因子值。框架会自动提取本批需要的交易日。
+  - 函数内的 df 包含该股票在回看窗口 + 本批内所有交易日的分钟数据。需要用 `groupby('_date')` 按天聚合后再计算。
+  - 如需 rolling 操作（如 rolling(5).mean()），必须先按天 groupby，否则窗口会跨天。
+  - **性能关键**：不要在函数内手动逐日循环！用 groupby + vectorized 操作一次算出所需的值。
+  - **⚠️ 返回所有日期的值，不是最后一个！** 去掉 `.iloc[-1]`，直接用 rolling 的结果返回。
   ```python
   def calc_factors_one_day(df, stock):
       """
-      df: 单只股票的分钟 bar 数据（可能包含多天，由 lookback_days 控制），DatetimeIndex
-      stock: 股票代码（如 "600519"、"1"），可用于判断板块等
-      返回: dict {"因子名": 值}
+      df: 当前股票在一批回看窗口内的全部分钟 bar 数据，DatetimeIndex
+      stock: 股票代码（如 "600519"），可用于判断板块等
+      返回: pd.Series, index=日期(datetime.date), values=因子值
       """
-      # 如只需当天数据，先过滤：df = df[df.index.date == df.index[-1].date()]
-      volume = df["volume"]
-      factor_value = volume.nlargest(5).sum() / (volume.sum() + 1e-6)
-      return {"<Factor_Name>": factor_value}
+      df = df.copy()
+      df['_date'] = df.index.date
+      df['amount'] = df['vwap'] * df['volume']
+
+      def daily_factor(sub):
+          sub = sub.sort_index()
+          factor_val = sub['volume'].sum() / (sub['amount'].sum() + 1e-8)
+          return factor_val
+
+      daily_series = df.groupby('_date', sort=True).apply(daily_factor)
+      # rolling 返回所有日期上的滚动均值（不要只取最新）
+      result = daily_series.rolling(20, min_periods=1).mean()
+      return result
   ```
-  ⚠️ 多天数据 rolling 注意：当 LOOKBACK_DAYS > 1 时，df 包含多天分钟数据拼接。如果需要 rolling 操作（如 rolling(5).std()），必须先按天 groupby，否则窗口会跨天导致错误：
+  ⚠️ rolling 必须按天 groupby 后再做，否则窗口会跨天：
   ```python
   # 正确：先按天分组再 rolling
   df['_date'] = df.index.date
-  result = df.groupby('_date')['return'].rolling(5).std().droplevel(0)
+  daily_val = df.groupby('_date')['return'].apply(lambda x: x.rolling(5).std().iloc[-1])
+  result = daily_val.rolling(20, min_periods=1).mean()
   # 错误：直接 rolling 会跨天
-  result = df['return'].rolling(5).std()
+  result = df['return'].rolling(5).std().groupby(df.index.date).last().rolling(20).mean().iloc[-1]
   ```
   性能优化提示：
-  - 如果只需要部分列（如 close、volume），可以在函数内调用 `load_minute_stock(stock, columns=['close', 'volume'])` 只加载需要的列，速度提升约10倍
-  - 框架已使用 pyarrow 内存映射加载数据，IO性能已优化
+  - 善用 groupby + vectorized 操作，避免手动逐日循环
+  - 框架自动过滤列，只加载需要的列
   {% elif factor_type == "minute_cross_section" %}
   【模板E：分钟线截面因子】
   适用于需要分钟线数据，并在全市场做截面处理的因子。你需要实现两个函数：
@@ -241,6 +264,8 @@ evolving_strategy_factor_implementation_v1_system: |-
   - cross_section_transform 输入：dict {股票代码: 原始因子值}，即某天全市场所有股票的原始值
   - cross_section_transform 输出：dict {股票代码: {"因子名": 处理后的值}} 或 dict {股票代码: 处理后的值}
   - 适用场景：高频振幅截面标准化、分钟波动率截面排名、日内量价截面分位等
+  - ⚠️ **必须每个交易日输出一个因子值，禁止判断"是否为当月最后一个交易日"**。
+  - ⚠️ **T 日在 df 的最后一行**：df 共 lookback_days 行（分钟数据），`iloc[-1]` 就是 T 日的最后一笔分钟数据。
 
   ```python
   def calc_factor_minute_raw(df, stock):
@@ -283,15 +308,51 @@ evolving_strategy_factor_implementation_v1_system: |-
   {% endif %}
 
   {% if factor_type in ["daily_single", "cross_section"] %}
-  日线数据目录下的 parquet 文件可用列（⚠️ 列名没有 $ 前缀，直接使用，共 26 列）：
-  【价量】open, close, high, low, factor（复权因子）, volume（成交量/股）, pct_chg（涨跌幅%）, pre_close（前收盘价）, turnover_rate（换手率%）, jhjj_hsl（集合竞价换手率%）
-  【技术】EMA5, EMA10, EMA20
-  【基本面】roe（净资产收益率）, roa（总资产收益率）, pe_ttm（市盈率TTM）, pb（市净率）, revenue_yoy（营收同比增速）, profit_yoy（净利润同比增速）, gross_margin（毛利率）, net_margin（净利率）, debt_to_asset（资产负债率）, ocf_per_share（每股经营现金流）, market_cap（总市值/亿元）, circulating_market_cap（流通市值/亿元）, total_shares（总股本/万股）, float_shares（流通股本/万股）, adjusted_profit（扣非净利润/元）, gross_profit（毛利润/元）
+  日线数据目录下的 parquet 文件可用列（⚠️ 列名没有 $ 前缀，直接使用）：
+  <!-- DAILY_COLUMNS -->
+  - EMA10: 10日指数移动均线（10交易日指数移动平均收盘价）
+  - EMA20: 20日指数移动均线（20交易日指数移动平均收盘价）
+  - EMA5: 5日指数移动均线（5交易日指数移动平均收盘价）
+  - adjusted_profit: 扣非净利润（扣除非经常性损益后的净利润，单位：元。按报告期 forward-fill 到每日。）
+  - amount: 成交金额(元, 成交量×收盘价近似)
+  - circulating_market_cap: 流通市值（单位：亿元，衡量可交易市值）
+  - close: 收盘价（日线收盘价）
+  - debt_to_asset: 资产负债率（Debt-to-Asset Ratio, 衡量财务杠杆）
+  - factor: 复权因子（前复权因子）
+  - float_shares: 流通股本（单位：万股，A股市场流通股本）
+  - gross_margin: 毛利率（Gross Margin, 衡量产品盈利能力）
+  - gross_profit: 毛利润（毛利润（营业总收入 - 营业成本），单位：元。银行等金融公司用营业利润代替。按报告期 forward-fill 到每日。）
+  - high: 最高价（日线最高价）
+  - jhjj_hsl: 集合竞价换手率（集合竞价时段换手率，单位：%）
+  - low: 最低价（日线最低价）
+  - market_cap: 总市值（单位：亿元，衡量公司规模）
+  - net_margin: 净利率（Net Profit Margin, 衡量综合盈利效率）
+  - ocf_per_share: 每股经营现金流（Operating Cash Flow per Share, 衡量现金创造能力）
+  - open: 开盘价（日线开盘价）
+  - pb: 市净率（Price-to-Book, 衡量估值相对于账面价值）
+  - pct_chg: 涨跌幅（单位：%）
+  - pe_ttm: 市盈率TTM（滚动市盈率, 衡量估值水平）
+  - pre_close: 前收盘价（前一交易日收盘价）
+  - profit_yoy: 净利润同比增速（Profit Year-over-Year, 衡量盈利成长性）
+  - revenue_yoy: 营收同比增速（Revenue Year-over-Year, 衡量成长性）
+  - roa: 总资产收益率（Return on Assets, 衡量资产回报效率）
+  - roe: 净资产收益率（Return on Equity, 衡量盈利能力）
+  - total_shares: 总股本（单位：万股，包含A股、B股和H股）
+  - turnover_rate: 换手率（单位：%）
+  - volume: 成交量（单位：股）
+<!-- /DAILY_COLUMNS -->
   - 索引：DatetimeIndex（单只股票，无需 groupby）
   {% elif factor_type in ["minute", "minute_cross_section"] %}
   分钟线数据目录下的 parquet 文件可用列：
-  - open, high, low, close, volume, vwap, return（分钟收益率）, factor（复权因子）
-  - 索引：DatetimeIndex（单只股票，无需 groupby）
+  <!-- MINUTE_COLUMNS -->
+  - close: 收盘价（日线收盘价）
+  - factor: 复权因子（前复权因子）
+  - high: 最高价（日线最高价）
+  - low: 最低价（日线最低价）
+  - money: 成交额
+  - open: 开盘价（日线开盘价）
+  - volume: 成交量（单位：股）
+<!-- /MINUTE_COLUMNS -->
   ⚠️ 多天数据时，如需按天操作，用 df.index.date 提取日期分组
   {% endif %}
 
@@ -321,32 +382,19 @@ evolving_strategy_factor_implementation_v1_system: |-
   5. 因子值必须是数值型，不能是字符串。
   6. **核心约束：T 日的因子值只能由 T 日及以前（≤T）的数据计算，不得使用任何 T 日之后的信息。**
   7. 日频窗口必须是整数交易日数（如 20、60、120），不能用 pd.DateOffset 或 "30D"。
-  8. 只能使用模板中列出的字段。如果因子需要的数据不可用：返回 {"因子名": np.nan}，不要伪造数据。
-  9. 输出格式：框架会自动将结果转为宽表（Date 为行索引，股票代码为列名），无需手动处理。
-  10. 代码应保持简洁，优先使用清晰的 pandas/rolling 表达式。
-  11. 布尔序列 shift() 后必须 fillna(False)。禁止对含 NaN 的布尔序列直接使用 ~、&、|。
-  12. **数据切片已由框架自动处理**：框架会根据因子需要的 lookback_days 自动切片传入的 df，你无需在函数内手动截取数据。传入的 df 已经是切片后的数据。
-
-  ⚠️⚠️⚠️ 窗口边界规则（最常见的"错误"原因！）⚠️⚠️⚠️
-  - 重要定义约定：**"过去 N 个交易日"包含 trade_date 当天**。因子在收盘后计算，T日就是过去的一部分。
-  - 所以 `df.tail(20)` 就是"过去20个交易日"（T-19 ~ T），**不要排除当天**。
-  - 框架已按 `lookback_days + 1` 传入数据，不用担心数据不够。
-  - 当公式写"T-a 至 T-b"区间时（a>b），用 iloc 但要仔细核对边界：
-    ```python
-    # T-240 至 T-20（含两端）
-    # iloc[-1]=T, iloc[-20]=T-19, iloc[-21]=T-20, iloc[-241]=T-240
-    window = df.iloc[-241:-20]  # python切片右不包含，所以 -20=T-19 不取，停在 -21=T-20
-    ```
-  - 常见错误：`iloc[-241:-21]` 少了 T-20，`iloc[-240:-20]` 少了 T-240。写 iloc 时用手指数一下两端对不对。
-  13. **收益率区分**：论文中的"收益率"可能指不同含义，请严格按定义选择：
+  8. **⚠️ 数据已切片，禁止任何过滤**：传入的 df 是框架根据 lookback_days 自动切片后的数据，最多几十到几百行。禁止用 `len(df) < X` 做上市天数筛选（切片上永远成立→全 NaN），禁止用 `df.index.get_loc(trade_date)` 找 T 日位置（T 日固定在最后一行，即 `df.iloc[-1]`）。
+  9. **⚠️ 切片规则——T 日在最后一行，且包含 T 日全部行情数据**：框架传入的 df 共 `lookback_days` 行（历史数据不足时可能更少），`df.iloc[-1]` 就是 T 日。例如 `lookback_days=250` 时 df 有 250 行（T-249 ~ T），`iloc[-1]` 是 T 日，`iloc[:-1]` 是 T-249 ~ T-1，`iloc[:249]` 是 T-249 ~ T-1（**不包含 T 日**）。所有计算始终包含 T 日——T 日的高开低收、成交量等全部可用，不需要也不应该排除 T 日。
+  10. **数据近似原则**：如果因子需要的字段不可用，**优先用语义最接近的现有字段近似替代**，不要直接返回 NaN。例如：超大单净流入占比不可用时用大单净流入占比、集合竞价换手率不可用时用全天换手率、收盘价加权均价(VWAP)不可用时用算术均价。替代逻辑必须在 description/formulation 中注明"近似"。
+  11. 输出格式：框架会自动将结果转为宽表（Date 为行索引，股票代码为列名），无需手动处理。
+  12. 代码应保持简洁，优先使用清晰的 pandas/rolling 表达式。
+  13. 布尔序列 shift() 后必须 fillna(False)。禁止对含 NaN 的布尔序列直接使用 ~、&、|。
+  14. **收益率区分**：论文中的"收益率"可能指不同含义，请严格按定义选择：
      - 日收益率（含隔夜跳空）：用 `pct_chg` 列（单位%，如 2.0 表示 2%）或 `df['close'].pct_change()`
      - 日内收益率（不含隔夜跳空）：用 `df['close'] / df['open'] - 1`（单位小数，如 0.02 表示 2%）
      - 如果论文写 "Close/Open - 1" 或 "日内收益" 或 "intraday return"，必须用 `close/open - 1`，不能用 `pct_chg`
-  14. **复权价格**：如果公式用到"价格"计算收益率、动量、均线等，必须先算后复权价 `adj_close = df['close'] * df['factor']`。`close` 是未复权收盘价，不能直接用于跨时间的价格比较。`pct_chg` 已经是复权涨跌幅，不需要再调整。简单的记忆：比较不同时间的价格用 `close * factor`，算单日涨跌用 `pct_chg`。
-  15. **行业数据**：`INDUSTRY_DICT` 可用于行业中性化、行业分组、行业内排名等。用 `INDUSTRY_DICT.get(stock, "未知")` 获取行业。
-  16. **指数数据**：`get_jq_data(symbol, 'price')` 可用于计算超额收益、Beta、市场收益等。首次调用自动下载，后续读缓存。
-  17. **过滤条件**：因子信息中的 special_conditions 字段包含了该因子的数据过滤/剔除条件（如剔除停牌、剔除ST等），必须在代码中实现这些条件。同时，计算过程中遇到无效数据（停牌、缺失、异常值）应合理排除。
-
+  15. **复权价格**：如果公式用到"价格"计算收益率、动量、均线等，必须先算后复权价 `adj_close = df['close'] * df['factor']`。`close` 是未复权收盘价，不能直接用于跨时间的价格比较。`pct_chg` 已经是复权涨跌幅，不需要再调整。简单的记忆：比较不同时间的价格用 `close * factor`，算单日涨跌用 `pct_chg`。
+  16. **行业数据**：`INDUSTRY_DICT` 可用于行业中性化、行业分组、行业内排名等。用 `INDUSTRY_DICT.get(stock, "未知")` 获取行业。
+  17. **指数数据**：`get_jq_data(symbol, 'price')` 可用于计算超额收益、Beta、市场收益等。首次调用自动下载，后续读缓存。
 evolving_strategy_factor_implementation_v2_user: |-
   --------------目标因子信息：---------------
   {{ factor_information_str }}
