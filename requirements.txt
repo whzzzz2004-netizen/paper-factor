@@ -1,0 +1,13 @@
+pandas>=2.0
+numpy
+pyarrow
+joblib
+scikit-learn
+jieba
+matplotlib
+litellm>=1.73
+loguru
+requests
+filelock
+python-dotenv
+tqdm
