@@ -172,7 +172,8 @@ if __name__ == "__main__":
         print("数据路径: 使用默认路径")
 
     # ── 第二步：扫描待运行因子（远程优先，本地回退） ──
-    global FULL_BASE
+    # (FULL_BASE 是模块级变量，在 __main__ 块中直接赋值即可)
+
     if remote_full_base and remote_full_base.exists():
         FULL_BASE = remote_full_base
     elif args.remote_path:
