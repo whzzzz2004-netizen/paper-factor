@@ -20,7 +20,8 @@ PORT = 18765
 DAILY_UPDATE_CONFIG = ROOT / "git_ignore_folder" / "daily_update_config.json"
 DAILY_UPDATE_STATUS = ROOT / "git_ignore_folder" / "daily_update_status.json"
 DAILY_UPDATE_DIR = ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_每日更新"
-FULL_OUTPUT_DIR = ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
+REMOTE_FULL = Path("/mnt/remote_e/paper_factors/文献因子_全量")
+FULL_OUTPUT_DIR = REMOTE_FULL if REMOTE_FULL.exists() else ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
 
 # ── 数据导出 ──────────────────────────────────────────────
 
@@ -52,7 +53,7 @@ def get_source_tag(meta, factor_name=""):
 
 def export_data():
     LIT = ROOT / "git_ignore_folder" / "factor_outputs" / "literature_reports"
-    FULL = ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
+    FULL = FULL_OUTPUT_DIR
 
     # 加载每日更新配置，用于在每个因子上标记是否已启用
     du_cfg = {}
@@ -106,9 +107,10 @@ def export_data():
                 decile_path = fdir / f"{fdir.name}.decile.png"
 
                 full_dir = FULL / rdir.name / fdir.name
+                full_pq_path = full_dir / f"{fdir.name}.parquet"
                 full_meta_path = full_dir / f"{fdir.name}.meta.json"
-                has_full = full_dir.exists() and full_meta_path.exists()
-                full_meta = load_factor_meta(full_meta_path) if has_full else {}
+                has_full = full_pq_path.exists()
+                full_meta = load_factor_meta(full_meta_path) if full_meta_path.exists() else {}
                 ev = get_eval_summary(full_meta) if has_full else get_eval_summary(meta)
 
                 decile_rel = None
@@ -358,7 +360,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             parts = rel.split("/")
             if len(parts) >= 3:
                 base_dir, report_name, factor_name = parts[0], parts[1], parts[2]
-                img_path = ROOT / "git_ignore_folder" / "factor_outputs" / base_dir / report_name / factor_name / f"{factor_name}.decile.png"
+                img_path = REMOTE_FULL / report_name / factor_name / f"{factor_name}.decile.png"
+                if not img_path.exists():
+                    img_path = ROOT / "git_ignore_folder" / "factor_outputs" / base_dir / report_name / factor_name / f"{factor_name}.decile.png"
                 if img_path.exists():
                     body = img_path.read_bytes()
                     self.send_response(200)

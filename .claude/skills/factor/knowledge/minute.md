@@ -9,6 +9,10 @@ def calc_factors_one_day(df, stock):
     # 用 groupby('_date') 按天聚合，返回所有日期的值（不要只取最后一个）
 ```
 
+## 注意：pandas 兼容性
+- **禁止使用** `resample('5T')`、`resample('15T')` 等 `'T'` 后缀——pandas 2.3+ 已删除 `'T'` 别名
+- 必须用 `resample('5min')`、`resample('15min')` 代替
+
 ## 可用数据列（8 列）
 
 <!-- MINUTE_COLUMNS -->

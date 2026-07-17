@@ -192,7 +192,16 @@ import numpy as np
 import sys, json, os
 from pathlib import Path
 from joblib import Parallel, delayed
-DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or ".")
+_D = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or "")
+if not _D or not (_D/"stock_data"/"daily").exists():
+    _D = Path(__file__).parent/"factor_implementation_source_data"
+    if not (_D/"stock_data"/"daily").exists():
+        _D = Path(__file__).parent.parent/"factor_implementation_source_data"
+        if not (_D/"stock_data"/"daily").exists():
+            _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
+            if not (_D/"stock_data"/"daily").exists():
+                _D = Path(".")
+DATA_DIR = _D
 STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
 STOCK_LIST = json.load(open(STOCK_DATA_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(STOCK_DATA_DIR / "trade_dates.json"))
@@ -362,7 +371,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 warnings.filterwarnings("ignore")
 pd.set_option("mode.copy_on_write", False)
 
-DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or ".")
+_D = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or "")
+if not _D or not (_D/"stock_data"/"minute_by_date").exists():
+    _D = Path(__file__).parent/"factor_implementation_source_data"
+    if not (_D/"stock_data"/"minute_by_date").exists():
+        _D = Path(__file__).parent.parent/"factor_implementation_source_data"
+        if not (_D/"stock_data"/"minute_by_date").exists():
+            _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
+            if not (_D/"stock_data"/"minute_by_date").exists():
+                _D = Path(".")
+DATA_DIR = _D
 MINUTE_BY_DATE_DIR = DATA_DIR / "stock_data" / "minute_by_date"
 STOCK_LIST = json.load(open(MINUTE_BY_DATE_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(MINUTE_BY_DATE_DIR / "trade_dates.json"))
@@ -725,7 +743,16 @@ import sys, json, os, time
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or ".")
+_D = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or "")
+if not _D or not (_D/"stock_data"/"daily").exists():
+    _D = Path(__file__).parent/"factor_implementation_source_data"
+    if not (_D/"stock_data"/"daily").exists():
+        _D = Path(__file__).parent.parent/"factor_implementation_source_data"
+        if not (_D/"stock_data"/"daily").exists():
+            _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
+            if not (_D/"stock_data"/"daily").exists():
+                _D = Path(".")
+DATA_DIR = _D
 STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
 STOCK_LIST = json.load(open(STOCK_DATA_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(STOCK_DATA_DIR / "trade_dates.json"))
@@ -974,12 +1001,21 @@ if __name__ == '__main__':
     #   cross_section_transform(all_values) → dict {stock: 值 或 {"因子名": 值}}  （全市场截面处理）
     MINUTE_CROSS_SECTION_FRAMEWORK_TEMPLATE = """import pandas as pd
 import numpy as np
-import sys, json, os
+import sys, json, os, time
 from pathlib import Path
 from joblib import Parallel, delayed
 import gc as _gc
 
-DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or ".")
+_D = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or "")
+if not _D or not (_D/"stock_data"/"minute_by_date").exists():
+    _D = Path(__file__).parent/"factor_implementation_source_data"
+    if not (_D/"stock_data"/"minute_by_date").exists():
+        _D = Path(__file__).parent.parent/"factor_implementation_source_data"
+        if not (_D/"stock_data"/"minute_by_date").exists():
+            _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
+            if not (_D/"stock_data"/"minute_by_date").exists():
+                _D = Path(".")
+DATA_DIR = _D
 MINUTE_BY_DATE_DIR = DATA_DIR / "stock_data" / "minute_by_date"
 STOCK_LIST = json.load(open(MINUTE_BY_DATE_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(MINUTE_BY_DATE_DIR / "trade_dates.json"))
@@ -1271,7 +1307,16 @@ for _search_dir in [os.path.join(_sys_prefix, "lib"), os.path.join(os.path.dirna
 
 import torch
 
-DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or ".")
+_D = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or "")
+if not _D or not (_D/"stock_data"/"daily").exists():
+    _D = Path(__file__).parent/"factor_implementation_source_data"
+    if not (_D/"stock_data"/"daily").exists():
+        _D = Path(__file__).parent.parent/"factor_implementation_source_data"
+        if not (_D/"stock_data"/"daily").exists():
+            _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
+            if not (_D/"stock_data"/"daily").exists():
+                _D = Path(".")
+DATA_DIR = _D
 STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
 STOCK_LIST = json.load(open(STOCK_DATA_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(STOCK_DATA_DIR / "trade_dates.json"))

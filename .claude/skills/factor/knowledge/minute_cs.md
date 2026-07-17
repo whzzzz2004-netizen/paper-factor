@@ -1,5 +1,9 @@
 # 分钟截面因子模板
 
+## 注意：pandas 兼容性
+- **禁止使用** `resample('5T')`、`resample('15T')` 等 `'T'` 后缀——pandas 2.3+ 已删除 `'T'` 别名
+- 必须用 `resample('5min')`、`resample('15min')` 代替
+
 ## 函数签名
 ```python
 def calc_factor_minute_raw(df, stock):
