@@ -104,11 +104,11 @@ def upload_file(local_path: Path, remote_path: str) -> bool:
 
     _ensure_remote_dir(remote_dir)
 
-    # smbclient put 不支持含空格的路径，复制到临时文件后上传
+    # smbclient put 不支持含空格的路径，本地复制到临时文件 + 远程路径用引号包裹
     tmp = Path(tempfile.mktemp(suffix=local_path.suffix))
     shutil.copy2(local_path, tmp)
     try:
-        result = _smb([f"put {tmp} {remote_dir}\\{remote_file}"], timeout=120)
+        result = _smb([f'put {tmp} "{remote_dir}\\{remote_file}"'], timeout=120)
     finally:
         tmp.unlink(missing_ok=True)
     if result:
