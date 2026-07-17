@@ -198,9 +198,11 @@ if not _D or not (_D/"stock_data"/"daily").exists():
     if not (_D/"stock_data"/"daily").exists():
         _D = Path(__file__).parent.parent/"factor_implementation_source_data"
         if not (_D/"stock_data"/"daily").exists():
-            _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
+            _D = Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data")
             if not (_D/"stock_data"/"daily").exists():
-                _D = Path(".")
+                _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
+                if not (_D/"stock_data"/"daily").exists():
+                    _D = Path(".")
 DATA_DIR = _D
 STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
 STOCK_LIST = json.load(open(STOCK_DATA_DIR / "stock_list.json"))
@@ -377,9 +379,11 @@ if not _D or not (_D/"stock_data"/"minute_by_date").exists():
     if not (_D/"stock_data"/"minute_by_date").exists():
         _D = Path(__file__).parent.parent/"factor_implementation_source_data"
         if not (_D/"stock_data"/"minute_by_date").exists():
-            _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
+            _D = Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data")
             if not (_D/"stock_data"/"minute_by_date").exists():
-                _D = Path(".")
+                _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
+                if not (_D/"stock_data"/"minute_by_date").exists():
+                    _D = Path(".")
 DATA_DIR = _D
 MINUTE_BY_DATE_DIR = DATA_DIR / "stock_data" / "minute_by_date"
 STOCK_LIST = json.load(open(MINUTE_BY_DATE_DIR / "stock_list.json"))
@@ -749,9 +753,11 @@ if not _D or not (_D/"stock_data"/"daily").exists():
     if not (_D/"stock_data"/"daily").exists():
         _D = Path(__file__).parent.parent/"factor_implementation_source_data"
         if not (_D/"stock_data"/"daily").exists():
-            _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
+            _D = Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data")
             if not (_D/"stock_data"/"daily").exists():
-                _D = Path(".")
+                _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
+                if not (_D/"stock_data"/"daily").exists():
+                    _D = Path(".")
 DATA_DIR = _D
 STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
 STOCK_LIST = json.load(open(STOCK_DATA_DIR / "stock_list.json"))
@@ -1012,9 +1018,11 @@ if not _D or not (_D/"stock_data"/"minute_by_date").exists():
     if not (_D/"stock_data"/"minute_by_date").exists():
         _D = Path(__file__).parent.parent/"factor_implementation_source_data"
         if not (_D/"stock_data"/"minute_by_date").exists():
-            _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
+            _D = Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data")
             if not (_D/"stock_data"/"minute_by_date").exists():
-                _D = Path(".")
+                _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
+                if not (_D/"stock_data"/"minute_by_date").exists():
+                    _D = Path(".")
 DATA_DIR = _D
 MINUTE_BY_DATE_DIR = DATA_DIR / "stock_data" / "minute_by_date"
 STOCK_LIST = json.load(open(MINUTE_BY_DATE_DIR / "stock_list.json"))
@@ -1313,9 +1321,11 @@ if not _D or not (_D/"stock_data"/"daily").exists():
     if not (_D/"stock_data"/"daily").exists():
         _D = Path(__file__).parent.parent/"factor_implementation_source_data"
         if not (_D/"stock_data"/"daily").exists():
-            _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
+            _D = Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data")
             if not (_D/"stock_data"/"daily").exists():
-                _D = Path(".")
+                _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
+                if not (_D/"stock_data"/"daily").exists():
+                    _D = Path(".")
 DATA_DIR = _D
 STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
 STOCK_LIST = json.load(open(STOCK_DATA_DIR / "stock_list.json"))
