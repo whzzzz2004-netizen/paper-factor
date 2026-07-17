@@ -80,7 +80,7 @@ def _ensure_remote_dir(remote_dir: str) -> bool:
     for i in range(1, len(parts) + 1):
         sub = "\\".join(parts[:i])
         # mkdir 会返回 OBJECT_NAME_COLLISION 如果已存在，忽略即可
-        _smb([f"mkdir {sub}"], timeout=10)
+        _smb([f'mkdir "{sub}"'], timeout=10)
     return True
 
 
@@ -102,8 +102,8 @@ def upload_file(local_path: Path, remote_path: str) -> bool:
 
     _ensure_remote_dir(remote_dir)
 
-    # smbclient put 需要使用临时文件（不支持管道传递二进制）
-    result = _smb([f"put {local_path} {remote_dir}\\{remote_file}"], timeout=120)
+    # smbclient put 需要使用临时文件（不支持管道传递二进制），路径用引号防止空格问题
+    result = _smb([f'put "{local_path}" "{remote_dir}\\{remote_file}"'], timeout=120)
     if result:
         sz = local_path.stat().st_size
         print(f"  ✅ 已上传 {remote_path} ({sz//1024}KB)")
