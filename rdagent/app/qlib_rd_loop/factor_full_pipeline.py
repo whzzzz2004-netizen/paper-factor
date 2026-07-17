@@ -764,22 +764,8 @@ def run_full_pipeline(
         except Exception:
             meta = {}
 
-        # 7. LLM 审查
-        has_source = bool(src_excerpt)
-        accepted = llm_review_and_decide(factor_name, output_dir, meta, src_excerpt)
-        if not accepted and has_source:
-            print(f"  🔄 尝试重新生成并重跑...", flush=True)
-            rerun_ok = regenerate_and_rerun(
-                factor_name, output_dir, factor_type, src_excerpt,
-            )
-            if rerun_ok:
-                print(f"  ✅ 重跑成功，直接接受", flush=True)
-            else:
-                print(f"  ⚠️ 重跑失败，接受原结果", flush=True)
-        elif not accepted:
-            print(f"  ⚠️ 无 source_excerpt，跳过重新生成，接受原结果", flush=True)
-        else:
-            print(f"  ✅ 因子审查通过", flush=True)
+        # 7. 跳过 LLM 审查，直接接受（用户要求保留所有因子）
+        print(f"  ✅ 跳过 LLM 审查，直接接受因子", flush=True)
 
         # 8. 标记完成
         if meta_path_full.exists():
