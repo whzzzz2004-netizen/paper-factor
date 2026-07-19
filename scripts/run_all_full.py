@@ -33,6 +33,32 @@ _REMOTE_OUTPUTS = [
 ]
 FULL_BASE = next((p for p in _REMOTE_OUTPUTS if p.exists()), PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量")
 
+SMB_HOST = "192.168.1.13"
+SMB_SHARE = "E"
+SMB_USER = "pc"
+SMB_PASS = "123456"
+CIFS_MOUNT = Path("/mnt/remote_e")
+
+
+def _ensure_remote_mounted() -> bool:
+    """自动挂载远程 E 盘"""
+    if CIFS_MOUNT.exists() and any(CIFS_MOUNT.iterdir()):
+        return True
+    try:
+        CIFS_MOUNT.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run(
+            ["sudo", "mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT),
+             "-o", f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode == 0:
+            print(f"  📡 已自动挂载远程 E 盘 → {CIFS_MOUNT}")
+            return True
+    except Exception:
+        pass
+    return False
+
+
 # 自动检测数据目录
 def _detect_data_dir() -> Path:
     candidates = [
@@ -47,6 +73,12 @@ def _detect_data_dir() -> Path:
     for p in candidates:
         if p and (Path(p) / "stock_data" / "daily").exists():
             return Path(p)
+    # 自动挂载远程再试
+    print("  ⏳ 未找到数据目录，尝试自动挂载远程 E 盘...")
+    if _ensure_remote_mounted():
+        for p in candidates:
+            if p and (Path(p) / "stock_data" / "daily").exists():
+                return Path(p)
     return Path(".")
 
 FULL_DATA_DIR = _detect_data_dir()

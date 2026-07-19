@@ -23,7 +23,33 @@ from pathlib import Path
 # ── 路径常量（与 scripts/full.py 保持一致） ──
 PROJECT_ROOT = Path(__file__).resolve().parents[3]  # rdagent/app/qlib_rd_loop/ → project root
 
-# 数据目录自动检测（多路径降级）
+SMB_HOST = "192.168.1.13"
+SMB_SHARE = "E"
+SMB_USER = "pc"
+SMB_PASS = "123456"
+CIFS_MOUNT = Path("/mnt/remote_e")
+
+
+def _ensure_remote_mounted() -> bool:
+    """自动挂载远程 E 盘（不需要用户手动操作）"""
+    if CIFS_MOUNT.exists() and any(CIFS_MOUNT.iterdir()):
+        return True
+    try:
+        CIFS_MOUNT.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run(
+            ["sudo", "mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT),
+             "-o", f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode == 0:
+            print(f"  📡 已自动挂载远程 E 盘 → {CIFS_MOUNT}", flush=True)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+# 数据目录自动检测（多路径降级 + 自动挂载）
 def _detect_data_dir() -> Path:
     candidates = [
         os.environ.get("FACTOR_DATA_DIR", ""),
@@ -37,6 +63,12 @@ def _detect_data_dir() -> Path:
     for p in candidates:
         if p and (Path(p) / "stock_data" / "daily").exists():
             return Path(p)
+    # 全都没找到 → 尝试自动挂载远程再重试
+    print("  ⏳ 未找到数据目录，尝试自动挂载远程 E 盘...", flush=True)
+    if _ensure_remote_mounted():
+        for p in candidates:
+            if p and (Path(p) / "stock_data" / "daily").exists():
+                return Path(p)
     return Path(".")
 
 # 输出目录优先远程
