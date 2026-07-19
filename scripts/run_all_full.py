@@ -386,21 +386,17 @@ def _sync_raw_data():
             try:
                 _smb_download(remote_file, local_tmp)
                 df = pd.read_parquet(local_tmp)
+                # 排除非数据列
+                skip_cols = {"symbol", "date", "datetime", "instrument"}
+                data_cols = [c for c in df.columns if c not in skip_cols]
                 for _, row in df.iterrows():
                     stock = str(row.get("symbol", "")).zfill(6)
                     if not stock:
                         continue
                     all_stocks.add(stock)
                     stock_file = stock_dir / f"{stock}.parquet"
-                    row_df = pd.DataFrame([{
-                        "open": row.get("open"),
-                        "close": row.get("close"),
-                        "high": row.get("high"),
-                        "low": row.get("low"),
-                        "volume": row.get("volume"),
-                        "amount": row.get("amount", row.get("volume", 0) * row.get("close", 0)),
-                        "factor": row.get("factor", 1),
-                    }], index=pd.to_datetime([date_str]))
+                    row_data = {c: row.get(c) for c in data_cols}
+                    row_df = pd.DataFrame([row_data], index=pd.to_datetime([date_str]))
                     if stock_file.exists():
                         old = pd.read_parquet(stock_file)
                         combined = pd.concat([old, row_df])
