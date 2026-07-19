@@ -202,12 +202,17 @@ if not _D or not (_D/"stock_data"/"daily").exists():
             if not (_D/"stock_data"/"daily").exists():
                 _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
                 if not (_D/"stock_data"/"daily").exists():
-                    _D = Path(".")
+                    _D = Path("Z:\\_paper_factor_unified\\factor_implementation_source_data")
+                    if not (_D/"stock_data"/"daily").exists():
+                        _D = Path("\\\\192.168.1.13\\E\\_paper_factor_unified\\factor_implementation_source_data")
+                        if not (_D/"stock_data"/"daily").exists():
+                            _D = Path(".")
 DATA_DIR = _D
 STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
 STOCK_LIST = json.load(open(STOCK_DATA_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(STOCK_DATA_DIR / "trade_dates.json"))
 LOOKBACK_DAYS = {lookback_days}  # 由框架注入，0=不切片
+_CODE_DIR = Path(__file__).parent
 
 def load_stock(stock, columns=None):
     if columns:
@@ -354,7 +359,7 @@ if __name__ == '__main__':
         # 统一格式：index→string日期, columns→int股票代码
         wide.index = wide.index.strftime('%Y-%m-%d')
         wide.columns = wide.columns.astype(int)
-        wide.to_parquet("result.parquet")
+        wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem}.parquet")
         print(f"完成，共 {{wide.shape[0]}} 天 x {{wide.shape[1]}}, 只股票")
     except Exception as e:
         import traceback
@@ -383,12 +388,17 @@ if not _D or not (_D/"stock_data"/"minute_by_date").exists():
             if not (_D/"stock_data"/"minute_by_date").exists():
                 _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
                 if not (_D/"stock_data"/"minute_by_date").exists():
-                    _D = Path(".")
+                    _D = Path("Z:\\_paper_factor_unified\\factor_implementation_source_data")
+                    if not (_D/"stock_data"/"minute_by_date").exists():
+                        _D = Path("\\\\192.168.1.13\\E\\_paper_factor_unified\\factor_implementation_source_data")
+                        if not (_D/"stock_data"/"minute_by_date").exists():
+                            _D = Path(".")
 DATA_DIR = _D
 MINUTE_BY_DATE_DIR = DATA_DIR / "stock_data" / "minute_by_date"
 STOCK_LIST = json.load(open(MINUTE_BY_DATE_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(MINUTE_BY_DATE_DIR / "trade_dates.json"))
 LOOKBACK_DAYS = max(1, {lookback_days})  # 分钟线至少1天
+_CODE_DIR = Path(__file__).parent
 
 # 并行控制：默认8核（fork COW内存安全），环境变量FACTOR_N_WORKERS覆盖
 N_WORKERS = int(os.environ.get("FACTOR_N_WORKERS", "8"))
@@ -507,7 +517,7 @@ def _compute_day_sequential(td):
 if __name__ == '__main__':
     t0 = time.time()
     total_dates = len(TRADE_DATES)
-    _CHK_DIR = Path("checkpoints")
+    _CHK_DIR = _CODE_DIR / "checkpoints"
     _CHK_DIR.mkdir(exist_ok=True)
     long_df = None
 
@@ -720,7 +730,7 @@ if __name__ == '__main__':
             # 统一格式：index→string日期, columns→int股票代码
             wide.index = wide.index.strftime('%Y-%m-%d')
             wide.columns = wide.columns.astype(int)
-            wide.to_parquet("result.parquet")
+            wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem}.parquet")
             print(f"完成！{wide.shape[0]} 天 x {wide.shape[1]} 只股票, "
                   f"{time.time()-t0:.0f}s", flush=True)
     except Exception as e:
@@ -757,12 +767,17 @@ if not _D or not (_D/"stock_data"/"daily").exists():
             if not (_D/"stock_data"/"daily").exists():
                 _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
                 if not (_D/"stock_data"/"daily").exists():
-                    _D = Path(".")
+                    _D = Path("Z:\\_paper_factor_unified\\factor_implementation_source_data")
+                    if not (_D/"stock_data"/"daily").exists():
+                        _D = Path("\\\\192.168.1.13\\E\\_paper_factor_unified\\factor_implementation_source_data")
+                        if not (_D/"stock_data"/"daily").exists():
+                            _D = Path(".")
 DATA_DIR = _D
 STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
 STOCK_LIST = json.load(open(STOCK_DATA_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(STOCK_DATA_DIR / "trade_dates.json"))
 LOOKBACK_DAYS = {lookback_days}  # 由框架注入，0=不切片
+_CODE_DIR = Path(__file__).parent
 N_WORKERS = int(os.environ.get("FACTOR_N_WORKERS", "4"))
 
 def load_stock(stock, columns=None):
@@ -845,6 +860,15 @@ def _init_shared():
     _WTDIDX = pd.DatetimeIndex(TRADE_DATES)
     print(f"  [主进程] 共享缓存就绪，{len(STOCK_LIST)}只股票按需加载", flush=True)
 
+def _init_worker():
+    \"\"\"子进程初始化（Windows spawn 模式下子进程需要重新初始化共享变量）\"\"\"
+    global _WVALID, _WTDIDX, _SD, _WCACHE, _WPOS
+    _SD = STOCK_DATA_DIR
+    _WVALID = STOCK_LIST
+    _WTDIDX = pd.DatetimeIndex(TRADE_DATES)
+    _WCACHE = {}
+    _WPOS = {}
+
 def _get_stock(s):
     \"\"\"延迟加载 — 全量位置预计算，跨chunk复用（fork前预填充，子进程COW读取）\"\"\"
     global _WCACHE, _WPOS
@@ -915,13 +939,13 @@ if __name__ == '__main__':
         print(f"检测到因子使用的列: {_LOAD_COLS}", flush=True)
         # ----
 
-        _CHK_DIR = Path("checkpoints")
+        _CHK_DIR = _CODE_DIR / "checkpoints"
         _CHK_DIR.mkdir(exist_ok=True)
         _CHUNK = 200
         _t0_main = time.time()
 
         print(f"截面计算: {len(TRADE_DATES)} 天, chunk={_CHUNK} 天, processes={N_WORKERS}", flush=True)
-        print(f"进程共享缓存(fork COW): 5435只股票fork前预加载，子进程共享", flush=True)
+        print(f"并行模式: ProcessPoolExecutor (Linux fork / Windows spawn)", flush=True)
 
         # 初始化全局共享缓存
         _init_shared()
@@ -937,8 +961,8 @@ if __name__ == '__main__':
             _ce = min(_cs + _CHUNK, len(TRADE_DATES))
             _t_chk = time.time()
 
-            # ProcessPoolExecutor(fork)：子进程通过 COW 共享预加载数据
-            with ProcessPoolExecutor(max_workers=N_WORKERS) as _pool:
+            # ProcessPoolExecutor：Linux 用 fork 共享预加载数据，Windows spawn 由 _init_worker 初始化
+            with ProcessPoolExecutor(max_workers=N_WORKERS, initializer=_init_worker) as _pool:
                 # 将chunk内日期分成N_WORKERS组
                 _day_indices = list(range(_cs, _ce))
                 _splits = np.array_split(_day_indices, min(N_WORKERS, len(_day_indices)))
@@ -991,7 +1015,7 @@ if __name__ == '__main__':
         # 统一格式：index→string日期, columns→int股票代码
         wide.index = wide.index.strftime('%Y-%m-%d')
         wide.columns = wide.columns.astype(int)
-        wide.to_parquet("result.parquet")
+        wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem}.parquet")
         nn = int(wide.notna().sum().sum())
         print(f"完成: {wide.shape[0]}天 x {wide.shape[1]}只, 非空={nn}/{wide.size}={nn/wide.size*100:.1f}%, "
               f"{time.time()-_t0_main:.0f}s", flush=True)
@@ -1022,12 +1046,17 @@ if not _D or not (_D/"stock_data"/"minute_by_date").exists():
             if not (_D/"stock_data"/"minute_by_date").exists():
                 _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
                 if not (_D/"stock_data"/"minute_by_date").exists():
-                    _D = Path(".")
+                    _D = Path("Z:\\_paper_factor_unified\\factor_implementation_source_data")
+                    if not (_D/"stock_data"/"minute_by_date").exists():
+                        _D = Path("\\\\192.168.1.13\\E\\_paper_factor_unified\\factor_implementation_source_data")
+                        if not (_D/"stock_data"/"minute_by_date").exists():
+                            _D = Path(".")
 DATA_DIR = _D
 MINUTE_BY_DATE_DIR = DATA_DIR / "stock_data" / "minute_by_date"
 STOCK_LIST = json.load(open(MINUTE_BY_DATE_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(MINUTE_BY_DATE_DIR / "trade_dates.json"))
 LOOKBACK_DAYS = max(1, {lookback_days})  # 分钟线至少1天
+_CODE_DIR = Path(__file__).parent
 
 # 并行控制：threading 后端共享进程内存，默认4线程，环境变量FACTOR_N_WORKERS覆盖
 N_WORKERS = int(os.environ.get("FACTOR_N_WORKERS", "4"))
@@ -1285,7 +1314,7 @@ if __name__ == '__main__':
         # 统一格式：index→string日期, columns→int股票代码
         wide.index = wide.index.strftime('%Y-%m-%d')
         wide.columns = wide.columns.astype(int)
-        wide.to_parquet("result.parquet")
+        wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem}.parquet")
         print(f"完成！共 {{wide.shape[0]}} 天 x {{wide.shape[1]}} 只股票, "
               f"{{time.time()-_t0_main:.0f}}s", flush=True)
     except Exception:
@@ -1325,12 +1354,17 @@ if not _D or not (_D/"stock_data"/"daily").exists():
             if not (_D/"stock_data"/"daily").exists():
                 _D = Path("E:\\_paper_factor_unified\\factor_implementation_source_data")
                 if not (_D/"stock_data"/"daily").exists():
-                    _D = Path(".")
+                    _D = Path("Z:\\_paper_factor_unified\\factor_implementation_source_data")
+                    if not (_D/"stock_data"/"daily").exists():
+                        _D = Path("\\\\192.168.1.13\\E\\_paper_factor_unified\\factor_implementation_source_data")
+                        if not (_D/"stock_data"/"daily").exists():
+                            _D = Path(".")
 DATA_DIR = _D
 STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
 STOCK_LIST = json.load(open(STOCK_DATA_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(STOCK_DATA_DIR / "trade_dates.json"))
 LOOKBACK_DAYS = {lookback_days}  # 由框架注入，0=不切片
+_CODE_DIR = Path(__file__).parent
 
 def load_stock(stock, columns=None):
     if columns:
@@ -1512,7 +1546,7 @@ if __name__ == '__main__':
         # 统一格式：index→string日期, columns→int股票代码
         wide.index = wide.index.strftime('%Y-%m-%d')
         wide.columns = wide.columns.astype(int)
-        wide.to_parquet("result.parquet")
+        wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem}.parquet")
         print(f"完成，共 {{wide.shape[0]}} 天 x {{wide.shape[1]}} 只股票", flush=True)
     except Exception as e:
         import traceback

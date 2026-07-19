@@ -26,8 +26,30 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
-FULL_BASE = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
-FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data")))
+_REMOTE_OUTPUTS = [
+    Path("/mnt/remote_e/paper_factors/文献因子_全量"),
+    Path("E:\\paper_factors\\文献因子_全量"),
+    Path("Z:\\paper_factors\\文献因子_全量"),
+]
+FULL_BASE = next((p for p in _REMOTE_OUTPUTS if p.exists()), PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量")
+
+# 自动检测数据目录
+def _detect_data_dir() -> Path:
+    candidates = [
+        os.environ.get("FACTOR_DATA_DIR", ""),
+        os.environ.get("RDAGENT_FACTOR_DATA_DIR", ""),
+        str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"),
+        "/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data",
+        "E:\\_paper_factor_unified\\factor_implementation_source_data",
+        "Z:\\_paper_factor_unified\\factor_implementation_source_data",
+        "\\\\192.168.1.13\\E\\_paper_factor_unified\\factor_implementation_source_data",
+    ]
+    for p in candidates:
+        if p and (Path(p) / "stock_data" / "daily").exists():
+            return Path(p)
+    return Path(".")
+
+FULL_DATA_DIR = _detect_data_dir()
 
 
 def find_pending_factors(report_filter: str | None, force: bool) -> list[dict]:

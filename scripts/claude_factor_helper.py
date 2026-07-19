@@ -525,6 +525,10 @@ def detect_lookback_from_code(code: str, default: int = 250) -> int:
 # ---------------------------------------------------------------------------
 # Subcommand: test-and-export
 # ---------------------------------------------------------------------------
+# 测试阶段非空值比率阈值：低于此值时认为因子输出全为空，触发代码重新检查
+_NON_NULL_THRESHOLD = 0.01  # 1%
+
+
 def _run_test_in_tmpdir(code_path: Path, timeout: int = 3600) -> dict:
     """Run a .code.py in a temp dir and return result dict + temp dir path."""
     env = os.environ.copy()
@@ -561,18 +565,31 @@ def _run_test_in_tmpdir(code_path: Path, timeout: int = 3600) -> dict:
     if result_path.exists():
         import pandas as pd
         df = pd.read_parquet(result_path)
+        non_null_ratio = round(float(df.notna().mean().mean()), 4)
         result_info = {
             "result_exists": True,
             "result_shape": list(df.shape),
             "date_range": [str(df.index.min()), str(df.index.max())] if len(df) > 0 else None,
-            "non_null_ratio": round(float(df.notna().mean().mean()), 4),
+            "non_null_ratio": non_null_ratio,
         }
+        # 全空值检查：如果非空比率低于阈值，视为因子逻辑有问题，需要重新检查代码
+        if non_null_ratio < _NON_NULL_THRESHOLD:
+            result_info["all_nan_warning"] = (
+                f"因子输出几乎全为空值 (non_null_ratio={non_null_ratio:.4f} < {_NON_NULL_THRESHOLD})。"
+                f"这通常意味着因子代码逻辑有问题（如数据列不存在、计算结果全为NaN、"
+                f"或条件过滤过于严格导致无有效记录）。请仔细检查核心计算函数，"
+                f"确保输入列名正确、计算过程无除零或NaN传播、筛选条件合理。"
+            )
     else:
         result_info = {"result_exists": False}
 
+    success = returncode == 0 and result_info.get("result_exists", False)
+    if success and result_info.get("all_nan_warning"):
+        success = False
+
     return {
         "tmpdir": tmpdir,
-        "success": returncode == 0 and result_info.get("result_exists", False),
+        "success": success,
         "returncode": returncode,
         "stdout_tail": stdout[-2000:] if stdout else "",
         "stderr_tail": stderr[-2000:] if stderr else "",
@@ -633,6 +650,7 @@ def cmd_test_and_export(args):
             shutil.rmtree(test_result["tmpdir"], ignore_errors=True)
         except Exception:
             pass
+        extra_keys = ("result_exists", "result_shape", "non_null_ratio", "all_nan_warning")
         print(json.dumps({
             "success": False,
             "detected_type": type_key,
@@ -640,7 +658,7 @@ def cmd_test_and_export(args):
             "stderr_tail": test_result["stderr_tail"],
             "stdout_tail": test_result["stdout_tail"],
             "returncode": test_result["returncode"],
-            **{k: v for k, v in test_result.items() if k in ("result_exists", "result_shape")},
+            **{k: v for k, v in test_result.items() if k in extra_keys},
         }, ensure_ascii=False, indent=2))
         return 0
 
@@ -921,6 +939,27 @@ def cmd_deploy_to_full(args):
     # 1. Copy .code.py, patch DATA_DIR
     code_text = code_path.read_text(encoding="utf-8")
     patched = code_text.replace("factor_implementation_source_data_1000", "factor_implementation_source_data")
+
+    # 注入多级 DATA_DIR 降级链（环境变量 → /mnt/remote_e → E:\ → .）
+    # 使 .code.py 可在任意环境直接运行，无需设置 FACTOR_DATA_DIR
+    _simple_dir = r'DATA_DIR = Path\(os\.environ\.get\("FACTOR_DATA_DIR"\) or os\.environ\.get\("RDAGENT_FACTOR_DATA_DIR"\) or "\."\)'
+    if re.search(_simple_dir, patched):
+        _subdir = "minute_by_date" if "minute_by_date" in patched else "daily"
+        _fallback = (
+            'DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or "")\n'
+            f'if not DATA_DIR or not (DATA_DIR/"stock_data"/"{_subdir}").exists():\n'
+            f'    DATA_DIR = Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data")\n'
+            f'    if not (DATA_DIR/"stock_data"/"{_subdir}").exists():\n'
+            f'        DATA_DIR = Path("E:\\\\_paper_factor_unified\\\\factor_implementation_source_data")\n'
+            f'        if not (DATA_DIR/"stock_data"/"{_subdir}").exists():\n'
+            f'            DATA_DIR = Path("Z:\\\\_paper_factor_unified\\\\factor_implementation_source_data")\n'
+            f'            if not (DATA_DIR/"stock_data"/"{_subdir}").exists():\n'
+            f'                DATA_DIR = Path(r"\\\\\\\\192.168.1.13\\\\E\\\\_paper_factor_unified\\\\factor_implementation_source_data")\n'
+            f'                if not (DATA_DIR/"stock_data"/"{_subdir}").exists():\n'
+            f'                    DATA_DIR = Path(".")\n'
+        )
+        patched = re.sub(_simple_dir, _fallback, patched)
+
     full_code_path = full_factor_dir / f"{factor_name}.code.py"
     full_code_path.write_text(patched, encoding="utf-8")
     n_replaced = code_text.count("factor_implementation_source_data_1000")

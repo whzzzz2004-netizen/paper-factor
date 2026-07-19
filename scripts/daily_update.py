@@ -36,9 +36,26 @@ from pathlib import Path
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).parent.parent
-FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data")))
-FULL_OUTPUT = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
-DAILY_UPDATE_DIR = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_每日更新"
+# 优先用远程（CIFS 挂载），让 .code.py 等文件变更即时可见
+_REMOTE = Path("/mnt/remote_e/paper_factors/文献因子_全量")
+FULL_OUTPUT = _REMOTE if _REMOTE.exists() else PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
+_REMOTE_DAILY = Path("/mnt/remote_e/paper_factors/文献因子_每日更新")
+DAILY_UPDATE_DIR = _REMOTE_DAILY if _REMOTE_DAILY.exists() else PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_每日更新"
+def _detect_data_dir() -> Path:
+    candidates = [
+        os.environ.get("FACTOR_DATA_DIR", ""),
+        os.environ.get("RDAGENT_FACTOR_DATA_DIR", ""),
+        str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"),
+        "/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data",
+        "E:\\_paper_factor_unified\\factor_implementation_source_data",
+        "Z:\\_paper_factor_unified\\factor_implementation_source_data",
+        "\\\\192.168.1.13\\E\\_paper_factor_unified\\factor_implementation_source_data",
+    ]
+    for p in candidates:
+        if p and (Path(p) / "stock_data" / "daily").exists():
+            return Path(p)
+    return Path(".")
+FULL_DATA_DIR = _detect_data_dir()
 CONFIG_PATH = PROJECT_ROOT / "git_ignore_folder" / "daily_update_config.json"
 STATUS_PATH = PROJECT_ROOT / "git_ignore_folder" / "daily_update_status.json"
 
@@ -221,24 +238,20 @@ def update_factor(
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
-        tmp_code = tmpdir / "factor.py"
+        tmp_code = tmpdir / f"{factor_name}.py"
         tmp_code.write_text(patched_code, encoding="utf-8")
 
         env = {k: str(v) for k, v in os.environ.items()}
         env["FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
         env["HDF5_USE_FILE_LOCKING"] = "FALSE"
         env["FACTOR_INCREMENTAL_START_DATE"] = last_date.strftime("%Y-%m-%d")
-        # 限制并行，避免多因子同时跑时 OOM
         factor_type = detect_factor_type(code_text)
-        if factor_type == "daily":
-            env.setdefault("FACTOR_N_WORKERS", "4")
-        else:
-            env.setdefault("FACTOR_N_WORKERS", "8")
+        env.setdefault("FACTOR_N_WORKERS", "8")
 
         print(f"  执行中... (start={last_date.strftime('%Y-%m-%d')}, type={factor_type})")
         try:
             proc = subprocess.run(
-                [sys.executable, "factor.py"],
+                [sys.executable, f"{factor_name}.py"],
                 cwd=tmpdir,
                 capture_output=True, text=True, timeout=7200,
                 env=env,
@@ -261,14 +274,19 @@ def update_factor(
             result["error"] = str(e)
             return result
 
-        # 8. 读取 result.parquet，裁掉 lookback，合并
-        result_parquet = tmpdir / "result.parquet"
+        # 8. 读取 .code.py 输出的 parquet（文件名 = 因子名），裁掉 lookback，合并
+        result_parquet = tmpdir / f"{factor_name}.parquet"
         if not result_parquet.exists():
             result["status"] = "error"
-            result["error"] = "未生成 result.parquet"
+            result["error"] = f"未生成 {factor_name}.parquet"
             return result
 
         new_df = pd.read_parquet(result_parquet)
+        # 统一 index 为 DatetimeIndex（.code.py 可能输出字符串索引）
+        if not isinstance(new_df.index, pd.DatetimeIndex):
+            new_df.index = pd.to_datetime(new_df.index)
+        if not isinstance(existing_df.index, pd.DatetimeIndex):
+            existing_df.index = pd.to_datetime(existing_df.index)
         # 只保留 date > last_date 的行
         new_df = new_df[new_df.index > last_date]
         if new_df.empty:

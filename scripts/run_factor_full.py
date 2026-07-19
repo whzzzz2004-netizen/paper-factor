@@ -26,8 +26,31 @@ from pathlib import Path
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).parent.parent
-FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data")))
-OUTPUT_BASE = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
+
+# 自动检测数据目录（同 run_all_full.py）
+def _detect_data_dir() -> Path:
+    candidates = [
+        os.environ.get("FACTOR_DATA_DIR", ""),
+        os.environ.get("RDAGENT_FACTOR_DATA_DIR", ""),
+        str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"),
+        "/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data",
+        "E:\\_paper_factor_unified\\factor_implementation_source_data",
+        "Z:\\_paper_factor_unified\\factor_implementation_source_data",
+        "\\\\192.168.1.13\\E\\_paper_factor_unified\\factor_implementation_source_data",
+        str(PROJECT_ROOT / "factor_implementation_source_data"),
+    ]
+    for p in candidates:
+        if p and (Path(p) / "stock_data" / "daily").exists():
+            return Path(p)
+    return Path(".")
+
+FULL_DATA_DIR = _detect_data_dir()
+_REMOTE_OUTPUTS = [
+    Path("/mnt/remote_e/paper_factors/文献因子_全量"),
+    Path("E:\\paper_factors\\文献因子_全量"),
+    Path("Z:\\paper_factors\\文献因子_全量"),
+]
+OUTPUT_BASE = next((p for p in _REMOTE_OUTPUTS if p.exists()), PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量")
 
 try:
     from scripts.sync_utils import ensure_remote_mounted, REMOTE_BASE_FULL as REMOTE_BASE
@@ -106,6 +129,10 @@ def run_in_docker(code_path: Path, workspace: Path, data_dir: Path, timeout: int
 
 def sync_to_remote(factor_dir: Path, factor_name: str):
     """同步因子目录到远程E盘（自动挂载）"""
+    # 输出已在远程路径上 → 无需同步
+    if any(str(factor_dir).startswith(str(p)) for p in _REMOTE_OUTPUTS if p.exists()):
+        print(f"  ✓ 已在远程路径，跳过同步")
+        return True
     if not ensure_remote_mounted():
         print(f"  ⚠️ 远程E盘不可用，跳过同步")
         return False
