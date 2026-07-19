@@ -31,21 +31,36 @@ CIFS_MOUNT = Path("/mnt/remote_e")
 
 
 def _ensure_remote_mounted() -> bool:
-    """自动挂载远程 E 盘（不需要用户手动操作）"""
+    """自动挂载远程 E 盘（自动安装依赖，不需要用户手动操作）"""
     if CIFS_MOUNT.exists() and any(CIFS_MOUNT.iterdir()):
         return True
     try:
         CIFS_MOUNT.mkdir(parents=True, exist_ok=True)
+        # 第一次挂载尝试
         r = subprocess.run(
             ["sudo", "mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT),
              "-o", f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"],
             capture_output=True, text=True, timeout=30,
         )
         if r.returncode == 0:
-            print(f"  📡 已自动挂载远程 E 盘 → {CIFS_MOUNT}", flush=True)
+            print(f"  📡 已挂载远程 E 盘 → {CIFS_MOUNT}", flush=True)
             return True
-    except Exception:
-        pass
+        # 失败 → 装 cifs-utils 再试
+        if "cifs-utils" not in r.stderr and "mount error" in r.stderr.lower():
+            print(f"  ⏳ 安装 cifs-utils...", flush=True)
+            subprocess.run(["sudo", "apt", "install", "-y", "cifs-utils"],
+                           capture_output=True, text=True, timeout=120)
+            r = subprocess.run(
+                ["sudo", "mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT),
+                 "-o", f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode == 0:
+                print(f"  📡 已挂载远程 E 盘 → {CIFS_MOUNT}", flush=True)
+                return True
+        print(f"  ⚠️ CIFS 挂载失败: {r.stderr.strip() or r.stdout.strip()}", flush=True)
+    except Exception as e:
+        print(f"  ⚠️ CIFS 挂载异常: {e}", flush=True)
     return False
 
 
@@ -140,6 +155,21 @@ def _find_remote_code(factor_name: str, report_name: str) -> Path | None:
         alt = Path(f"{prefix}/paper_factors/文献因子_全量") / report_name / factor_name / f"{factor_name}.code.py"
         if alt.exists():
             return alt
+    # 保底：通过 smbclient 从远程下载
+    try:
+        remote_path = f"paper_factors\\文献因子_全量\\{report_name}\\{factor_name}\\{factor_name}.code.py"
+        r = subprocess.run(
+            ["smbclient", f"//{SMB_HOST}/{SMB_SHARE}", "-U", f"{SMB_USER}%{SMB_PASS}",
+             "-c", f"get {remote_path} /tmp/{factor_name}.code.py"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode == 0:
+            tmp = Path(f"/tmp/{factor_name}.code.py")
+            if tmp.exists():
+                print(f"  📡 通过 smbclient 下载远程 .code.py", flush=True)
+                return tmp
+    except Exception:
+        pass
     return None
 
 

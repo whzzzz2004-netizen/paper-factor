@@ -41,7 +41,7 @@ CIFS_MOUNT = Path("/mnt/remote_e")
 
 
 def _ensure_remote_mounted() -> bool:
-    """自动挂载远程 E 盘"""
+    """自动挂载远程 E 盘（自动安装依赖）"""
     if CIFS_MOUNT.exists() and any(CIFS_MOUNT.iterdir()):
         return True
     try:
@@ -52,10 +52,23 @@ def _ensure_remote_mounted() -> bool:
             capture_output=True, text=True, timeout=30,
         )
         if r.returncode == 0:
-            print(f"  📡 已自动挂载远程 E 盘 → {CIFS_MOUNT}")
+            print(f"  📡 已挂载远程 E 盘 → {CIFS_MOUNT}")
             return True
-    except Exception:
-        pass
+        if "mount error" in r.stderr.lower():
+            print(f"  ⏳ 安装 cifs-utils...")
+            subprocess.run(["sudo", "apt", "install", "-y", "cifs-utils"],
+                           capture_output=True, text=True, timeout=120)
+            r = subprocess.run(
+                ["sudo", "mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT),
+                 "-o", f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode == 0:
+                print(f"  📡 已挂载远程 E 盘 → {CIFS_MOUNT}")
+                return True
+        print(f"  ⚠️ CIFS 挂载失败: {r.stderr.strip() or r.stdout.strip()}")
+    except Exception as e:
+        print(f"  ⚠️ 挂载异常: {e}")
     return False
 
 
