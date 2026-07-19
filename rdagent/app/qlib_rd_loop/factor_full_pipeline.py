@@ -89,14 +89,39 @@ def cleanup_workers(factor_name: str | None = None):
 # ── 全量计算 ──
 
 
+REMOTE_CODE_LOCATIONS = [
+    # (数据目录前缀, 产出目录前缀)
+    ("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data",
+     "/mnt/remote_e/paper_factors/文献因子_全量"),
+    ("E:\\_paper_factor_unified\\factor_implementation_source_data",
+     "E:\\paper_factors\\文献因子_全量"),
+    ("Z:\\_paper_factor_unified\\factor_implementation_source_data",
+     "Z:\\paper_factors\\文献因子_全量"),
+]
+
+
+def _find_remote_code(factor_name: str, report_name: str) -> Path | None:
+    """从远程 E 盘查找已更新的 .code.py"""
+    for data_prefix, output_prefix in REMOTE_CODE_LOCATIONS:
+        p = Path(output_prefix) / report_name / factor_name / f"{factor_name}.code.py"
+        if p.exists():
+            return p
+    return None
+
+
 def run_other_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bool:
     """本地运行日线/截面因子（直接执行现有的 .code.py）"""
     factor_dir.mkdir(parents=True, exist_ok=True)
 
-    # 复制 .code.py
+    # 复制 .code.py（优先用远程已更新的版本）
     code_dst = factor_dir / f"{factor_name}.code.py"
-    if code_path.resolve() != code_dst.resolve():
-        shutil.copy(code_path, code_dst)
+    report_name = factor_dir.parent.name
+    remote_code = _find_remote_code(factor_name, report_name)
+    src_code = remote_code if remote_code else code_path
+    if src_code.resolve() != code_dst.resolve():
+        shutil.copy(src_code, code_dst)
+    if remote_code:
+        print(f"  📡 使用远程已更新的 .code.py", flush=True)
 
     # 清除旧结果
     for p in [factor_dir / f"{factor_name}.parquet", factor_dir / "result.parquet"]:
@@ -182,10 +207,15 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
     """用本地模板运行分钟因子（直接复用 .code.py，已含 per-stock 模板）"""
     factor_dir.mkdir(parents=True, exist_ok=True)
 
-    # 直接复制 .code.py（测试阶段已焙入模板）
+    # 复制 .code.py（优先用远程已更新的版本）
     code_dst = factor_dir / f"{factor_name}.code.py"
-    if code_path.resolve() != code_dst.resolve():
-        shutil.copy(code_path, code_dst)
+    report_name = factor_dir.parent.name
+    remote_code = _find_remote_code(factor_name, report_name)
+    src_code = remote_code if remote_code else code_path
+    if src_code.resolve() != code_dst.resolve():
+        shutil.copy(src_code, code_dst)
+    if remote_code:
+        print(f"  📡 使用远程已更新的 .code.py", flush=True)
 
     # 修补旧模板的硬编码 CHUNK_SIZE → 环境变量可配置（防OOM）
     _old_code = code_dst.read_text()
