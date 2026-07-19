@@ -89,23 +89,26 @@ def cleanup_workers(factor_name: str | None = None):
 # ── 全量计算 ──
 
 
-REMOTE_CODE_LOCATIONS = [
-    # (数据目录前缀, 产出目录前缀)
-    ("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data",
-     "/mnt/remote_e/paper_factors/文献因子_全量"),
-    ("E:\\_paper_factor_unified\\factor_implementation_source_data",
-     "E:\\paper_factors\\文献因子_全量"),
-    ("Z:\\_paper_factor_unified\\factor_implementation_source_data",
-     "Z:\\paper_factors\\文献因子_全量"),
-]
-
-
 def _find_remote_code(factor_name: str, report_name: str) -> Path | None:
-    """从远程 E 盘查找已更新的 .code.py"""
-    for data_prefix, output_prefix in REMOTE_CODE_LOCATIONS:
-        p = Path(output_prefix) / report_name / factor_name / f"{factor_name}.code.py"
-        if p.exists():
-            return p
+    """从远程 E 盘查找已更新的 .code.py
+
+    数据目录与产出目录在远程盘上是同级关系：
+      {base}/_paper_factor_unified/factor_implementation_source_data/   ← 数据
+      {base}/paper_factors/文献因子_全量/{report}/{factor}/{factor}.code.py  ← 产出
+    """
+    if FULL_DATA_DIR is None or FULL_DATA_DIR == Path("."):
+        return None
+    # 从数据目录推导产出目录基路径
+    remote_base = FULL_DATA_DIR.parent.parent / "paper_factors" / "文献因子_全量"
+    p = remote_base / report_name / factor_name / f"{factor_name}.code.py"
+    if p.exists():
+        return p
+    # 试原始硬编码路径（兼容旧挂载）
+    for prefix in ("/mnt/remote_e", "E:", "Z:"):
+        alt = Path(f"{prefix}/paper_factors/文献因子_全量") / report_name / factor_name / f"{factor_name}.code.py"
+        if alt.exists():
+            return alt
+    return None
     return None
 
 
