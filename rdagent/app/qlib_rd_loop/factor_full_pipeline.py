@@ -31,36 +31,43 @@ CIFS_MOUNT = Path("/mnt/remote_e")
 
 
 def _ensure_remote_mounted() -> bool:
-    """自动挂载远程 E 盘（自动安装依赖，不需要用户手动操作）"""
+    """自动挂载远程 E 盘（modprobe + 多版本协商 + 自动装依赖）"""
     if CIFS_MOUNT.exists() and any(CIFS_MOUNT.iterdir()):
         return True
+    print(f"  ⏳ 自动挂载远程 E 盘 {SMB_HOST}/{SMB_SHARE} → {CIFS_MOUNT} ...", flush=True)
     try:
         CIFS_MOUNT.mkdir(parents=True, exist_ok=True)
-        # 第一次挂载尝试
+    except Exception as e:
+        print(f"  ❌ 无法创建挂载点 {CIFS_MOUNT}: {e}", flush=True)
+        return False
+
+    # 1. modprobe cifs
+    subprocess.run(["sudo", "modprobe", "cifs"], capture_output=True, timeout=10)
+
+    # 2. 安装 cifs-utils
+    subprocess.run(["sudo", "apt", "install", "-y", "cifs-utils"],
+                   capture_output=True, timeout=120)
+
+    # 3. 逐版本尝试挂载（vers=3.0 / 2.1 / 2.0 / 1.0）
+    _base_opts = f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"
+    for _vers in ("3.0", "2.1", "2.0", "1.0"):
+        _opts = f"vers={_vers},{_base_opts}"
         r = subprocess.run(
             ["sudo", "mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT),
-             "-o", f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"],
+             "-o", _opts],
             capture_output=True, text=True, timeout=30,
         )
         if r.returncode == 0:
-            print(f"  📡 已挂载远程 E 盘 → {CIFS_MOUNT}", flush=True)
+            print(f"  ✅ 已挂载远程 E 盘 (vers={_vers})", flush=True)
             return True
-        # 失败 → 装 cifs-utils 再试
-        if "cifs-utils" not in r.stderr and "mount error" in r.stderr.lower():
-            print(f"  ⏳ 安装 cifs-utils...", flush=True)
-            subprocess.run(["sudo", "apt", "install", "-y", "cifs-utils"],
-                           capture_output=True, text=True, timeout=120)
-            r = subprocess.run(
-                ["sudo", "mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT),
-                 "-o", f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if r.returncode == 0:
-                print(f"  📡 已挂载远程 E 盘 → {CIFS_MOUNT}", flush=True)
-                return True
-        print(f"  ⚠️ CIFS 挂载失败: {r.stderr.strip() or r.stdout.strip()}", flush=True)
-    except Exception as e:
-        print(f"  ⚠️ CIFS 挂载异常: {e}", flush=True)
+        _err = (r.stderr or r.stdout).strip()
+        if _err:
+            print(f"  ⚠️ vers={_vers} 失败: {_err[:200]}", flush=True)
+
+    print(f"  ❌ 所有版本均挂载失败。", flush=True)
+    print(f"  💡 手工挂载命令:", flush=True)
+    print(f"    sudo mkdir -p /mnt/remote_e", flush=True)
+    print(f"    sudo mount -t cifs //{SMB_HOST}/{SMB_SHARE} /mnt/remote_e -o vers=3.0,{_base_opts}", flush=True)
     return False
 
 

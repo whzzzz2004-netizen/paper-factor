@@ -41,34 +41,31 @@ CIFS_MOUNT = Path("/mnt/remote_e")
 
 
 def _ensure_remote_mounted() -> bool:
-    """自动挂载远程 E 盘（自动安装依赖）"""
+    """自动挂载远程 E 盘（modprobe + 多版本协商 + 自动装依赖）"""
     if CIFS_MOUNT.exists() and any(CIFS_MOUNT.iterdir()):
         return True
+    print(f"  ⏳ 自动挂载远程 E 盘 {SMB_HOST}/{SMB_SHARE} → {CIFS_MOUNT} ...")
     try:
         CIFS_MOUNT.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"  ❌ 无法创建挂载点 {CIFS_MOUNT}: {e}")
+        return False
+    subprocess.run(["sudo", "modprobe", "cifs"], capture_output=True, timeout=10)
+    subprocess.run(["sudo", "apt", "install", "-y", "cifs-utils"], capture_output=True, timeout=120)
+    _base_opts = f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"
+    for _vers in ("3.0", "2.1", "2.0", "1.0"):
         r = subprocess.run(
-            ["sudo", "mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT),
-             "-o", f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"],
+            ["sudo", "mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT), "-o", f"vers={_vers},{_base_opts}"],
             capture_output=True, text=True, timeout=30,
         )
         if r.returncode == 0:
-            print(f"  📡 已挂载远程 E 盘 → {CIFS_MOUNT}")
+            print(f"  ✅ 已挂载远程 E 盘 (vers={_vers})")
             return True
-        if "mount error" in r.stderr.lower():
-            print(f"  ⏳ 安装 cifs-utils...")
-            subprocess.run(["sudo", "apt", "install", "-y", "cifs-utils"],
-                           capture_output=True, text=True, timeout=120)
-            r = subprocess.run(
-                ["sudo", "mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT),
-                 "-o", f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if r.returncode == 0:
-                print(f"  📡 已挂载远程 E 盘 → {CIFS_MOUNT}")
-                return True
-        print(f"  ⚠️ CIFS 挂载失败: {r.stderr.strip() or r.stdout.strip()}")
-    except Exception as e:
-        print(f"  ⚠️ 挂载异常: {e}")
+        _err = (r.stderr or r.stdout).strip()
+        if _err:
+            print(f"  ⚠️ vers={_vers} 失败: {_err[:200]}")
+    print(f"  ❌ 所有版本均挂载失败。手工命令:")
+    print(f"    sudo mkdir -p /mnt/remote_e && sudo mount -t cifs //{SMB_HOST}/{SMB_SHARE} /mnt/remote_e -o vers=3.0,{_base_opts}")
     return False
 
 
@@ -95,9 +92,10 @@ def _detect_data_dir() -> Path:
     return Path(".")
 
 FULL_DATA_DIR = _detect_data_dir()
-# 设置环境变量，使子进程继承正确的数据路径
-os.environ["FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
-os.environ["RDAGENT_FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
+# 设置环境变量，使子进程继承正确的数据路径（只有找到时才设，避免覆盖子进程自身检测）
+if FULL_DATA_DIR != Path("."):
+    os.environ["FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
+    os.environ["RDAGENT_FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
 
 
 def find_pending_factors(report_filter: str | None, force: bool) -> list[dict]:
