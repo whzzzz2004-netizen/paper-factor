@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
-统一入口：全量计算 + 增量更新。
+统一入口：同步数据 → 全量计算 + 增量更新。
 
-自动判断每个因子状态：
-  - 已有 parquet → 增量更新（只算新天数，合并到原文件）
-  - 无 parquet   → 全量计算（从零开始）
+步骤:
+  1. 自动同步最新原始数据（日线/分钟线从远程 E 盘下载，转为因子所需格式）
+  2. 逐个扫描因子：
+     - 已有 parquet → 增量更新（只算新天数，合并到原文件）
+     - 无 parquet   → 全量计算（从零开始）
 
 用法:
   python scripts/run_all_full.py [--report <name>] [--force]
 
 说明:
-  --report  只跑指定研报下的因子 (模糊匹配)
-  --force   强制全量重跑（即使已有 parquet）
-  --dry-run 只列出因子，不执行
+  --report    只跑指定研报下的因子 (模糊匹配)
+  --force     强制全量重跑（即使已有 parquet）
+  --dry-run   只列出因子，不执行
+  --skip-sync 跳过数据同步步骤
 """
 
 import argparse
@@ -312,12 +315,37 @@ def run_full(item: dict) -> bool:
 # ── 主流程 ──
 
 def main():
-    parser = argparse.ArgumentParser(description="统一入口：全量计算 + 增量更新")
+    parser = argparse.ArgumentParser(description="统一入口：同步数据 + 全量计算 + 增量更新")
     parser.add_argument("--report", help="指定研报名 (模糊匹配)", default=None)
     parser.add_argument("--force", action="store_true", help="强制全量重跑（跳过增量）")
     parser.add_argument("--dry-run", action="store_true", help="仅列出因子，不执行")
+    parser.add_argument("--skip-sync", action="store_true", help="跳过数据同步步骤")
     args = parser.parse_args()
 
+    # ── 步骤1: 同步最新原始数据（每日/分钟线从远程 E 盘下载） ──
+    if not args.dry_run and not args.skip_sync:
+        print(f"{'='*60}")
+        print("步骤1: 同步最新原始数据 → 因子计算所需格式")
+        print(f"{'='*60}")
+        sync_script = PROJECT_ROOT / "scripts" / "sync_data.py"
+        if sync_script.exists():
+            try:
+                r = subprocess.run(
+                    [sys.executable, str(sync_script)],
+                    timeout=7200,
+                )
+                if r.returncode != 0:
+                    print("  ⚠️ 数据同步返回非零退出码，继续执行因子计算...")
+            except subprocess.TimeoutExpired:
+                print("  ⚠️ 数据同步超时，继续执行因子计算...")
+            except Exception as e:
+                print(f"  ⚠️ 数据同步异常: {e}，继续执行因子计算...")
+        else:
+            print(f"  ⚠️ 未找到 {sync_script}，跳过数据同步")
+    else:
+        print("⏭️ 跳过数据同步")
+
+    # ── 步骤2: 扫描并处理因子 ──
     if not FULL_DATA_DIR.exists():
         print(f"❌ 数据目录不存在: {FULL_DATA_DIR}")
         return 1 if not args.dry_run else 0
