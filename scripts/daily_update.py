@@ -44,23 +44,36 @@ SMB_PASS = "123456"
 CIFS_MOUNT = Path("/mnt/remote_e")
 
 
+def _sudo_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """执行 sudo 命令，自动处理 TTY 密码需求（-S piped from stdin）"""
+    if "PYTHON_RUN_AS_ROOT" in os.environ:
+        return subprocess.run(cmd, **kwargs)
+    try:
+        return subprocess.run(["sudo", "-n"] + cmd, **kwargs)
+    except Exception:
+        pass
+    kwargs.pop("input", None)
+    return subprocess.run(
+        ["sudo", "-S"] + cmd,
+        input=f"{SMB_PASS}\n".encode(),
+        **kwargs,
+    )
+
+
 def _ensure_remote_mounted() -> bool:
     """自动挂载远程 E 盘"""
     if CIFS_MOUNT.exists() and any(CIFS_MOUNT.iterdir()):
         return True
     try:
         CIFS_MOUNT.mkdir(parents=True, exist_ok=True)
-        r = subprocess.run(
-            ["sudo", "mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT),
-             "-o", f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode == 0:
-            print(f"  📡 已自动挂载远程 E 盘 → {CIFS_MOUNT}")
-            return True
     except Exception:
-        pass
-    return False
+        return False
+    r = _sudo_run(
+        ["mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT),
+         "-o", f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"],
+        capture_output=True, text=True, timeout=30,
+    )
+    return r.returncode == 0
 
 
 # 优先用远程（CIFS 挂载），让 .code.py 等文件变更即时可见

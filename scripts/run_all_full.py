@@ -7,12 +7,11 @@
 → LLM审查 → 同步远程 → 标记完成。
 
 用法:
-  python scripts/run_all_full.py [--report <report_name>] [--force] [--workers N]
+  python scripts/run_all_full.py [--report <report_name>] [--force]
 
 说明:
   --report      只跑指定研报下的因子 (默认: 所有)
   --force       强制重跑 (即使 pipeline_status=completed)
-  --workers      并行 worker 数 (默认: 1, 按顺序跑避免资源竞争)
   --dry-run     只打印将要跑的因子，不实际运行
   --watch <秒>  持续监听模式，每 N 秒扫描一次新部署的因子
 """
@@ -20,9 +19,9 @@
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time as _time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -40,6 +39,22 @@ SMB_PASS = "123456"
 CIFS_MOUNT = Path("/mnt/remote_e")
 
 
+def _sudo_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """执行 sudo 命令，自动处理 TTY 密码需求（-S piped from stdin）"""
+    if "PYTHON_RUN_AS_ROOT" in os.environ:
+        return subprocess.run(cmd, **kwargs)
+    try:
+        return subprocess.run(["sudo", "-n"] + cmd, **kwargs)
+    except Exception:
+        pass
+    kwargs.pop("input", None)
+    return subprocess.run(
+        ["sudo", "-S"] + cmd,
+        input=f"{SMB_PASS}\n".encode(),
+        **kwargs,
+    )
+
+
 def _ensure_remote_mounted() -> bool:
     """自动挂载远程 E 盘（modprobe + 多版本协商 + 自动装依赖）"""
     if CIFS_MOUNT.exists() and any(CIFS_MOUNT.iterdir()):
@@ -50,12 +65,12 @@ def _ensure_remote_mounted() -> bool:
     except Exception as e:
         print(f"  ❌ 无法创建挂载点 {CIFS_MOUNT}: {e}")
         return False
-    subprocess.run(["sudo", "modprobe", "cifs"], capture_output=True, timeout=10)
-    subprocess.run(["sudo", "apt", "install", "-y", "cifs-utils"], capture_output=True, timeout=120)
+    _sudo_run(["modprobe", "cifs"], capture_output=True, timeout=10)
+    _sudo_run(["apt", "install", "-y", "cifs-utils"], capture_output=True, timeout=120)
     _base_opts = f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"
     for _vers in ("3.0", "2.1", "2.0", "1.0"):
-        r = subprocess.run(
-            ["sudo", "mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT), "-o", f"vers={_vers},{_base_opts}"],
+        r = _sudo_run(
+            ["mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT), "-o", f"vers={_vers},{_base_opts}"],
             capture_output=True, text=True, timeout=30,
         )
         if r.returncode == 0:
@@ -64,7 +79,8 @@ def _ensure_remote_mounted() -> bool:
         _err = (r.stderr or r.stdout).strip()
         if _err:
             print(f"  ⚠️ vers={_vers} 失败: {_err[:200]}")
-    print(f"  ❌ 所有版本均挂载失败。手工命令:")
+    print(f"  ❌ 所有版本均挂载失败。")
+    print(f"  💡 手工命令:")
     print(f"    sudo mkdir -p /mnt/remote_e && sudo mount -t cifs //{SMB_HOST}/{SMB_SHARE} /mnt/remote_e -o vers=3.0,{_base_opts}")
     return False
 
@@ -181,7 +197,6 @@ def main():
     parser = argparse.ArgumentParser(description="批量跑全量因子（从 文献因子_全量 扫描）")
     parser.add_argument("--report", help="指定研报名 (模糊匹配)", default=None)
     parser.add_argument("--force", action="store_true", help="强制重跑已完成因子")
-    parser.add_argument("--workers", type=int, default=1, help="并行 worker 数 (默认: 1)")
     parser.add_argument("--dry-run", action="store_true", help="仅列出待跑因子，不执行")
     parser.add_argument("--watch", type=int, metavar="SECONDS", default=0,
                         help="持续监听模式，每 N 秒扫描一次新部署的因子")
@@ -230,23 +245,12 @@ def main():
                 seen.add(key)
                 print(f"  ▶ {key}")
 
-        if args.workers > 1:
-            with ThreadPoolExecutor(max_workers=args.workers) as pool:
-                fut_map = {pool.submit(run_one_factor, p): p for p in pending}
-                for fut in as_completed(fut_map):
-                    r = fut.result()
-                    if r["success"]:
-                        success_count += 1
-                    else:
-                        fail_count += 1
-                        print(f"  ❌ {r['report']}/{r['factor']} 失败")
-        else:
-            for p in pending:
-                r = run_one_factor(p)
-                if r["success"]:
-                    success_count += 1
-                else:
-                    fail_count += 1
+        for p in pending:
+            r = run_one_factor(p)
+            if r["success"]:
+                success_count += 1
+            else:
+                fail_count += 1
 
         if not args.watch:
             break

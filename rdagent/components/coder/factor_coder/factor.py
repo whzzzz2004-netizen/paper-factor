@@ -359,7 +359,7 @@ if __name__ == '__main__':
         # 统一格式：index→string日期, columns→int股票代码
         wide.index = wide.index.strftime('%Y-%m-%d')
         wide.columns = wide.columns.astype(int)
-        wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem}.parquet")
+        wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem.removesuffix('.code')}.parquet")
         print(f"完成，共 {{wide.shape[0]}} 天 x {{wide.shape[1]}}, 只股票")
     except Exception as e:
         import traceback
@@ -730,7 +730,7 @@ if __name__ == '__main__':
             # 统一格式：index→string日期, columns→int股票代码
             wide.index = wide.index.strftime('%Y-%m-%d')
             wide.columns = wide.columns.astype(int)
-            wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem}.parquet")
+            wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem.removesuffix('.code')}.parquet")
             print(f"完成！{wide.shape[0]} 天 x {wide.shape[1]} 只股票, "
                   f"{time.time()-t0:.0f}s", flush=True)
     except Exception as e:
@@ -1015,7 +1015,7 @@ if __name__ == '__main__':
         # 统一格式：index→string日期, columns→int股票代码
         wide.index = wide.index.strftime('%Y-%m-%d')
         wide.columns = wide.columns.astype(int)
-        wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem}.parquet")
+        wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem.removesuffix('.code')}.parquet")
         nn = int(wide.notna().sum().sum())
         print(f"完成: {wide.shape[0]}天 x {wide.shape[1]}只, 非空={nn}/{wide.size}={nn/wide.size*100:.1f}%, "
               f"{time.time()-_t0_main:.0f}s", flush=True)
@@ -1314,7 +1314,7 @@ if __name__ == '__main__':
         # 统一格式：index→string日期, columns→int股票代码
         wide.index = wide.index.strftime('%Y-%m-%d')
         wide.columns = wide.columns.astype(int)
-        wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem}.parquet")
+        wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem.removesuffix('.code')}.parquet")
         print(f"完成！共 {{wide.shape[0]}} 天 x {{wide.shape[1]}} 只股票, "
               f"{{time.time()-_t0_main:.0f}}s", flush=True)
     except Exception:
@@ -1546,7 +1546,7 @@ if __name__ == '__main__':
         # 统一格式：index→string日期, columns→int股票代码
         wide.index = wide.index.strftime('%Y-%m-%d')
         wide.columns = wide.columns.astype(int)
-        wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem}.parquet")
+        wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem.removesuffix('.code')}.parquet")
         print(f"完成，共 {{wide.shape[0]}} 天 x {{wide.shape[1]}} 只股票", flush=True)
     except Exception as e:
         import traceback

@@ -30,6 +30,23 @@ SMB_PASS = "123456"
 CIFS_MOUNT = Path("/mnt/remote_e")
 
 
+def _sudo_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """执行 sudo 命令，自动处理 TTY 密码需求（-S piped from stdin）"""
+    if "PYTHON_RUN_AS_ROOT" in os.environ:
+        return subprocess.run(cmd, **kwargs)
+    try:
+        return subprocess.run(["sudo", "-n"] + cmd, **kwargs)
+    except Exception:
+        pass
+    # 有密码 sudo：用 -S 从 stdin pipe 密码
+    kwargs.pop("input", None)  # 不冲突
+    return subprocess.run(
+        ["sudo", "-S"] + cmd,
+        input=f"{SMB_PASS}\n".encode(),
+        **kwargs,
+    )
+
+
 def _ensure_remote_mounted() -> bool:
     """自动挂载远程 E 盘（modprobe + 多版本协商 + 自动装依赖）"""
     if CIFS_MOUNT.exists() and any(CIFS_MOUNT.iterdir()):
@@ -42,18 +59,18 @@ def _ensure_remote_mounted() -> bool:
         return False
 
     # 1. modprobe cifs
-    subprocess.run(["sudo", "modprobe", "cifs"], capture_output=True, timeout=10)
+    _sudo_run(["modprobe", "cifs"], capture_output=True, timeout=10)
 
     # 2. 安装 cifs-utils
-    subprocess.run(["sudo", "apt", "install", "-y", "cifs-utils"],
-                   capture_output=True, timeout=120)
+    _sudo_run(["apt", "install", "-y", "cifs-utils"],
+              capture_output=True, timeout=120)
 
     # 3. 逐版本尝试挂载（vers=3.0 / 2.1 / 2.0 / 1.0）
     _base_opts = f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"
     for _vers in ("3.0", "2.1", "2.0", "1.0"):
         _opts = f"vers={_vers},{_base_opts}"
-        r = subprocess.run(
-            ["sudo", "mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT),
+        r = _sudo_run(
+            ["mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT),
              "-o", _opts],
             capture_output=True, text=True, timeout=30,
         )
@@ -181,68 +198,86 @@ def _find_remote_code(factor_name: str, report_name: str) -> Path | None:
 
 
 def _patch_old_code_data_dir(code_dst: Path):
-    """修补旧 .code.py: DATA_DIR = Path("硬编码") → DATA_DIR = Path(env_var or "硬编码")"""
+    """修补旧 .code.py: 数据目录优先读环境变量 + 输出文件名用真实因子名"""
     code = code_dst.read_text()
-    if 'os.environ.get("FACTOR_DATA_DIR")' in code:
-        return  # 已有 env var 检查
+    orig = code
+
+    # 1. DATA_DIR 优先读 FACTOR_DATA_DIR 环境变量
+    if 'os.environ.get("FACTOR_DATA_DIR")' not in code:
+        code = re.sub(
+            r'^(DATA_DIR\s*=\s*Path\()([^)]+)(\))',
+            r'\1os.environ.get("FACTOR_DATA_DIR") or \2\3',
+            code,
+            count=1,
+            flags=re.MULTILINE,
+        )
+
+    # 2. 输出文件名：Path(__file__).stem → 去掉 .code 后缀
     code = re.sub(
-        r'^(DATA_DIR\s*=\s*Path\()([^)]+)(\))',
-        r'\1os.environ.get("FACTOR_DATA_DIR") or \2\3',
+        r"Path\(__file__\)\.stem",
+        '''Path(__file__).stem.removesuffix('.code')''',
         code,
-        count=1,
-        flags=re.MULTILINE,
     )
-    code_dst.write_text(code)
-    print(f"  🔧 已修补旧 .code.py: DATA_DIR 优先读 FACTOR_DATA_DIR 环境变量", flush=True)
+
+    # 3. "result.parquet" → 用真实因子名
+    code = code.replace('"result.parquet"', '''f"{Path(__file__).stem.removesuffix('.code')}.parquet"''')
+
+    if code != orig:
+        code_dst.write_text(code)
+        print(f"  🔧 已修补旧 .code.py", flush=True)
 
 
 def run_other_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bool:
-    """本地运行日线/截面因子（直接执行现有的 .code.py）"""
+    """本地运行日线/截面因子（从 temp 跑 patched 版，不修改远程原文件）"""
+    import tempfile
     factor_dir.mkdir(parents=True, exist_ok=True)
-
-    # 复制 .code.py（优先用远程已更新的版本）
-    code_dst = factor_dir / f"{factor_name}.code.py"
-    report_name = factor_dir.parent.name
-    remote_code = _find_remote_code(factor_name, report_name)
-    src_code = remote_code if remote_code else code_path
-    if src_code.resolve() != code_dst.resolve():
-        shutil.copy(src_code, code_dst)
-    if remote_code:
-        print(f"  📡 使用远程已更新的 .code.py", flush=True)
-    else:
-        _patch_old_code_data_dir(code_dst)  # 保底：修补旧代码
 
     # 清除旧结果
     for p in [factor_dir / f"{factor_name}.parquet", factor_dir / "result.parquet"]:
         if p.exists():
             p.unlink()
 
-    for attempt in range(2):  # 最多2次，防间歇性 loky 崩溃
-        if attempt > 0:
-            print(f"  🔄 重试第 {attempt + 1} 次...", flush=True)
-            time.sleep(2)
+    with tempfile.TemporaryDirectory(prefix=f"{factor_name}_", dir="/tmp") as _tmp:
+        tmpdir = Path(_tmp)
+        code_tmp = tmpdir / f"{factor_name}.py"
+        shutil.copy(code_path, code_tmp)
+        _patch_old_code_data_dir(code_tmp)  # 只修改 temp 副本
 
-        # 运行
-        env = os.environ.copy()
-        env["FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
-        env["RDAGENT_FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
-        env["FACTOR_N_WORKERS"] = str(DEFAULT_N_WORKERS)
-        env["PYTHONWARNINGS"] = "ignore"
-        env["PYTHONUNBUFFERED"] = "1"
+        for attempt in range(2):
+            if attempt > 0:
+                print(f"  🔄 重试第 {attempt + 1} 次...", flush=True)
+                time.sleep(2)
 
-        t0 = time.time()
-        log_path = Path(f"/tmp/{factor_name}.run.log")
-        last_lines = []
-        with open(log_path, "w") as log_f:
-            proc = subprocess.Popen(
-                [sys.executable, str(code_dst)],
-                stdout=log_f, stderr=subprocess.STDOUT,
-                text=True, env=env, cwd=str(factor_dir),
-                preexec_fn=os.setpgrp,
-            )
-            last_pos = 0
-            while proc.poll() is None:
-                time.sleep(0.5)
+            env = os.environ.copy()
+            if FULL_DATA_DIR != Path("."):
+                env["FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
+                env["RDAGENT_FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
+            env["FACTOR_N_WORKERS"] = str(DEFAULT_N_WORKERS)
+            env["PYTHONWARNINGS"] = "ignore"
+            env["PYTHONUNBUFFERED"] = "1"
+
+            t0 = time.time()
+            log_path = Path(f"/tmp/{factor_name}.run.log")
+            last_lines = []
+            with open(log_path, "w") as log_f:
+                proc = subprocess.Popen(
+                    [sys.executable, str(code_tmp)],
+                    stdout=log_f, stderr=subprocess.STDOUT,
+                    text=True, env=env, cwd=str(tmpdir),
+                    preexec_fn=os.setpgrp,
+                )
+                last_pos = 0
+                while proc.poll() is None:
+                    time.sleep(0.5)
+                    with open(log_path) as rf:
+                        rf.seek(last_pos)
+                        for line in rf:
+                            print(line, end="", flush=True)
+                            last_lines.append(line)
+                            if len(last_lines) > 20:
+                                last_lines.pop(0)
+                        last_pos = rf.tell()
+            try:
                 with open(log_path) as rf:
                     rf.seek(last_pos)
                     for line in rf:
@@ -250,44 +285,30 @@ def run_other_factor(factor_name: str, factor_dir: Path, code_path: Path) -> boo
                         last_lines.append(line)
                         if len(last_lines) > 20:
                             last_lines.pop(0)
-                    last_pos = rf.tell()
-        # 读退出前的剩余输出
-        try:
-            with open(log_path) as rf:
-                rf.seek(last_pos)
-                for line in rf:
-                    print(line, end="", flush=True)
-                    last_lines.append(line)
-                    if len(last_lines) > 20:
-                        last_lines.pop(0)
-        except OSError:
-            pass
-        elapsed = time.time() - t0
-        print(f"  subprocess returncode={proc.returncode}, elapsed={elapsed:.0f}s", flush=True)
+            except OSError:
+                pass
+            elapsed = time.time() - t0
+            print(f"  subprocess returncode={proc.returncode}, elapsed={elapsed:.0f}s", flush=True)
 
-        if proc.returncode != 0:
-            print(f"  ⚠️ 运行退出码非零 (code={proc.returncode})", flush=True)
-            for line in last_lines[-10:]:
-                print(f"    {line}", end="", flush=True)
+            if proc.returncode != 0:
+                print(f"  ⚠️ 运行退出码非零 (code={proc.returncode})", flush=True)
+                for line in last_lines[-10:]:
+                    print(f"    {line}", end="", flush=True)
 
-        result_parquet = factor_dir / "result.parquet"
-        if result_parquet.exists():
-            df = pd_read_parquet(result_parquet)
-            print(f"  ✅ 完成: {df.shape[0]}天 x {df.shape[1]}只, {elapsed:.0f}s", flush=True)
+            # 从 temp 目录找结果 → 拷到 factor_dir
+            result_parquet = tmpdir / f"{factor_name}.parquet"
+            if result_parquet.exists():
+                shutil.copy(result_parquet, factor_dir / f"{factor_name}.parquet")
 
-            dst_parquet = factor_dir / f"{factor_name}.parquet"
-            if dst_parquet.exists():
-                dst_parquet.unlink()
-            shutil.move(result_parquet, dst_parquet)
+            dst = factor_dir / f"{factor_name}.parquet"
+            if dst.exists():
+                df = pd_read_parquet(dst)
+                print(f"  ✅ 完成: {df.shape[0]}天 x {df.shape[1]}只, {elapsed:.0f}s", flush=True)
+                cleanup_workers(factor_name)
+                return True
 
             cleanup_workers(factor_name)
-            return True
-
-        cleanup_workers(factor_name)
-        if attempt == 0:
-            print(f"  ❌ result.parquet 未生成", flush=True)
-        else:
-            print(f"  ❌ result.parquet 未生成（重试后仍失败）", flush=True)
+            print(f"  ❌ {'result.parquet' if attempt == 0 else '重试后仍'}未生成", flush=True)
 
     return False
 
@@ -305,8 +326,7 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
         shutil.copy(src_code, code_dst)
     if remote_code:
         print(f"  📡 使用远程已更新的 .code.py", flush=True)
-    else:
-        _patch_old_code_data_dir(code_dst)
+    _patch_old_code_data_dir(code_dst)  # 修补旧模板（DATA_DIR + 输出文件名）
 
     # 修补旧模板的硬编码 CHUNK_SIZE → 环境变量可配置（防OOM）
     _old_code = code_dst.read_text()
@@ -342,7 +362,8 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
             env["FACTOR_CHUNK_SIZE"] = "15"
             env["FACTOR_N_WORKERS"] = "8"
 
-        env["FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
+        if FULL_DATA_DIR != Path("."):
+            env["FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
         env["PYTHONWARNINGS"] = "ignore"
         env["PYTHONUNBUFFERED"] = "1"
 
@@ -403,16 +424,11 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
             cleanup_workers(factor_name)
             return False
         else:
-            result_parquet = factor_dir / "result.parquet"
+            result_parquet = factor_dir / f"{factor_name}.parquet"
 
         if result_parquet.exists():
             df = pd_read_parquet(result_parquet)
             print(f"  ✅ 完成: {df.shape[0]}天 x {df.shape[1]}只, {elapsed:.0f}s", flush=True)
-
-            dst_parquet = factor_dir / f"{factor_name}.parquet"
-            if dst_parquet.exists():
-                dst_parquet.unlink()
-            shutil.move(result_parquet, dst_parquet)
 
             cleanup_workers(factor_name)
             return True
