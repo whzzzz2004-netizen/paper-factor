@@ -46,6 +46,10 @@ SMB_USER = "pc"
 SMB_PASS = "123456"
 CIFS_MOUNT = Path("/mnt/remote_e")
 
+# ── 远程原始数据目录 ──
+REMOTE_DAILY_DIR = "market_daily_daily_new"
+REMOTE_MINUTE_DIR = "market_minute_daily_new"
+
 
 def _sudo_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     if "PYTHON_RUN_AS_ROOT" in os.environ:
@@ -314,6 +318,146 @@ def run_full(item: dict) -> bool:
 
 # ── 主流程 ──
 
+def _smb_cmd(cmd: str) -> subprocess.CompletedProcess:
+    """执行 smbclient 命令"""
+    full_cmd = [
+        "smbclient", f"//{SMB_HOST}/{SMB_SHARE}",
+        "-U", f"{SMB_USER}%{SMB_PASS}",
+        "-c", cmd,
+    ]
+    return subprocess.run(full_cmd, capture_output=True, text=True, timeout=120)
+
+
+def _smb_list(dir_path: str) -> list[str]:
+    """列出远程目录中的 parquet 文件名（不含路径）"""
+    r = _smb_cmd(f"cd {dir_path}; ls")
+    files = []
+    for line in r.stdout.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 4 and parts[0].endswith(".parquet"):
+            files.append(parts[0])
+    return files
+
+
+def _smb_download(remote_path: str, local_path: Path):
+    """从远程下载文件"""
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    r = _smb_cmd(f"cd {Path(remote_path).parent}; get {Path(remote_path).name} {local_path}")
+    if r.returncode != 0:
+        raise RuntimeError(f"下载失败: {remote_path} ({r.stderr.strip()})")
+
+
+def _sync_raw_data():
+    """增量同步原始数据：从远程 E 盘下载新日期，转为因子计算所需格式"""
+    print(f"{'='*60}")
+    print("步骤1: 同步最新原始数据")
+    print(f"{'='*60}")
+
+    if not FULL_DATA_DIR.exists():
+        print(f"  ❌ 本地数据目录不存在: {FULL_DATA_DIR}")
+        return
+
+    # 确保目录结构
+    for sub in ["stock_data/daily", "stock_data/minute_by_date"]:
+        (FULL_DATA_DIR / sub).mkdir(parents=True, exist_ok=True)
+
+    # ── 日线增量 ──
+    print("\n--- 日线 ---")
+    local_dates_file = FULL_DATA_DIR / "stock_data" / "daily" / "trade_dates.json"
+    local_dates = set(json.loads(local_dates_file.read_text())) if local_dates_file.exists() else set()
+
+    try:
+        remote_files = _smb_list(REMOTE_DAILY_DIR)
+        remote_dates = {f.replace(".parquet", "") for f in remote_files}
+    except Exception as e:
+        print(f"  ⚠️ 无法连接远程: {e}")
+        return
+
+    new_dates = sorted(remote_dates - local_dates)
+    if not new_dates:
+        print("  无新增日期")
+    else:
+        print(f"  发现 {len(new_dates)} 个新日期: {new_dates[:5]}...")
+        stock_dir = FULL_DATA_DIR / "stock_data" / "daily"
+        all_stocks = set()
+        for date_str in new_dates:
+            remote_file = f"{REMOTE_DAILY_DIR}/{date_str}.parquet"
+            local_tmp = Path(tempfile.mkdtemp()) / f"{date_str}.parquet"
+            try:
+                _smb_download(remote_file, local_tmp)
+                df = pd.read_parquet(local_tmp)
+                for _, row in df.iterrows():
+                    stock = str(row.get("symbol", "")).zfill(6)
+                    if not stock:
+                        continue
+                    all_stocks.add(stock)
+                    stock_file = stock_dir / f"{stock}.parquet"
+                    row_df = pd.DataFrame([{
+                        "open": row.get("open"),
+                        "close": row.get("close"),
+                        "high": row.get("high"),
+                        "low": row.get("low"),
+                        "volume": row.get("volume"),
+                        "amount": row.get("amount", row.get("volume", 0) * row.get("close", 0)),
+                        "factor": row.get("factor", 1),
+                    }], index=pd.to_datetime([date_str]))
+                    if stock_file.exists():
+                        old = pd.read_parquet(stock_file)
+                        combined = pd.concat([old, row_df])
+                        combined.to_parquet(stock_file)
+                    else:
+                        row_df.to_parquet(stock_file)
+                local_tmp.unlink(missing_ok=True)
+            except Exception as e:
+                print(f"  ⚠️ {date_str} 下载/转换失败: {e}")
+        # 更新元数据
+        all_dates = sorted(local_dates | set(new_dates))
+        local_dates_file.write_text(json.dumps(all_dates))
+        stock_list_file = FULL_DATA_DIR / "stock_data" / "daily" / "stock_list.json"
+        stock_list_file.write_text(json.dumps(sorted(all_stocks)))
+        print(f"  ✅ 日线: {len(new_dates)} 天, {len(all_stocks)} 只股票")
+
+    # ── 分钟线增量 ──
+    print("\n--- 分钟线 ---")
+    local_min_dates_file = FULL_DATA_DIR / "stock_data" / "minute_by_date" / "trade_dates.json"
+    local_min_dates = set(json.loads(local_min_dates_file.read_text())) if local_min_dates_file.exists() else set()
+
+    try:
+        remote_min_files = _smb_list(REMOTE_MINUTE_DIR)
+        remote_min_dates = {f.replace(".parquet", "") for f in remote_min_files}
+    except Exception as e:
+        print(f"  ⚠️ 无法获取分钟线列表: {e}")
+        return
+
+    new_min_dates = sorted(remote_min_dates - local_min_dates)
+    if not new_min_dates:
+        print("  无新增日期")
+    else:
+        print(f"  发现 {len(new_min_dates)} 个新日期: {new_min_dates[:5]}...")
+        min_date_dir = FULL_DATA_DIR / "stock_data" / "minute_by_date"
+        all_min_stocks = set()
+        for date_str in new_min_dates:
+            remote_file = f"{REMOTE_MINUTE_DIR}/{date_str}.parquet"
+            local_dst = min_date_dir / f"{date_str}.parquet"
+            try:
+                _smb_download(remote_file, local_dst)
+                # 提取股票列表
+                df = pd.read_parquet(local_dst, columns=["symbol", "instrument"] if local_dst.exists() else [])
+                for col in ["symbol", "instrument"]:
+                    if col in df.columns:
+                        all_min_stocks.update(str(s).zfill(6) for s in df[col].unique())
+                        break
+            except Exception as e:
+                print(f"  ⚠️ {date_str} 下载失败: {e}")
+        all_min_dates = sorted(local_min_dates | set(new_min_dates))
+        local_min_dates_file.write_text(json.dumps(all_min_dates))
+        min_stock_list = FULL_DATA_DIR / "stock_data" / "minute_by_date" / "stock_list.json"
+        min_stock_list.write_text(json.dumps(sorted(all_min_stocks)))
+        print(f"  ✅ 分钟线: {len(new_min_dates)} 天, {len(all_min_stocks)} 只股票")
+
+    print(f"\n✅ 数据同步完成\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="统一入口：同步数据 + 全量计算 + 增量更新")
     parser.add_argument("--report", help="指定研报名 (模糊匹配)", default=None)
@@ -322,26 +466,9 @@ def main():
     parser.add_argument("--skip-sync", action="store_true", help="跳过数据同步步骤")
     args = parser.parse_args()
 
-    # ── 步骤1: 同步最新原始数据（每日/分钟线从远程 E 盘下载） ──
+    # ── 步骤1: 同步最新原始数据（从远程 E 盘下载增量日期） ──
     if not args.dry_run and not args.skip_sync:
-        print(f"{'='*60}")
-        print("步骤1: 同步最新原始数据 → 因子计算所需格式")
-        print(f"{'='*60}")
-        sync_script = PROJECT_ROOT / "scripts" / "sync_data.py"
-        if sync_script.exists():
-            try:
-                r = subprocess.run(
-                    [sys.executable, str(sync_script)],
-                    timeout=7200,
-                )
-                if r.returncode != 0:
-                    print("  ⚠️ 数据同步返回非零退出码，继续执行因子计算...")
-            except subprocess.TimeoutExpired:
-                print("  ⚠️ 数据同步超时，继续执行因子计算...")
-            except Exception as e:
-                print(f"  ⚠️ 数据同步异常: {e}，继续执行因子计算...")
-        else:
-            print(f"  ⚠️ 未找到 {sync_script}，跳过数据同步")
+        _sync_raw_data()
     else:
         print("⏭️ 跳过数据同步")
 
