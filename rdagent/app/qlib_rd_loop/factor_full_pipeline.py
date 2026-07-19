@@ -22,8 +22,31 @@ from pathlib import Path
 
 # ── 路径常量（与 scripts/full.py 保持一致） ──
 PROJECT_ROOT = Path(__file__).resolve().parents[3]  # rdagent/app/qlib_rd_loop/ → project root
-FULL_OUTPUT_BASE = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
-FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data")))
+
+# 数据目录自动检测（多路径降级）
+def _detect_data_dir() -> Path:
+    candidates = [
+        os.environ.get("FACTOR_DATA_DIR", ""),
+        os.environ.get("RDAGENT_FACTOR_DATA_DIR", ""),
+        str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"),
+        "/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data",
+        "E:\\_paper_factor_unified\\factor_implementation_source_data",
+        "Z:\\_paper_factor_unified\\factor_implementation_source_data",
+        "\\\\192.168.1.13\\E\\_paper_factor_unified\\factor_implementation_source_data",
+    ]
+    for p in candidates:
+        if p and (Path(p) / "stock_data" / "daily").exists():
+            return Path(p)
+    return Path(".")
+
+# 输出目录优先远程
+_REMOTE_OUTPUTS = [
+    Path("/mnt/remote_e/paper_factors/文献因子_全量"),
+    Path("E:\\paper_factors\\文献因子_全量"),
+    Path("Z:\\paper_factors\\文献因子_全量"),
+]
+FULL_OUTPUT_BASE = next((p for p in _REMOTE_OUTPUTS if p.exists()), PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量")
+FULL_DATA_DIR = _detect_data_dir()
 BARRA_DIR = Path(os.environ.get("PAPER_FACTOR_BARRA_DIR",
                                  str(PROJECT_ROOT / "git_ignore_folder" / "barra_model")))
 

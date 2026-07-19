@@ -50,6 +50,9 @@ def _detect_data_dir() -> Path:
     return Path(".")
 
 FULL_DATA_DIR = _detect_data_dir()
+# 设置环境变量，使子进程继承正确的数据路径
+os.environ["FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
+os.environ["RDAGENT_FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
 
 
 def find_pending_factors(report_filter: str | None, force: bool) -> list[dict]:
