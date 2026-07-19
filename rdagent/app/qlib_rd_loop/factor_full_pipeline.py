@@ -109,7 +109,22 @@ def _find_remote_code(factor_name: str, report_name: str) -> Path | None:
         if alt.exists():
             return alt
     return None
-    return None
+
+
+def _patch_old_code_data_dir(code_dst: Path):
+    """修补旧 .code.py: DATA_DIR = Path("硬编码") → DATA_DIR = Path(env_var or "硬编码")"""
+    code = code_dst.read_text()
+    if 'os.environ.get("FACTOR_DATA_DIR")' in code:
+        return  # 已有 env var 检查
+    code = re.sub(
+        r'^(DATA_DIR\s*=\s*Path\()([^)]+)(\))',
+        r'\1os.environ.get("FACTOR_DATA_DIR") or \2\3',
+        code,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    code_dst.write_text(code)
+    print(f"  🔧 已修补旧 .code.py: DATA_DIR 优先读 FACTOR_DATA_DIR 环境变量", flush=True)
 
 
 def run_other_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bool:
@@ -125,6 +140,8 @@ def run_other_factor(factor_name: str, factor_dir: Path, code_path: Path) -> boo
         shutil.copy(src_code, code_dst)
     if remote_code:
         print(f"  📡 使用远程已更新的 .code.py", flush=True)
+    else:
+        _patch_old_code_data_dir(code_dst)  # 保底：修补旧代码
 
     # 清除旧结果
     for p in [factor_dir / f"{factor_name}.parquet", factor_dir / "result.parquet"]:
@@ -219,6 +236,8 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
         shutil.copy(src_code, code_dst)
     if remote_code:
         print(f"  📡 使用远程已更新的 .code.py", flush=True)
+    else:
+        _patch_old_code_data_dir(code_dst)
 
     # 修补旧模板的硬编码 CHUNK_SIZE → 环境变量可配置（防OOM）
     _old_code = code_dst.read_text()
