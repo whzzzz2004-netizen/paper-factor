@@ -197,6 +197,52 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 LITERATURE_REPORTS_DIR = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "literature_reports"
 
+# ── 远程 E 盘配置 ──
+SMB_HOST = "192.168.1.13"
+SMB_SHARE = "E"
+SMB_USER = "pc"
+SMB_PASS = "123456"
+CIFS_MOUNT = Path("/mnt/remote_e")
+
+
+def _sudo_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    if "PYTHON_RUN_AS_ROOT" in os.environ:
+        return subprocess.run(cmd, **kwargs)
+    try:
+        return subprocess.run(["sudo", "-n"] + cmd, **kwargs)
+    except Exception:
+        pass
+    kwargs.pop("input", None)
+    return subprocess.run(
+        ["sudo", "-S"] + cmd,
+        input=f"{SMB_PASS}\n".encode(),
+        **kwargs,
+    )
+
+
+def _ensure_remote_mounted() -> bool:
+    if CIFS_MOUNT.exists() and any(CIFS_MOUNT.iterdir()):
+        return True
+    print("  ⏳ 自动挂载远程 E 盘 ...", flush=True)
+    try:
+        CIFS_MOUNT.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"  ❌ 无法创建挂载点: {e}", flush=True)
+        return False
+    _sudo_run(["modprobe", "cifs"], capture_output=True, timeout=10)
+    _sudo_run(["apt", "install", "-y", "cifs-utils"], capture_output=True, timeout=120)
+    _base_opts = f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"
+    for _vers in ("3.0", "2.1", "2.0", "1.0"):
+        r = _sudo_run(
+            ["mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT), "-o", f"vers={_vers},{_base_opts}"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode == 0:
+            print(f"  ✅ 已挂载 (vers={_vers})", flush=True)
+            return True
+    print(f"  ⚠️ 挂载失败，回退本地数据", flush=True)
+    return False
+
 
 def _detect_data_dir() -> Path:
     """Detect best available data directory (remote preferred, local fallback)."""
@@ -213,6 +259,12 @@ def _detect_data_dir() -> Path:
     for p in candidates:
         if p and (Path(p) / "stock_data" / "daily").exists():
             return Path(p)
+    # 都不存在 → 尝试自动挂载再查
+    print("  ⏳ 未找到数据目录，尝试自动挂载远程 E 盘...", flush=True)
+    if _ensure_remote_mounted():
+        for p in candidates:
+            if p and (Path(p) / "stock_data" / "daily").exists():
+                return Path(p)
     return PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data_1000"
 
 
