@@ -195,8 +195,28 @@ from pathlib import Path
 # Constants
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).parent.parent
-TEST_DATA_DIR = PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data_1000"
 LITERATURE_REPORTS_DIR = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "literature_reports"
+
+
+def _detect_data_dir() -> Path:
+    """Detect best available data directory (remote preferred, local fallback)."""
+    candidates = [
+        os.environ.get("FACTOR_DATA_DIR", ""),
+        os.environ.get("RDAGENT_FACTOR_DATA_DIR", ""),
+        "/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data",
+        str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data_1000"),
+        str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"),
+        "E:\\_paper_factor_unified\\factor_implementation_source_data",
+        "Z:\\_paper_factor_unified\\factor_implementation_source_data",
+        "\\\\192.168.1.13\\E\\_paper_factor_unified\\factor_implementation_source_data",
+    ]
+    for p in candidates:
+        if p and (Path(p) / "stock_data" / "daily").exists():
+            return Path(p)
+    return PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data_1000"
+
+
+TEST_DATA_DIR = _detect_data_dir()
 
 # Template type → attribute name on FactorFBWorkspace
 TYPE_MAP = {
@@ -1310,7 +1330,7 @@ def cmd_save_extracted(args):
 def cmd_show_columns(args):
     """Show available columns in stock data parquet files with descriptions."""
     import pyarrow.parquet as _pq
-    test_dir = PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data_1000" / "stock_data" / "daily"
+    test_dir = TEST_DATA_DIR / "stock_data" / "daily"
     if test_dir.exists():
         files = sorted(test_dir.glob("*.parquet"))
         if files:
