@@ -376,6 +376,8 @@ def _sync_raw_data():
         return
 
     new_dates = sorted(remote_dates - local_dates)
+    # YYYYMMDD → YYYY-MM-DD 格式转换函数
+    _fmt = lambda d: f"{d[:4]}-{d[4:6]}-{d[6:]}"
     if not new_dates:
         print("  无新增日期")
     else:
@@ -409,8 +411,7 @@ def _sync_raw_data():
             except Exception as e:
                 print(f"  ⚠️ {date_str} 下载/转换失败: {e}")
         # 更新元数据
-        fmt = lambda d: f"{d[:4]}-{d[4:6]}-{d[6:]}"
-        all_dates = sorted({fmt(d) for d in local_dates_raw} | {fmt(d) for d in new_dates})
+        all_dates = sorted({_fmt(d) for d in local_dates_raw} | {_fmt(d) for d in new_dates})
         local_dates_file.write_text(json.dumps(all_dates))
         stock_list_file = FULL_DATA_DIR / "stock_data" / "daily" / "stock_list.json"
         stock_list_file.write_text(json.dumps(sorted(all_stocks)))
@@ -449,7 +450,7 @@ def _sync_raw_data():
                         break
             except Exception as e:
                 print(f"  ⚠️ {date_str} 下载失败: {e}")
-        all_min_dates = sorted({fmt(d) for d in local_min_raw} | {fmt(d) for d in new_min_dates})
+        all_min_dates = sorted({_fmt(d) for d in local_min_raw} | {_fmt(d) for d in new_min_dates})
         local_min_dates_file.write_text(json.dumps(all_min_dates))
         min_stock_list = FULL_DATA_DIR / "stock_data" / "minute_by_date" / "stock_list.json"
         min_stock_list.write_text(json.dumps(sorted(all_min_stocks)))
