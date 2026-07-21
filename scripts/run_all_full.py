@@ -523,6 +523,32 @@ def _sync_raw_data():
 
     print(f"\n✅ 数据同步完成\n")
 
+    # ── 保底：确保 stock_list.json 存在（缺了因子模板会报错） ──
+    for _sub, _smb_path in [
+        ("daily", "_paper_factor_unified/factor_implementation_source_data/stock_data/daily/stock_list.json"),
+        ("minute_by_date", "_paper_factor_unified/factor_implementation_source_data/stock_data/minute_by_date/stock_list.json"),
+    ]:
+        _slf = _data_dir / "stock_data" / _sub / "stock_list.json"
+        if not _slf.exists():
+            try:
+                _sl_tmp = Path(tempfile.mkdtemp()) / "stock_list.json"
+                _smb_download(_smb_path, _sl_tmp)
+                _slf.parent.mkdir(parents=True, exist_ok=True)
+                _slf.write_text(_sl_tmp.read_text())
+                _sl_tmp.unlink(missing_ok=True)
+                print(f"  📥 已从远程下载 {_sub}/stock_list.json ({len(json.loads(_slf.read_text()))} 只)")
+            except Exception:
+                # SMB 下载失败 → 从已有 parquet 文件列表生成
+                _p_dir = _data_dir / "stock_data" / _sub
+                _parquets = sorted(_p_dir.glob("*.parquet")) if _p_dir.exists() else []
+                if _parquets:
+                    _stocks = sorted({p.stem for p in _parquets if p.stem not in ("trade_dates",)})
+                    _slf.parent.mkdir(parents=True, exist_ok=True)
+                    _slf.write_text(json.dumps(_stocks))
+                    print(f"  🔧 从 parquet 生成 {_sub}/stock_list.json ({len(_stocks)} 只)")
+                else:
+                    print(f"  ⚠️ {_sub}/stock_list.json 缺失，且无法生成")
+
 
 def main():
     parser = argparse.ArgumentParser(description="统一入口：同步数据 + 全量计算 + 增量更新")
