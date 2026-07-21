@@ -408,6 +408,8 @@ def _sync_raw_data():
                 _data_dir = Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data")
                 FULL_DATA_DIR = _data_dir
             local_dates_file = _data_dir / "stock_data" / "daily" / "trade_dates.json"
+            local_dates_file.parent.mkdir(parents=True, exist_ok=True)
+            local_dates_file.write_text(json.dumps(sorted(local_dates_raw)))
             _td_tmp.unlink(missing_ok=True)
         except Exception:
             pass
@@ -479,6 +481,8 @@ def _sync_raw_data():
             _smb_download("_paper_factor_unified/factor_implementation_source_data/stock_data/minute_by_date/trade_dates.json", _td_tmp)
             local_min_raw = set(json.loads(_td_tmp.read_text()))
             local_min_dates_file = _data_dir / "stock_data" / "minute_by_date" / "trade_dates.json"
+            local_min_dates_file.parent.mkdir(parents=True, exist_ok=True)
+            local_min_dates_file.write_text(json.dumps(sorted(local_min_raw)))
             _td_tmp.unlink(missing_ok=True)
         except Exception:
             pass
