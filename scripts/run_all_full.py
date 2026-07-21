@@ -571,6 +571,12 @@ def _sync_raw_data():
             _pdir = _data_dir / "stock_data" / _sub
             if _pdir.exists():
                 _list = sorted({p.stem for p in _pdir.glob("*.parquet") if p.stem != "trade_dates"})
+        # 4) minute_by_date 下载失败 → 从 daily stock_list.json 派生（同一股票池）
+        if not _list and _sub == "minute_by_date":
+            _daily_slf = _data_dir / "stock_data" / "daily" / "stock_list.json"
+            if _daily_slf.exists():
+                _list = json.loads(_daily_slf.read_text())
+                print(f"  ℹ️ {_sub} 从 daily stock_list.json 派生 ({len(_list)} 只)")
         if not _list:
             print(f"  ❌ {_sub}/stock_list.json 缺失，无法生成")
             continue
