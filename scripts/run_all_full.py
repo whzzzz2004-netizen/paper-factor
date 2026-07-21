@@ -372,6 +372,16 @@ def _sync_raw_data():
         os.environ["FACTOR_DATA_DIR"] = str(_data_dir)
         os.environ["RDAGENT_FACTOR_DATA_DIR"] = str(_data_dir)
 
+    # 远程也无效 → 回退到项目本地目录（避免 CIFS 挂载点被覆盖问题）
+    if not (_data_dir / "stock_data" / "daily").exists():
+        _local_fb = PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"
+        _local_fb.mkdir(parents=True, exist_ok=True)
+        _data_dir = _local_fb
+        FULL_DATA_DIR = _data_dir
+        print(f"  📂 改用本地数据目录: {_data_dir}")
+        os.environ["FACTOR_DATA_DIR"] = str(_data_dir)
+        os.environ["RDAGENT_FACTOR_DATA_DIR"] = str(_data_dir)
+
     if not _data_dir.exists():
         print(f"  ❌ 数据目录不存在: {_data_dir}")
         return
@@ -403,13 +413,15 @@ def _sync_raw_data():
             _td_tmp = Path(tempfile.mkdtemp()) / "trade_dates.json"
             _smb_download("_paper_factor_unified/factor_implementation_source_data/stock_data/daily/trade_dates.json", _td_tmp)
             local_dates_raw = set(json.loads(_td_tmp.read_text()))
-            # 下载成功 → 确定为远程路径
-            if _data_dir == FULL_DATA_DIR and not (_data_dir / "stock_data" / "daily").exists():
-                _data_dir = Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data")
-                FULL_DATA_DIR = _data_dir
+            # 下载成功 → 保存到本地目录（避免 CIFS 挂载覆盖）
+            _data_dir = PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"
+            _data_dir.mkdir(parents=True, exist_ok=True)
+            FULL_DATA_DIR = _data_dir
             local_dates_file = _data_dir / "stock_data" / "daily" / "trade_dates.json"
             local_dates_file.parent.mkdir(parents=True, exist_ok=True)
             local_dates_file.write_text(json.dumps(sorted(local_dates_raw)))
+            os.environ["FACTOR_DATA_DIR"] = str(_data_dir)
+            os.environ["RDAGENT_FACTOR_DATA_DIR"] = str(_data_dir)
             _td_tmp.unlink(missing_ok=True)
         except Exception:
             pass
@@ -524,6 +536,12 @@ def _sync_raw_data():
     print(f"\n✅ 数据同步完成\n")
 
     # ── 保底：确保 stock_list.json 存在（缺了因子模板会报错） ──
+    #    优先尝试从远程下载已有文件，失败则 SMB 列出 parquet 生成（仅支持 daily）
+    #    并 SMB put 回远程持久化（避免 CIFS 挂载覆盖问题）
+    def _smb_put(local_path: Path, remote_dir: str):
+        r = _smb_cmd(f"cd {remote_dir}; put {local_path} stock_list.json")
+        if r.returncode != 0:
+            raise RuntimeError(f"上传失败: {r.stderr.strip()}")
     for _sub, _smb_dir in [
         ("daily", "_paper_factor_unified/factor_implementation_source_data/stock_data/daily"),
         ("minute_by_date", "_paper_factor_unified/factor_implementation_source_data/stock_data/minute_by_date"),
@@ -531,7 +549,7 @@ def _sync_raw_data():
         _slf = _data_dir / "stock_data" / _sub / "stock_list.json"
         if _slf.exists():
             continue
-        # 1) 直接从远程 SMB 下载 stock_list.json（已验证存在）
+        # 1) 优先从远程 SMB 下载 stock_list.json
         _list = None
         try:
             _tmp = Path(tempfile.mkdtemp()) / "stock_list.json"
@@ -541,24 +559,29 @@ def _sync_raw_data():
             _tmp.unlink(missing_ok=True)
         except Exception as e:
             print(f"  ⚠️ SMB 下载 {_sub}/stock_list.json 失败: {e}")
-        # 2) 下载失败 → SMB 列出远程 parquet 文件名
-        if not _list:
+        # 2) 下载失败 → 仅 daily 可通过列出 parquet 恢复
+        if not _list and _sub == "daily":
             try:
                 _files = _smb_list(_smb_dir)
                 _list = sorted({f.removesuffix(".parquet") for f in _files})
             except Exception as e:
                 print(f"  ⚠️ SMB 列出 {_sub} parquet 失败: {e}")
-        # 3) 本地 parquet 扫描
-        if not _list:
+        # 3) 本地 parquet 扫描（仅 daily）
+        if not _list and _sub == "daily":
             _pdir = _data_dir / "stock_data" / _sub
             if _pdir.exists():
                 _list = sorted({p.stem for p in _pdir.glob("*.parquet") if p.stem != "trade_dates"})
-        if _list:
-            _slf.parent.mkdir(parents=True, exist_ok=True)
-            _slf.write_text(json.dumps(_list))
-            print(f"  ✅ 已生成 {_sub}/stock_list.json ({len(_list)} 只)")
-        else:
+        if not _list:
             print(f"  ❌ {_sub}/stock_list.json 缺失，无法生成")
+            continue
+        # 写入本地 + SMB put 到远程持久化
+        _slf.parent.mkdir(parents=True, exist_ok=True)
+        _slf.write_text(json.dumps(_list))
+        try:
+            _smb_put(_slf, _smb_dir)
+        except Exception as e:
+            print(f"  ⚠️ SMB 上传 {_sub}/stock_list.json 失败: {e}")
+        print(f"  ✅ 已生成 {_sub}/stock_list.json ({len(_list)} 只)")
 
 
 def main():
