@@ -127,6 +127,10 @@ def load_trade_dates() -> list[str]:
     for p in [
         FULL_DATA_DIR / "stock_data" / "daily" / "trade_dates.json",
         FULL_DATA_DIR / "stock_data" / "minute_by_date" / "trade_dates.json",
+        Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data") / "stock_data" / "daily" / "trade_dates.json",
+        Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data") / "stock_data" / "minute_by_date" / "trade_dates.json",
+        PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data" / "stock_data" / "daily" / "trade_dates.json",
+        PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data" / "stock_data" / "minute_by_date" / "trade_dates.json",
     ]:
         if p.exists():
             return json.loads(p.read_text())
@@ -349,6 +353,8 @@ def _smb_download(remote_path: str, local_path: Path):
 
 def _sync_raw_data():
     """增量同步原始数据：从远程 E 盘下载新日期，转为因子计算所需格式"""
+    global FULL_DATA_DIR
+
     print(f"{'='*60}")
     print("步骤1: 同步最新原始数据")
     print(f"{'='*60}")
@@ -361,6 +367,7 @@ def _sync_raw_data():
     _remote_cifs = Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data")
     if not (_data_dir / "stock_data" / "daily").exists() and _remote_cifs.exists():
         _data_dir = _remote_cifs
+        FULL_DATA_DIR = _data_dir
         print(f"  📂 改用远程数据目录: {_data_dir}")
         os.environ["FACTOR_DATA_DIR"] = str(_data_dir)
         os.environ["RDAGENT_FACTOR_DATA_DIR"] = str(_data_dir)
@@ -399,6 +406,7 @@ def _sync_raw_data():
             # 下载成功 → 确定为远程路径
             if _data_dir == FULL_DATA_DIR and not (_data_dir / "stock_data" / "daily").exists():
                 _data_dir = Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data")
+                FULL_DATA_DIR = _data_dir
             local_dates_file = _data_dir / "stock_data" / "daily" / "trade_dates.json"
             _td_tmp.unlink(missing_ok=True)
         except Exception:
