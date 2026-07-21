@@ -364,7 +364,9 @@ def _sync_raw_data():
     # ── 日线增量 ──
     print("\n--- 日线 ---")
     local_dates_file = FULL_DATA_DIR / "stock_data" / "daily" / "trade_dates.json"
-    local_dates = set(json.loads(local_dates_file.read_text())) if local_dates_file.exists() else set()
+    local_dates_raw = set(json.loads(local_dates_file.read_text())) if local_dates_file.exists() else set()
+    # 统一为 YYYYMMDD 比较（本地存 YYYY-MM-DD，远程文件名 YYYYMMDD）
+    local_dates = {d.replace("-", "") for d in local_dates_raw}
 
     try:
         remote_files = _smb_list(REMOTE_DAILY_DIR)
@@ -407,7 +409,8 @@ def _sync_raw_data():
             except Exception as e:
                 print(f"  ⚠️ {date_str} 下载/转换失败: {e}")
         # 更新元数据
-        all_dates = sorted(local_dates | set(new_dates))
+        fmt = lambda d: f"{d[:4]}-{d[4:6]}-{d[6:]}"
+        all_dates = sorted({fmt(d) for d in local_dates_raw} | {fmt(d) for d in new_dates})
         local_dates_file.write_text(json.dumps(all_dates))
         stock_list_file = FULL_DATA_DIR / "stock_data" / "daily" / "stock_list.json"
         stock_list_file.write_text(json.dumps(sorted(all_stocks)))
@@ -416,7 +419,8 @@ def _sync_raw_data():
     # ── 分钟线增量 ──
     print("\n--- 分钟线 ---")
     local_min_dates_file = FULL_DATA_DIR / "stock_data" / "minute_by_date" / "trade_dates.json"
-    local_min_dates = set(json.loads(local_min_dates_file.read_text())) if local_min_dates_file.exists() else set()
+    local_min_raw = set(json.loads(local_min_dates_file.read_text())) if local_min_dates_file.exists() else set()
+    local_min_dates = {d.replace("-", "") for d in local_min_raw}
 
     try:
         remote_min_files = _smb_list(REMOTE_MINUTE_DIR)
@@ -445,7 +449,7 @@ def _sync_raw_data():
                         break
             except Exception as e:
                 print(f"  ⚠️ {date_str} 下载失败: {e}")
-        all_min_dates = sorted(local_min_dates | set(new_min_dates))
+        all_min_dates = sorted({fmt(d) for d in local_min_raw} | {fmt(d) for d in new_min_dates})
         local_min_dates_file.write_text(json.dumps(all_min_dates))
         min_stock_list = FULL_DATA_DIR / "stock_data" / "minute_by_date" / "stock_list.json"
         min_stock_list.write_text(json.dumps(sorted(all_min_stocks)))
