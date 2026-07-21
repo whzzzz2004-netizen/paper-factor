@@ -524,30 +524,41 @@ def _sync_raw_data():
     print(f"\n✅ 数据同步完成\n")
 
     # ── 保底：确保 stock_list.json 存在（缺了因子模板会报错） ──
-    for _sub, _smb_path in [
-        ("daily", "_paper_factor_unified/factor_implementation_source_data/stock_data/daily/stock_list.json"),
-        ("minute_by_date", "_paper_factor_unified/factor_implementation_source_data/stock_data/minute_by_date/stock_list.json"),
+    for _sub, _smb_dir in [
+        ("daily", "_paper_factor_unified/factor_implementation_source_data/stock_data/daily"),
+        ("minute_by_date", "_paper_factor_unified/factor_implementation_source_data/stock_data/minute_by_date"),
     ]:
         _slf = _data_dir / "stock_data" / _sub / "stock_list.json"
-        if not _slf.exists():
+        if _slf.exists():
+            continue
+        # 1) 直接从远程 SMB 下载 stock_list.json（已验证存在）
+        _list = None
+        try:
+            _tmp = Path(tempfile.mkdtemp()) / "stock_list.json"
+            _slf.parent.mkdir(parents=True, exist_ok=True)
+            _smb_download(f"{_smb_dir}/stock_list.json", _tmp)
+            _list = json.loads(_tmp.read_text())
+            _tmp.unlink(missing_ok=True)
+        except Exception as e:
+            print(f"  ⚠️ SMB 下载 {_sub}/stock_list.json 失败: {e}")
+        # 2) 下载失败 → SMB 列出远程 parquet 文件名
+        if not _list:
             try:
-                _sl_tmp = Path(tempfile.mkdtemp()) / "stock_list.json"
-                _smb_download(_smb_path, _sl_tmp)
-                _slf.parent.mkdir(parents=True, exist_ok=True)
-                _slf.write_text(_sl_tmp.read_text())
-                _sl_tmp.unlink(missing_ok=True)
-                print(f"  📥 已从远程下载 {_sub}/stock_list.json ({len(json.loads(_slf.read_text()))} 只)")
-            except Exception:
-                # SMB 下载失败 → 从已有 parquet 文件列表生成
-                _p_dir = _data_dir / "stock_data" / _sub
-                _parquets = sorted(_p_dir.glob("*.parquet")) if _p_dir.exists() else []
-                if _parquets:
-                    _stocks = sorted({p.stem for p in _parquets if p.stem not in ("trade_dates",)})
-                    _slf.parent.mkdir(parents=True, exist_ok=True)
-                    _slf.write_text(json.dumps(_stocks))
-                    print(f"  🔧 从 parquet 生成 {_sub}/stock_list.json ({len(_stocks)} 只)")
-                else:
-                    print(f"  ⚠️ {_sub}/stock_list.json 缺失，且无法生成")
+                _files = _smb_list(_smb_dir)
+                _list = sorted({f.removesuffix(".parquet") for f in _files})
+            except Exception as e:
+                print(f"  ⚠️ SMB 列出 {_sub} parquet 失败: {e}")
+        # 3) 本地 parquet 扫描
+        if not _list:
+            _pdir = _data_dir / "stock_data" / _sub
+            if _pdir.exists():
+                _list = sorted({p.stem for p in _pdir.glob("*.parquet") if p.stem != "trade_dates"})
+        if _list:
+            _slf.parent.mkdir(parents=True, exist_ok=True)
+            _slf.write_text(json.dumps(_list))
+            print(f"  ✅ 已生成 {_sub}/stock_list.json ({len(_list)} 只)")
+        else:
+            print(f"  ❌ {_sub}/stock_list.json 缺失，无法生成")
 
 
 def main():
