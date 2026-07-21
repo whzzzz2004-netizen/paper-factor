@@ -353,18 +353,56 @@ def _sync_raw_data():
     print("步骤1: 同步最新原始数据")
     print(f"{'='*60}")
 
-    if not FULL_DATA_DIR.exists():
-        print(f"  ❌ 本地数据目录不存在: {FULL_DATA_DIR}")
+    # 先尝试挂载远程（可能模块加载时还没挂上）
+    _ensure_remote_mounted()
+
+    # 如果 FULL_DATA_DIR 是本地空目录，改用远程 CIFS 路径
+    _data_dir = FULL_DATA_DIR
+    _remote_cifs = Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data")
+    if not (_data_dir / "stock_data" / "daily").exists() and _remote_cifs.exists():
+        _data_dir = _remote_cifs
+        print(f"  📂 改用远程数据目录: {_data_dir}")
+        os.environ["FACTOR_DATA_DIR"] = str(_data_dir)
+        os.environ["RDAGENT_FACTOR_DATA_DIR"] = str(_data_dir)
+
+    if not _data_dir.exists():
+        print(f"  ❌ 数据目录不存在: {_data_dir}")
         return
 
     # 确保目录结构
     for sub in ["stock_data/daily", "stock_data/minute_by_date"]:
-        (FULL_DATA_DIR / sub).mkdir(parents=True, exist_ok=True)
+        (_data_dir / sub).mkdir(parents=True, exist_ok=True)
 
     # ── 日线增量 ──
     print("\n--- 日线 ---")
-    local_dates_file = FULL_DATA_DIR / "stock_data" / "daily" / "trade_dates.json"
-    local_dates_raw = set(json.loads(local_dates_file.read_text())) if local_dates_file.exists() else set()
+    # 从多个候选路径找 trade_dates.json（避免 FULL_DATA_DIR 指向本地空目录）
+    _candidates = [
+        _data_dir,
+        Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data"),
+        PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data",
+        PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data_1000",
+    ]
+    local_dates_file = None
+    local_dates_raw = set()
+    for _cd in _candidates:
+        _f = _cd / "stock_data" / "daily" / "trade_dates.json"
+        if _f.exists():
+            local_dates_file = _f
+            local_dates_raw = set(json.loads(_f.read_text()))
+            break
+    if local_dates_file is None:
+        # 尝试通过 SMB 从远程下载 trade_dates.json
+        try:
+            _td_tmp = Path(tempfile.mkdtemp()) / "trade_dates.json"
+            _smb_download("_paper_factor_unified/factor_implementation_source_data/stock_data/daily/trade_dates.json", _td_tmp)
+            local_dates_raw = set(json.loads(_td_tmp.read_text()))
+            # 下载成功 → 确定为远程路径
+            if _data_dir == FULL_DATA_DIR and not (_data_dir / "stock_data" / "daily").exists():
+                _data_dir = Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data")
+            local_dates_file = _data_dir / "stock_data" / "daily" / "trade_dates.json"
+            _td_tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
     # 统一为 YYYYMMDD 比较（本地存 YYYY-MM-DD，远程文件名 YYYYMMDD）
     local_dates = {d.replace("-", "") for d in local_dates_raw}
 
@@ -382,7 +420,7 @@ def _sync_raw_data():
         print("  无新增日期")
     else:
         print(f"  发现 {len(new_dates)} 个新日期: {new_dates[:5]}...")
-        stock_dir = FULL_DATA_DIR / "stock_data" / "daily"
+        stock_dir = _data_dir / "stock_data" / "daily"
         all_stocks = set()
         for date_str in new_dates:
             remote_file = f"{REMOTE_DAILY_DIR}/{date_str}.parquet"
@@ -413,14 +451,29 @@ def _sync_raw_data():
         # 更新元数据
         all_dates = sorted({_fmt(d) for d in local_dates_raw} | {_fmt(d) for d in new_dates})
         local_dates_file.write_text(json.dumps(all_dates))
-        stock_list_file = FULL_DATA_DIR / "stock_data" / "daily" / "stock_list.json"
+        stock_list_file = _data_dir / "stock_data" / "daily" / "stock_list.json"
         stock_list_file.write_text(json.dumps(sorted(all_stocks)))
         print(f"  ✅ 日线: {len(new_dates)} 天, {len(all_stocks)} 只股票")
 
     # ── 分钟线增量 ──
     print("\n--- 分钟线 ---")
-    local_min_dates_file = FULL_DATA_DIR / "stock_data" / "minute_by_date" / "trade_dates.json"
-    local_min_raw = set(json.loads(local_min_dates_file.read_text())) if local_min_dates_file.exists() else set()
+    local_min_dates_file = None
+    local_min_raw = set()
+    for _cd in _candidates:
+        _f = _cd / "stock_data" / "minute_by_date" / "trade_dates.json"
+        if _f.exists():
+            local_min_dates_file = _f
+            local_min_raw = set(json.loads(_f.read_text()))
+            break
+    if local_min_dates_file is None:
+        try:
+            _td_tmp = Path(tempfile.mkdtemp()) / "trade_dates_min.json"
+            _smb_download("_paper_factor_unified/factor_implementation_source_data/stock_data/minute_by_date/trade_dates.json", _td_tmp)
+            local_min_raw = set(json.loads(_td_tmp.read_text()))
+            local_min_dates_file = _data_dir / "stock_data" / "minute_by_date" / "trade_dates.json"
+            _td_tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
     local_min_dates = {d.replace("-", "") for d in local_min_raw}
 
     try:
@@ -435,7 +488,7 @@ def _sync_raw_data():
         print("  无新增日期")
     else:
         print(f"  发现 {len(new_min_dates)} 个新日期: {new_min_dates[:5]}...")
-        min_date_dir = FULL_DATA_DIR / "stock_data" / "minute_by_date"
+        min_date_dir = _data_dir / "stock_data" / "minute_by_date"
         all_min_stocks = set()
         for date_str in new_min_dates:
             remote_file = f"{REMOTE_MINUTE_DIR}/{date_str}.parquet"
@@ -452,7 +505,7 @@ def _sync_raw_data():
                 print(f"  ⚠️ {date_str} 下载失败: {e}")
         all_min_dates = sorted({_fmt(d) for d in local_min_raw} | {_fmt(d) for d in new_min_dates})
         local_min_dates_file.write_text(json.dumps(all_min_dates))
-        min_stock_list = FULL_DATA_DIR / "stock_data" / "minute_by_date" / "stock_list.json"
+        min_stock_list = _data_dir / "stock_data" / "minute_by_date" / "stock_list.json"
         min_stock_list.write_text(json.dumps(sorted(all_min_stocks)))
         print(f"  ✅ 分钟线: {len(new_min_dates)} 天, {len(all_min_stocks)} 只股票")
 
