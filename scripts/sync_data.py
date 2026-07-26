@@ -673,8 +673,32 @@ def check_remote() -> dict:
     }
 
 
+def sync_limit_up():
+    """优先从远程 SMB 下载涨停列表，失败则本地重新生成"""
+    lu_path = DATA_DIR / "limit_up_daily.parquet"
+    lu_path_1000 = DATA_DIR_1000 / "limit_up_daily.parquet"
+    remote_lu = "_paper_factor_unified/factor_implementation_source_data/limit_up_daily.parquet"
+
+    # 尝试 SMB 下载
+    try:
+        _smb_download(remote_lu, lu_path)
+        # 同步到测试目录
+        if lu_path.exists():
+            lu_path_1000.parent.mkdir(parents=True, exist_ok=True)
+            import shutil
+            shutil.copy2(lu_path, lu_path_1000)
+        n = len(pd.read_parquet(lu_path))
+        print(f"  ✅ 从远程下载涨停列表: {n} 条", flush=True)
+        _new_cols_all.setdefault("daily", [])
+        return
+    except Exception as e:
+        print(f"  ⚠️ 远程下载失败 ({e})，本地重新生成", flush=True)
+
+    # 保底：本地重新生成
+    _rebuild_limit_up()
+
+
 def _rebuild_limit_up():
-    """从全量日线数据重新生成 limit_up_daily.parquet（涨停板剔除列表）"""
     lu_path = DATA_DIR / "limit_up_daily.parquet"
     stock_dir = DATA_DIR / "stock_data" / "daily"
     stock_list_file = stock_dir / "stock_list.json"
@@ -900,8 +924,8 @@ def main():
         if not args.skip_prompts:
             update_prompt_files(_load_schema())
 
-        # 8. 从日线数据重新生成涨停列表 (limit_up_daily.parquet)
-        _rebuild_limit_up()
+        # 8. 涨停列表（优先从远程下载，失败则本地重新生成）
+        sync_limit_up()
 
         # 9. 从全量裁剪 300 只 × 600 天 测试子集
         _ensure_test_subset()
