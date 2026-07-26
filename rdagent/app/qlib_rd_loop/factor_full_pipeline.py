@@ -225,12 +225,13 @@ def _patch_old_code_data_dir(code_dst: Path):
             flags=re.MULTILINE,
         )
 
-    # 2. 输出文件名：Path(__file__).stem → 去掉 .code 后缀
-    code = re.sub(
-        r"Path\(__file__\)\.stem",
-        '''Path(__file__).stem.removesuffix('.code')''',
-        code,
-    )
+    # 2. 输出文件名：Path(__file__).stem → 去掉 .code 后缀（如已修补则跳过）
+    if '.removesuffix' not in code:
+        code = re.sub(
+            r"Path\(__file__\)\.stem",
+            '''Path(__file__).stem.removesuffix('.code')''',
+            code,
+        )
 
     # 3. "result.parquet" → 用真实因子名
     code = code.replace('"result.parquet"', '''f"{Path(__file__).stem.removesuffix('.code')}.parquet"''')
@@ -255,6 +256,24 @@ def run_other_factor(factor_name: str, factor_dir: Path, code_path: Path) -> boo
         code_tmp = tmpdir / f"{factor_name}.py"
         shutil.copy(code_path, code_tmp)
         _patch_old_code_data_dir(code_tmp)  # 只修改 temp 副本
+
+        # 数据完整性校验
+        _data_dir = FULL_DATA_DIR if FULL_DATA_DIR != Path(".") else Path(".")
+        if _data_dir != Path("."):
+            _td_path = _data_dir / "stock_data" / "daily" / "trade_dates.json"
+            if _td_path.exists():
+                try:
+                    _td = json.loads(_td_path.read_text())
+                    if not _td:
+                        print(f"  ❌ trade_dates.json 为空: {_td_path}", flush=True)
+                        return False
+                except Exception as e:
+                    print(f"  ❌ 无法读取 trade_dates.json: {e}", flush=True)
+                    return False
+            else:
+                print(f"  ⚠️ trade_dates.json 不存在: {_td_path}", flush=True)
+        else:
+            print(f"  ⚠️ FULL_DATA_DIR 未设置，跳过数据校验", flush=True)
 
         for attempt in range(2):
             if attempt > 0:
