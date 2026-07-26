@@ -134,6 +134,14 @@ def _smb_download(remote_path: str, local_path: Path):
         raise RuntimeError(f"下载失败: {remote_path} ({r.stderr.strip()})")
 
 
+def _smb_upload(local_path: Path, remote_path: str):
+    """上传文件到远程"""
+    r = _smb_cmd(f"cd {Path(remote_path).parent}; put {local_path} {Path(remote_path).name}",
+                 timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError(f"上传失败: {remote_path} ({r.stderr.strip()})")
+
+
 def _get_local_date_set(data_subdir: str) -> set[str]:
     """获取本地已有的日期集合（统一转 YYYYMMDD）"""
     dates_file = DATA_DIR / data_subdir
@@ -734,6 +742,11 @@ def _rebuild_limit_up():
     lu_path_1000 = DATA_DIR_1000 / "limit_up_daily.parquet"
     lu_path_1000.parent.mkdir(parents=True, exist_ok=True)
     result.to_parquet(lu_path_1000)
+    # 上传到远程，供其他电脑使用
+    try:
+        _smb_upload(lu_path, "_paper_factor_unified/factor_implementation_source_data/limit_up_daily.parquet")
+    except Exception as e:
+        print(f"  ⚠️ 上传到远程失败: {e}", flush=True)
     print(f"  ✅ 涨停列表: {len(result)} 条, 日期 {result['datetime'].min().date()} ~ {result['datetime'].max().date()}", flush=True)
 
 
