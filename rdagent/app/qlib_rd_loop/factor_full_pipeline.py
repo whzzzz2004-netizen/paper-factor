@@ -49,8 +49,13 @@ def _sudo_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
 
 def _ensure_remote_mounted() -> bool:
     """自动挂载远程 E 盘（modprobe + 多版本协商 + 自动装依赖）"""
-    if CIFS_MOUNT.exists() and any(CIFS_MOUNT.iterdir()):
-        return True
+    # 用 mountpoint 检查（安全，不卡死）
+    try:
+        r = subprocess.run(["mountpoint", "-q", str(CIFS_MOUNT)], capture_output=True, timeout=5)
+        if r.returncode == 0:
+            return True
+    except Exception:
+        pass
     print(f"  ⏳ 自动挂载远程 E 盘 {SMB_HOST}/{SMB_SHARE} → {CIFS_MOUNT} ...", flush=True)
     try:
         CIFS_MOUNT.mkdir(parents=True, exist_ok=True)
@@ -110,14 +115,22 @@ def _detect_data_dir() -> Path:
                 return Path(p)
     return Path(".")
 
-# 输出目录优先远程
+# 输出目录优先远程（模块级别 try-except 保底，防止 CIFS 卡死）
 _REMOTE_OUTPUTS = [
     Path("/mnt/remote_e/paper_factors/文献因子_全量"),
     Path("E:\\paper_factors\\文献因子_全量"),
     Path("Z:\\paper_factors\\文献因子_全量"),
 ]
-FULL_OUTPUT_BASE = next((p for p in _REMOTE_OUTPUTS if p.exists()), PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量")
-FULL_DATA_DIR = _detect_data_dir()
+try:
+    FULL_OUTPUT_BASE = next((p for p in _REMOTE_OUTPUTS if p.exists()), PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量")
+except Exception:
+    FULL_OUTPUT_BASE = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
+
+try:
+    _detected = _detect_data_dir()
+    FULL_DATA_DIR = _detected if _detected != Path(".") else PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"
+except Exception:
+    FULL_DATA_DIR = PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"
 BARRA_DIR = Path(os.environ.get("PAPER_FACTOR_BARRA_DIR",
                                  str(PROJECT_ROOT / "git_ignore_folder" / "barra_model")))
 

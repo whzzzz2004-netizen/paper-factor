@@ -36,15 +36,15 @@ import pandas as pd
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
-# ── 路径 ──
+# ── 路径（默认本地，远程挂载成功后再切换，模块级别不访问 CIFS 避免卡死） ──
 REMOTE_MOUNT = Path("/mnt/remote_e")
 REMOTE_FULL = REMOTE_MOUNT / "paper_factors" / "文献因子_全量"
 LOCAL_FULL = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
-FULL_BASE = REMOTE_FULL if REMOTE_FULL.exists() else LOCAL_FULL
 
-# 全量输出 + 数据目录
-OUTPUT_BASE = FULL_BASE
+# 全量输出 + 数据目录（初始默认本地，确保模块级别不访问 CIFS）
+OUTPUT_BASE = LOCAL_FULL
 FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data")))
+REMOTE_DATA_DIR = REMOTE_MOUNT / "_paper_factor_unified" / "factor_implementation_source_data"
 
 # sync_data.py 路径
 SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "sync_data.py"
@@ -52,23 +52,51 @@ SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "sync_data.py"
 # ── 远程挂载 ──
 
 def ensure_mounted() -> bool:
-    """确保远程E盘已挂载，返回是否成功"""
-    if REMOTE_MOUNT.exists() and any(REMOTE_MOUNT.iterdir()):
-        return True
+    """确保远程E盘已挂载，返回是否成功。超时15秒，不卡死。"""
+    global OUTPUT_BASE, FULL_DATA_DIR
+
+    # 用 mountpoint 检查（安全，不卡死）
+    try:
+        r = subprocess.run(["mountpoint", "-q", str(REMOTE_MOUNT)], capture_output=True, timeout=5)
+        if r.returncode == 0:
+            print("  ✅ 远程已挂载")
+            OUTPUT_BASE = REMOTE_FULL
+            if REMOTE_DATA_DIR.exists():
+                FULL_DATA_DIR = REMOTE_DATA_DIR
+            return True
+    except Exception:
+        pass
+
+    # 尝试挂载
     print("📌 挂载远程E盘...")
     os.makedirs(str(REMOTE_MOUNT), exist_ok=True)
     uid = os.getuid()
     gid = os.getgid()
-    ret = os.system(
-        f"sudo mount -t cifs //192.168.1.13/E {REMOTE_MOUNT} "
-        f"-o user=pc,password=123456,uid={uid},gid={gid},"
-        f"file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"
-    )
-    if ret != 0:
-        print("  ⚠️ 挂载失败，使用本地数据")
-        return False
-    print("  ✅ 已挂载")
-    return True
+    mount_cmd = [
+        "mount", "-t", "cifs",
+        "//192.168.1.13/E", str(REMOTE_MOUNT),
+        "-o", f"user=pc,password=123456,uid={uid},gid={gid},"
+              f"file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"
+    ]
+    if os.geteuid() != 0:
+        mount_cmd = ["sudo", "-n"] + mount_cmd
+
+    try:
+        subprocess.run(mount_cmd, capture_output=True, timeout=15)
+        r = subprocess.run(["mountpoint", "-q", str(REMOTE_MOUNT)], capture_output=True, timeout=5)
+        if r.returncode == 0:
+            print("  ✅ 已挂载")
+            OUTPUT_BASE = REMOTE_FULL
+            if REMOTE_DATA_DIR.exists():
+                FULL_DATA_DIR = REMOTE_DATA_DIR
+            return True
+    except subprocess.TimeoutExpired:
+        print("  ⚠️ 挂载超时（15s）")
+    except Exception as e:
+        print(f"  ⚠️ 挂载失败: {e}")
+
+    print("  ⚠️ 使用本地数据")
+    return False
 
 
 # ── 数据同步 ──
@@ -326,7 +354,7 @@ def run_incremental_for_factor(item: dict) -> dict:
         if factor_type == "daily":
             env.setdefault("FACTOR_N_WORKERS", "4")
         else:
-            env.setdefault("FACTOR_N_WORKERS", "8")
+            env.setdefault("FACTOR_N_WORKERS", "4")
 
         print(f"  执行中... (start={last_date.strftime('%Y-%m-%d')}, type={factor_type})")
         try:
@@ -452,12 +480,17 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="仅列出待跑因子，不执行")
     parser.add_argument("--skip-sync", action="store_true", help="跳过数据同步")
     parser.add_argument("--skip-mount", action="store_true", help="跳过挂载检查")
+    parser.add_argument("--local", action="store_true", help="仅用本地数据，不尝试远程挂载，输出也写到本地目录")
     args = parser.parse_args()
 
     t_start = time.time()
 
     # ── Step 1: 挂载 ──
-    if not args.skip_mount:
+    if args.local:
+        global OUTPUT_BASE, FULL_DATA_DIR
+        OUTPUT_BASE = LOCAL_FULL
+        print("📌 本地模式，跳过远程挂载")
+    elif not args.skip_mount:
         ensure_mounted()
 
     # ── Step 2: 同步数据 ──

@@ -24,6 +24,7 @@ def calc_factor_cross_section(all_data, trade_date):
   - gross_margin: 毛利率（Gross Margin, 衡量产品盈利能力）
   - gross_profit: 毛利润（毛利润（营业总收入 - 营业成本），单位：元。银行等金融公司用营业利润代替。按报告期 forward-fill 到每日。）
   - high: 最高价（日线最高价）
+  - holder_change_pct: 股东户数变化率（股东户数较上期变化百分比，正值表示筹码分散）
   - jhjj_hsl: 集合竞价换手率（集合竞价时段换手率，单位：%）
   - low: 最低价（日线最低价）
   - market_cap: 总市值（单位：亿元，衡量公司规模）
@@ -38,6 +39,7 @@ def calc_factor_cross_section(all_data, trade_date):
   - revenue_yoy: 营收同比增速（Revenue Year-over-Year, 衡量成长性）
   - roa: 总资产收益率（Return on Assets, 衡量资产回报效率）
   - roe: 净资产收益率（Return on Equity, 衡量盈利能力）
+  - total_holders: 股东总户数（股东总户数，反映筹码集中度）
   - total_shares: 总股本（单位：万股，包含A股、B股和H股）
   - turnover_rate: 换手率（单位：%）
   - volume: 成交量（单位：股）

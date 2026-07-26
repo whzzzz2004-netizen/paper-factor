@@ -137,31 +137,45 @@ prompt = f"""
   python scripts/claude_factor_helper.py save-extracted --name "{{报告标题}}" < 你的因子列表 JSON
 
 #### Step C: 逐个编码 + 测试（顺序执行）
-对 Step B 定义的每个因子，逐个执行：
+对 Step B 定义的每个因子，逐个执行。**关键：连续执行，不要在每步之间停顿思考。**
 
-1. 确定模板类型 → 预读知识文件（在 prompt 的最后提供了）
-2. 对每个因子，先调用 find_similar_factors() 获取同类因子参考
-3. 调用 retrieve_domain_knowledge() 获取相关领域知识（涨停规则、A 股惯例等）：
-   ```bash
-   # 用因子描述作为检索 query，获取相关市场规则参考
-   python scripts/claude_factor_helper.py retrieve-knowledge <因子描述/关键词>
-   ```
-4. **只写核心函数**到 `/tmp/factor_{{name}}.py`：
-   - 根据上表确定函数签名，**只实现核心计算逻辑**
-   - **不要写模板框架代码**（数据加载、日期遍历、并行调度、输出格式转换、涨停剔除等都由模板自动处理）
-   - **不要调试模板行为**（如日期索引格式、数据加载方式）— 模板已处理好，看 test-and-export 的错误信息修改你的核心函数即可
-   - **辅助函数必须定义在核心函数内部**（`def inner_func(): ...` 嵌在核心函数内），不得定义为外部函数（否则模板列检测扫不到 → KeyError）
-5. 运行 test-and-export（**必须传入所有元数据参数，不要留空**）:
-   python scripts/claude_factor_helper.py test-and-export \
-     --code /tmp/factor_{{name}}.py \
-     --report "{{报告标题}}" --factor "{{name}}" \
-     --cols "{{cols}}" --lookback {{lookback}} \
-     --description "{{description}}" --formulation "{{formulation}}" \
-     --source-excerpt "{{source_excerpt}}" \
-     --source-report-title "{{报告标题}}" \
-     --source-report-path "{{path if type == 'paper' else ''}}"
-6. 如果失败 → 修改核心函数 → 重试，最多3次。**不要修改模板，不要自己写测试去调试数据格式。**
-   **注意 `all_nan_warning`：** 如果测试输出包含 `"all_nan_warning"` 字段，说明因子值几乎全为空（non_null_ratio < 1%）。这是因为代码逻辑导致计算结果全为 NaN（如除零、缺失列、条件过滤过严等）。必须仔细检查核心函数修复数据流问题，不要简单重试同一代码。
+对每个因子，执行以下操作序列（一次完成，中间不要停下来"想"）：
+
+**① 获取参考信息**：连续执行以下两条命令，一次性获取全部参考：
+```bash
+# 先调 find_similar_factors（获取同类因子代码参考）
+python scripts/claude_factor_helper.py find-similar --type <模板类型> --cols "<列名>" --lookback <回溯天数>
+
+# 再调 retrieve-knowledge（获取相关领域规则）
+python scripts/claude_factor_helper.py retrieve-knowledge <因子描述/关键词>
+```
+两条命令的输出都拿到后，直接进入下一步，不要在中间思考。
+
+**② 写核心函数 + 跑测试**：连续执行，不要停顿：
+```bash
+# 写代码到 /tmp/factor_{{name}}.py
+# 然后立刻跑 test-and-export，不要停下来确认代码
+python scripts/claude_factor_helper.py test-and-export \
+  --code /tmp/factor_{{name}}.py \
+  --report "{{报告标题}}" --factor "{{name}}" \
+  --cols "{{cols}}" --lookback {{lookback}} \
+  --description "{{description}}" --formulation "{{formulation}}" \
+  --source-excerpt "{{source_excerpt}}" \
+  --source-report-title "{{报告标题}}" \
+  --source-report-path "{{path if type == 'paper' else ''}}"
+```
+
+**写代码规则：**
+- 根据模板类型确定函数签名（见下方对照表），**只实现核心计算逻辑**
+- **不要写模板框架代码**（数据加载、日期遍历、并行调度、输出转换、涨停剔除等都由模板自动处理）
+- **不要调试模板行为**（如日期索引格式、数据加载方式）— 模板已处理好，看 test-and-export 的错误信息修改你的核心函数即可
+- **辅助函数必须定义在核心函数内部**（`def inner_func(): ...` 嵌在核心函数内），不得定义为外部函数（否则模板列检测扫不到 → KeyError）
+
+**③ 检查结果 + 重试**：看 test-and-export 的 JSON 输出：
+- `success: true` → 完成，进入下一个因子
+- `success: false` → 根据错误信息修改核心函数 → 立刻重跑（回到②），最多5次
+  - `all_nan_warning` 出现时：因子值几乎全为空，仔细检查数据流问题，不要简单重试同一代码
+  - **5次全失败后，禁止手动写任何文件**。在 Step D 如实报告 failure。
 
 **重要：** 因子之间可以共享上下文。因子2如果与因子1计算相似，可以复用因子1的代码模式。顺序执行完所有因子。
 

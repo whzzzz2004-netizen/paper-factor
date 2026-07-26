@@ -50,7 +50,7 @@ def _sudo_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     )
 
 
-# 自动检测数据目录（同 run_all_full.py）
+# 自动检测数据目录（同 run_all.py）
 def _ensure_remote_mounted() -> bool:
     if CIFS_MOUNT.exists() and any(CIFS_MOUNT.iterdir()):
         return True

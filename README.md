@@ -1,267 +1,252 @@
 # paper-factor
 
-LLM 驱动的量化因子挖掘系统。从研报 PDF / 网站文章中提取因子描述 → 自动生成代码 → 300 只股票测试 → 5435 只全量计算 → 评估/绘图/Barra 分析 → 同步到远程。
+LLM 驱动的量化因子挖掘系统。从研报 PDF / 网站文章中提取因子 → 自动编码测试 → 全量计算 → 远程同步。
 
-## 整体流程
+## 快速开始（从零到跑通 /factor）
+
+### 1. 前置条件
+
+| 依赖 | 说明 | 验证 |
+|------|------|------|
+| **网络** | 能访问 `192.168.1.13:445`（SMB） | `ping 192.168.1.13` |
+| **smbclient** | SMB 文件传输 | `smbclient -L //192.168.1.13 -U pc` |
+| **Python 3.10+** | 运行环境 | `python3 --version` |
+| **Claude Code CLI** | AI 因子提取引擎（WSL 安装见下方） | `claude --version` |
+
+### 2. 安装 Claude Code（WSL 环境）
+
+```bash
+# 安装 Node.js（如未装）
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# 安装 Claude Code
+npm install -g @anthropic-ai/claude-code
+
+# 验证
+claude --version
+
+# 首次使用需登录
+claude --login
+```
+
+### 3. 克隆并安装依赖
+
+```bash
+git clone <repo-url> paper-factor
+cd paper-factor
+
+# Python 依赖
+pip install -r requirements.txt
+# 或 conda:
+# conda env create -f environment.yml
+# conda activate paper-factor
+
+# smbclient（Ubuntu/Debian）
+sudo apt-get install smbclient
+# macOS
+# brew install samba
+```
+
+### 3. 同步数据
+
+```bash
+python3 scripts/sync_data.py --full
+```
+
+这条命令自动完成：
+- 从远程 E 盘拉取日线 + 分钟线 + 财务 + 行业数据
+- 转换为 per-stock parquet 格式（5435 只）
+- 裁剪 300 只 × 600 天测试子集到 `factor_implementation_source_data_1000`
+- 注册新列到 schema，更新 prompt 文件
+- 生成涨停列表
+
+> 首次全量同步较慢（~30 分钟）。日常增量用 `python3 scripts/sync_data.py` 即可。
+
+### 4. 运行 /factor 技能
+
+```bash
+# 进入项目目录后启动 Claude Code
+claude
+
+# 在 Claude Code 中执行：
+#   /factor
+#
+# 这会自动：
+#   1. 扫描 papers/inbox/、websites、ideas 中的未处理内容
+#   2. 5 个 agent 并行提取因子 → 编码 → 测试
+#   3. 导出到 literature_reports/ 并部署到 文献因子_全量/
+#   4. 同步到远程 E 盘
+```
+
+### 5. 可选：全量计算
+
+```bash
+# 某个因子全量跑
+python scripts/claude_factor_helper.py run-full \
+  --code 文献因子_全量/<报告>/<因子>/<因子>.code.py \
+  --factor-name <因子名> \
+  --report-name "<报告名>"
+
+# 或批量跑所有因子
+python scripts/claude_factor_helper.py run-all-full
+```
+
+## 整体架构
 
 ```
-PDF/网站 → LLM提取因子 → CoSTEER生成代码 → 测试（300 stocks） → 全量（5435 stocks） → 评估 → 远程同步
+                    ┌──────────────────┐
+                    │  远程 E 盘        │
+                    │  192.168.1.13     │
+                    │  ─ market_daily   │
+                    │  ─ dailyData      │
+                    │  ─ market_minute  │
+                    │  ─ paper_factors\ │
+                    │    文献因子_全量   │
+                    └────────┬─────────┘
+                             │ SMB (smbclient)
+                             ▼
+  ┌────────┐    ┌──────────────────────┐    ┌─────────────────┐
+  │ /factor│───▶│ 测试 (300只×600天)   │───▶│ literature_reports/
+  │ skill  │    │ _1000 目录           │    │ 每个因子: code.py│
+  └────────┘    └──────────────────────┘    │        meta.json │
+                                            │        parquet   │
+  ┌────────┐    ┌──────────────────────┐    └────────┬────────┘
+  │deploy  │───▶│ 文献因子_全量/        │─────────────▶ 远程 E 盘
+  │to-full │    │ (本地 或 /mnt/remote_e)│   sync-full
+  └────────┘    └──────────────────────┘
 ```
 
-1. **因子提取**: LLM 从研报 PDF（`papers/inbox/`）或网站文章（`papers/website/sources.json`）中提取因子定义
-2. **代码生成**: CoSTEER（多轮 LLM 代码生成）根据因子描述编写 Python 函数
-3. **模板注入**: `inject_files()` 自动将用户函数包装为完整可运行脚本（数据加载、并行计算、输出处理）
-4. **测试**: 在 300 只股票的子集上运行，验证因子可计算
-5. **导出**: 测试通过后导出到 `literature_reports/`，并提交全量流水线
-6. **全量**: 复制 `.code.py` 到 `文献因子_全量/`，在 5435 只股票上运行
-7. **评估**: IC/IR 分析、分位数图、Barra 暴露分析、LLM 审查
-8. **同步**: 通过 SMB 同步到远程 Windows 机器
+## 关键概念
+
+### 数据目录
+
+| 目录 | 内容 | 用途 |
+|------|------|------|
+| `factor_implementation_source_data/` | 5435 只全量数据 | 全量计算 |
+| `factor_implementation_source_data_1000/` | 300 只 × 600 天子集 | 因子测试 |
+| `git_ignore_folder/factor_outputs/literature_reports/` | 测试产出 | 因子调试 |
+| `git_ignore_folder/factor_outputs/文献因子_全量/` | 全量产出（本地缓存） | 本地备份 |
+| 远程 `E:\paper_factors\文献因子_全量\` | 全量产出（主存储） | 远程同步 |
+
+### 数据格式
+
+- **日线**：per-stock parquet，`stock_data/daily/{code}.parquet`
+- **分钟 per-stock**：`stock_data/minute/{code}.parquet`
+- **分钟 by date**：`stock_data/minute_by_date/{YYYY-MM-DD}.parquet`
+- 每只股票的 parquet 包含全部历史，追加新日期
+
+### 因子类型
+
+| 类型 | 函数签名 | 数据源 | 说明 |
+|------|----------|--------|------|
+| `daily` | `calc_factor_single_stock(df, trade_date, stock)` | 日线 per-stock | 截面/时间序列 |
+| `minute` | `calc_factors_one_day(df, stock)` | 分钟 per-stock | 日内因子 |
+| `cross_section` | `calc_factor_cross_section(all_data, trade_date)` | 日线 per-stock | 截面比较 |
+| `minute_cs` | `calc_factor_minute_raw(df, stock)` + `cross_section_transform(all_values)` | 分钟 by date | 日内截面 |
+| `deep_learning` | `train_model(all_data, trade_date)` + `predict_batch(model, data_dict, trade_date)` | 日线 per-stock | 深度学习 |
+
+## 技能命令
+
+### `/factor` — 因子提取全流程
+
+扫描待处理内容 → 多 agent 并行提取 → 编码测试 → 导出部署 → 同步远程。
+
+支持的输入：
+- `papers/inbox/*.pdf` — 研报 PDF
+- `papers/website/sources.json` — 网站文章
+- `papers/ideas/` — 文本想法
+
+输出目录：`git_ignore_folder/factor_outputs/literature_reports/<报告>/<因子>/`
+
+### `/getdata` — 增量数据同步
+
+从远程 E 盘同步最新数据，自动检测新列并更新 prompt 文件。
+
+### `/clean` — 清理所有因子产出
+
+删除测试因子、全量因子、Python 缓存。
+
+## 命令行工具
+
+核心入口：`python scripts/claude_factor_helper.py <命令> [参数]`
+
+| 命令 | 用途 |
+|------|------|
+| `scan-pending` | 扫描未处理的内容 |
+| `test-and-export` | 测试因子并导出到 literature_reports |
+| `deploy-to-full` | 部署测试因子到全量目录 |
+| `sync-full` | 同步全量因子到远程 E 盘 |
+| `trigger-full` | 触发全量流水线（计算+评估+同步） |
+| `run-full` | 运行单因子全量计算 |
+| `run-all-full` | 批量运行所有因子全量计算 |
+| `show-columns` | 查看可用数据列 |
+| `find-similar` | 在因子记忆库中查找同类因子 |
+| `retrieve-knowledge` | 检索领域知识（涨停规则等） |
+| `mark-done` | 标记内容为已处理 |
+
+数据同步：`python scripts/sync_data.py`
+
+| 参数 | 用途 |
+|------|------|
+| `--check` | 检查远程有无新数据 |
+| `--full` | 全量同步（覆盖） |
+| `--dry-run` | 只看变更不执行 |
+| `--update-prompts-only` | 仅更新 prompt 文件 |
 
 ## 目录结构
 
 ```
 paper-factor/
-├── paper_factor_cli/
-│   └── main.py                  # CLI 入口（start 命令）
 ├── papers/
-│   ├── inbox/                   # 放入待处理的研报 PDF
+│   ├── inbox/                    # 放入待处理的研报 PDF
 │   ├── website/
-│   │   └── sources.json         # 网站/公众号文章 URL 列表
-│   └── ideas/                   # 因子改进想法
-├── rdagent/
-│   ├── app/
-│   │   └── qlib_rd_loop/
-│   │       ├── factor_from_report.py    # 主流程：因子提取+测试+导出 (~1300行)
-│   │       ├── factor_full_pipeline.py  # 全量流水线：计算+评估+Barra+同步 (~850行)
-│   │       ├── conf.py                  # 配置（LLM 模型、prompts 路径）
-│   │       ├── prompts.yaml             # LLM 提示词模板
-│   │       └── paper_factor_knowledge.md # 领域知识
-│   ├── components/
-│   │   └── coder/factor_coder/
-│   │       ├── factor.py         # ⭐ 核心模板文件（~1450行）
-│   │       │                     # 5 个框架模板 + FactorFBWorkspace 类
-│   │       ├── config.py         # 数据路径、执行后端配置
-│   │       ├── evaluators.py     # 因子评估器
-│   │       └── evolving_strategy.py
-│   └── scenarios/qlib/
-│       ├── experiment/
-│       │   ├── factor_experiment.py
-│       │   └── workspace.py
-│       └── factor_experiment_loader/
-│           ├── pdf_loader.py     # PDF 加载
-│           └── json_loader.py
+│   │   └── sources.json          # 网站文章 URL 列表
+│   └── ideas/                    # 文本因子想法
 ├── scripts/
-│   ├── full.py                   # 全量计算 CLI（最早版本，与 full_pipeline 重叠）
-│   ├── run_factor_full.py        # 单因子全量运行
-│   ├── run_all_full.py           # 批量运行所有因子
-│   ├── evaluate_factor.py        # 评估已产出的因子
-│   ├── extract_website_factors.py # 网站/公众号因子提取
-│   ├── sync_data.py              # 从远程同步数据
-│   └── ...                       # 其他工具脚本
-├── git_ignore_folder/
-│   ├── factor_outputs/
-│   │   ├── literature_reports/   # 测试阶段输出（300 stocks）
-│   │   ├── 文献因子_全量/         # 全量输出（5435 stocks）
-│   │   ├── processed_reports.json # 已处理完成的研报列表
-│   │   ├── extracted_reports/    # LLM 提取的因子定义
-│   │   ├── availability_cache/   # 因子可用性缓存
-│   │   └── task_refinement_cache/
-│   └── factor_implementation_source_data/  # ⭐ 全量数据目录（5435 stocks）
-│       └── stock_data/
-│           ├── daily/            # 日线 parquet（每只股票一个文件）
-│           ├── minute_by_date/   # 分钟 parquet（每个交易日一个文件）
-│           └── minute/           # 分钟 parquet（每只股票一个文件，旧格式）
-├── .env                          # API keys（不提交）
-├── pyproject.toml                # 项目配置 + CLI entrypoint
-└── README.md
+│   ├── claude_factor_helper.py   # 核心 CLI 工具
+│   ├── sync_data.py              # 数据同步（SMB）
+│   └── sync_utils.py             # 远程同步工具
+├── rdagent/
+│   └── components/coder/factor_coder/factor.py  # 模板（5种类型）
+├── .claude/
+│   └── skills/factor/            # /factor 技能定义
+│       ├── SKILL.md
+│       └── knowledge/            # 领域知识（涨跌停规则、列定义等）
+├── data/
+│   └── schema.json               # 字段注册表
+└── git_ignore_folder/
+    └── factor_outputs/
+        ├── literature_reports/   # 测试产出
+        └── 文献因子_全量/         # 全量产出（本地缓存）
 ```
 
-## 数据
+## 常见问题
 
-| 数据 | 目录 | 规模 |
-|------|------|------|
-| 日线 | `stock_data/daily/{stock}.parquet` | 5435 stocks × ~2027 天 |
-| 分钟（按天） | `stock_data/minute_by_date/{date}.parquet` | ~2029 个交易日文件 |
-| 分钟（按股，旧） | `stock_data/minute/{stock}.parquet` | 逐步弃用 |
-| 测试数据 | `factor_implementation_source_data_1000/` | **300 stocks**（名字误导！） |
-| Barra 模型 | `barra_model/` | 风格因子暴露数据 |
-
-日线 parquet 列：`open, close, high, low, volume, factor, market_cap, industry_sw, turnover, return`
-
-分钟 parquet 列：`open, high, low, close, volume, vwap, factor, return, trade_number, avg_turnover`
-
-## 因子模板（factor.py）
-
-`rdagent/components/coder/factor_coder/factor.py` 定义了 5 个框架模板。LLM 只编写用户函数体，框架代码自动注入：
-
-| 模板 | 用户需实现的函数 | 数据源 | 场景 |
-|------|------------------|--------|------|
-| `DAILY_FRAMEWORK_TEMPLATE` | `calc_factor_single_stock(df, trade_date, stock)` | 日线 per-stock | 动量、反转、均线等 |
-| `MINUTE_FRAMEWORK_TEMPLATE` | `calc_factors_one_day(sub, stock)` | 分钟 per-day | 日内因子 |
-| `CROSS_SECTION_FRAMEWORK_TEMPLATE` | `calc_factor_cross_section(trade_date)` | 日线 per-stock | 截面因子 |
-| `MINUTE_CROSS_SECTION_FRAMEWORK_TEMPLATE` | `calc_factor_minute_raw` + `cross_section_transform` | 分钟 per-day | 分钟截面因子 |
-| `DEEP_LEARNING_FRAMEWORK_TEMPLATE` | `train_model()` + `predict()` | 日线 per-stock | GRU/LSTM 等 |
-
-### 模板注入机制
-
-`FactorFBWorkspace.inject_files()`（factor.py ~L1370）：
-1. 检测用户代码中出现的函数名 → 判断模板类型
-2. 调用 LLM 推断用户函数需要哪些数据列
-3. 调用 `_build_factor_code()` 用 `.replace()` 填充模板占位符
-4. 生成的完整 `.code.py` 写入 workspace
-
-### 模板内部架构
-
-每个模板生成的 `.code.py` 包含：
-
-- **列过滤**：运行时用 `inspect.getsource()` + 正则自动检测用户函数用到的列，只加载需要的列（减少 60%-80% 内存）
-- **并行计算**：`ProcessPoolExecutor`（fork）+ 全局变量 `_WDATA`（COW 共享），避免序列化开销
-- **Checkpoint**：每 chunk 保存 `checkpoints/chk_*.parquet`，支持断点续跑，产出后自动清理
-- **输出**：pivot 为 Date × Code 宽表，保存为 `result.parquet`
-
-## CLI 命令
-
-| 命令 | 说明 |
-|------|------|
-| `start` | 全流程：处理未完成的研报 → 网站因子 → 全量补缺 → 等待完成 |
-| `run` | 同上，无强制后端 |
-
-### start 命令参数
+### smbclient 连不上
 
 ```bash
-start                          # 处理 papers/inbox/ 中所有未完成的 PDF
-start -f path/to/paper.pdf     # 处理单个 PDF
-start --test-only              # 只跑测试，不跑全量
-start --max-factors 10         # 每篇研报最多提取 10 个因子
+# 检查连通性
+ping 192.168.1.13
+smbclient -L //192.168.1.13 -U pc
+# 如果端口 445 被屏蔽，检查 VPN / 防火墙
 ```
 
-### start 的执行顺序
-
-1. **PDF 处理**：扫描 `papers/inbox/`，对每个未完成的 PDF：
-   - LLM 提取因子定义 → CoSTEER 生成代码 → 300 stocks 测试
-   - 测试通过 → 导出到 `literature_reports/` → 提交全量流水线
-2. **网站处理**：读取 `papers/website/sources.json`，对每个未处理的 URL：
-   - 抓取内容 → LLM 提取因子 → 相同测试流程
-3. **全量补缺**：扫描 `literature_reports/` 中缺少全量结果的因子，提交后台计算
-4. **等待完成**：阻塞直到所有后台全量任务完成
-
-## 全量流水线
-
-`FactorFullPipelineExecutor`（`factor_full_pipeline.py`）在后台串行执行：
-
-1. **类型检测**：扫描 `.code.py` 中的函数名确定因子类型
-2. **全量计算**：复制 `.code.py` → 设置 `FACTOR_DATA_DIR` → 子进程执行
-3. **后处理**：读取 `result.parquet` → IC/IR 分析 → 分位数图 → Barra 暴露分析 → 写入 `meta.json`
-4. **LLM 审查**：对比原始研报摘录检查代码实现，IC 太低或 Barra 偏离过大时触发重写
-5. **远程同步**：通过 SMB 同步到 `192.168.1.13` 的 `E:\paper_factors\`
-
-## 关键配置
-
-### 数据路径（config.py）
-
-```python
-data_folder = "git_ignore_folder/factor_implementation_source_data"       # 全量（5435 stocks）
-data_folder_debug = "git_ignore_folder/factor_implementation_source_data_1000"  # 测试（300 stocks！）
-```
-
-环境变量 `FACTOR_DATA_DIR` 可覆盖数据路径。
-
-### N_WORKERS 默认值
-
-| 因子类型 | 默认值 | 说明 |
-|---------|--------|------|
-| 日线单股 | `os.cpu_count() or 16` | CPU 密集型 |
-| 分钟 | 16 | 已验证 189 天回看 × 16 核稳定 |
-| 截面 | 4 | 防 OOM（每 chunk 加载所有股票） |
-| 分钟截面 | 16 | 已验证稳定 |
-
-环境变量 `FACTOR_N_WORKERS` 可覆盖。
-
-### 执行后端
-
-当前统一使用 `local`（直接子进程执行）。Docker 已废弃（WSL2 bind mount 同步有问题）。
-
-## 产出物
-
-每个因子在全量运行后产出（以 `daily_momentum` 为例）：
-
-```
-文献因子_全量/温和收益的动量与极端收益的反转效应/daily_momentum/
-├── result.parquet       # 因子值宽表（Date × Code）
-├── daily_momentum.code.py  # 完整的自包含运行代码
-├── ic_series.png        # IC 序列图
-├── decile_plot.png      # 分位数组合收益图
-├── barra_exposure.png   # Barra 风格暴露分析
-└── meta.json            # 评估指标汇总
-```
-
-## 远程同步
-
-- 目标：`pc@192.168.1.13` / `E:\paper_factors\`
-- 方式：`sshpass` + `subprocess.Popen` 自动挂载 sshfs
-- 依赖：`conda install -c conda-forge sshpass`
-- 脚本：`scripts/sync_utils.py`
-
-## 环境要求
-
-- Python 3.10+
-- 操作系统：Linux（WSL2 可用）
-- 内存：至少 32GB（全量分钟因子需要 ~6.6GB）
-- JQData 账号（用于获取指数成分股等数据）
-
-## 一键运行全量因子
-
-只需要两步：
+### 测试数据没有被同步
 
 ```bash
-# 1. 装依赖
-pip install -r requirements.txt
-
-# 2. 一键跑（自动挂载远程 E 盘 + 扫描 + 全量计算 + 出图 + Barra）
-python scripts/run_all_pending_full.py
+python3 scripts/sync_data.py --full  # 强制全量同步
 ```
 
-脚本会自动：
-1. 挂载 `//192.168.1.13/E` 到 `/mnt/remote_e`（需同局域网）
-2. 设置 `FACTOR_DATA_DIR` 指向远程数据
-3. 扫描 `文献因子_全量/` 下所有有 `.code.py` 但无 `.parquet` 的因子
-4. 逐个执行全量计算 → 评估 IC/IR → 分位数图 → Barra 分析 → 写入 meta.json
-5. 完成后输出统计
-
-不支持远程 E 盘？用 `--no-mount` 后手动设 `FACTOR_DATA_DIR`：
+### 全量因子没有部署到远程
 
 ```bash
-export FACTOR_DATA_DIR=/你的本地数据路径
-python scripts/run_all_pending_full.py --no-mount
+# 先确保本地有测试通过
+python scripts/claude_factor_helper.py deploy-to-full --code literature_reports/<报告>/<因子>/<因子>.code.py
+# 然后同步到远程
+python scripts/claude_factor_helper.py sync-full --report "<报告名>"
 ```
 
-其他选项：
+### /factor 运行一半断了
 
-```bash
-python scripts/run_all_pending_full.py --dry-run      # 只列出待运行因子
-python scripts/run_all_pending_full.py --report "报告名"  # 只跑某份报告
-```
-
-```bash
-# 安装
-git clone <repo>
-cd paper-factor
-pip install -e .
-
-# 配置
-cp .env.example .env
-# 编辑 .env 填入 LLM API keys 和 JQData 账号
-
-# 放入研报
-cp some_paper.pdf papers/inbox/
-
-# 运行
-start
-```
-
-## 关键设计决策
-
-- **`.code.py` 即全量代码**：测试阶段生成的 `.code.py` 已包含完整模板，全量时原样复制、只改数据路径
-- **fork COW 共享内存**：分钟因子用 `ProcessPoolExecutor(fork)`，主进程加载数据后子进程通过 Copy-On-Write 共享，避免 pickle 序列化
-- **按需列加载**：运行时通过 AST 分析用户函数用到的列，只加载需要的 parquet 列，分钟数据从 ~30GB 降到 ~6.6GB
-- **Checkpoint 断点续跑**：每 chunk 保存 checkpoint，崩溃后自动从最大 checkpoint 继续
+重新运行 `/factor`。`scan-pending` 会跳过已标记完成的内容，只处理未完成的。

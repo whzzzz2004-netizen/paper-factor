@@ -249,9 +249,13 @@ def _detect_data_dir() -> Path:
     candidates = [
         os.environ.get("FACTOR_DATA_DIR", ""),
         os.environ.get("RDAGENT_FACTOR_DATA_DIR", ""),
-        "/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data",
+        # _1000 测试数据优先（300只股票，速度快）
         str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data_1000"),
+        # 远程全量数据（CIFS 挂载）
+        "/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data",
+        # 本地全量数据
         str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"),
+        # Windows 路径
         "E:\\_paper_factor_unified\\factor_implementation_source_data",
         "Z:\\_paper_factor_unified\\factor_implementation_source_data",
         "\\\\192.168.1.13\\E\\_paper_factor_unified\\factor_implementation_source_data",
@@ -322,6 +326,9 @@ def cmd_extract_pdf(args):
 def cmd_extract_website(args):
     """Fetch URL content, output as JSON (no LLM). Claude does the extraction."""
 
+    import warnings as _warnings
+    _warnings.filterwarnings("ignore", category=UserWarning, module="requests")
+
     def _is_content_garbled(text: str) -> bool:
         if len(text) < 100:
             return False
@@ -331,7 +338,7 @@ def cmd_extract_website(args):
             return True
         return cjk_chars / total_printable < 0.05
 
-    def _fetch_content(url: str, timeout: int = 30):
+    def _fetch_content(url: str, timeout: int = 30, retries: int = 2):
         import requests as _req
         from bs4 import BeautifulSoup as _BS
         headers = {
@@ -339,34 +346,42 @@ def cmd_extract_website(args):
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         }
-        try:
-            resp = _req.get(url, headers=headers, timeout=timeout)
-            resp.raise_for_status()
+        last_error = None
+        for attempt in range(1 + retries):
+            if attempt > 0:
+                import time as _time
+                _time.sleep(1)
             try:
-                resp.encoding = resp.apparent_encoding or "utf-8"
-            except Exception:
-                resp.encoding = "utf-8"
-            soup = _BS(resp.text, "html.parser")
-            for tag in soup(["script", "style", "nav", "footer", "header", "aside", "iframe"]):
-                tag.decompose()
-            title_tag = soup.find("title")
-            page_title = title_tag.get_text(strip=True) if title_tag else ""
-            for selector in ["article", "main", ".article", ".content", ".post-content", ".rich_media_content"]:
-                content_div = soup.select_one(selector)
-                if content_div:
-                    text = content_div.get_text(separator="\n", strip=True)
-                    break
-            else:
-                text = soup.get_text(separator="\n", strip=True)
-            lines = [l.strip() for l in text.split("\n") if len(l.strip()) > 10]
-            clean_text = "\n".join(lines[:500])
-            if _is_content_garbled(clean_text):
-                print(f"  ⚠️ 页面内容疑似乱码/加密（中文字符比例过低）", flush=True)
-                return page_title, ""
-            return page_title, f"标题: {page_title}\n\n来源: {url}\n\n正文:\n{clean_text}"
-        except Exception as e:
-            print(f"  ⚠️ 抓取/解析失败: {e}", flush=True)
-            return "", ""
+                resp = _req.get(url, headers=headers, timeout=timeout)
+                resp.raise_for_status()
+                try:
+                    resp.encoding = resp.apparent_encoding or "utf-8"
+                except Exception:
+                    resp.encoding = "utf-8"
+                soup = _BS(resp.text, "html.parser")
+                for tag in soup(["script", "style", "nav", "footer", "header", "aside", "iframe"]):
+                    tag.decompose()
+                title_tag = soup.find("title")
+                page_title = title_tag.get_text(strip=True) if title_tag else ""
+                for selector in ["article", "main", ".article", ".content", ".post-content", ".rich_media_content"]:
+                    content_div = soup.select_one(selector)
+                    if content_div:
+                        text = content_div.get_text(separator="\n", strip=True)
+                        break
+                else:
+                    text = soup.get_text(separator="\n", strip=True)
+                lines = [l.strip() for l in text.split("\n") if len(l.strip()) > 10]
+                clean_text = "\n".join(lines[:500])
+                if _is_content_garbled(clean_text):
+                    print(f"  ⚠️ 页面内容疑似乱码/加密（中文字符比例过低）", flush=True)
+                    return page_title, ""
+                if len(clean_text) < 50 and attempt < retries:
+                    continue
+                return page_title, f"标题: {page_title}\n\n来源: {url}\n\n正文:\n{clean_text}"
+            except Exception as e:
+                last_error = e
+                print(f"  ⚠️ 抓取失败(第{attempt+1}次): {e}", flush=True)
+        return "", ""
 
     def _guess_source_from_url(url: str) -> str:
         from urllib.parse import urlparse
@@ -653,16 +668,43 @@ def _run_test_in_tmpdir(code_path: Path, timeout: int = 3600) -> dict:
                 f"确保输入列名正确、计算过程无除零或NaN传播、筛选条件合理。"
             )
     else:
-        result_info = {"result_exists": False}
+        # 模板把 parquet 写到 _CODE_DIR（即 code_path 的父目录），文件名由 stem 决定
+        _PARQUET_STEM = Path(code_path).stem.removesuffix('.code')
+        _alt_path = Path(code_path).parent / f"{_PARQUET_STEM}.parquet"
+        if _alt_path.exists():
+            import pandas as pd
+            df = pd.read_parquet(_alt_path)
+            non_null_ratio = round(float(df.notna().mean().mean()), 4)
+            result_info = {
+                "result_exists": True,
+                "result_shape": list(df.shape),
+                "date_range": [str(df.index.min()), str(df.index.max())] if len(df) > 0 else None,
+                "non_null_ratio": non_null_ratio,
+            }
+            # 复制到 tmpdir 方便后续 export
+            import shutil
+            shutil.copy2(_alt_path, result_path)
+            if non_null_ratio < _NON_NULL_THRESHOLD:
+                result_info["all_nan_warning"] = (
+                    f"因子输出几乎全为空值 (non_null_ratio={non_null_ratio:.4f} < {_NON_NULL_THRESHOLD})。"
+                    f"这通常意味着因子代码逻辑有问题（如数据列不存在、计算结果全为NaN、"
+                    f"或条件过滤过于严格导致无有效记录）。请仔细检查核心计算函数，"
+                    f"确保输入列名正确、计算过程无除零或NaN传播、筛选条件合理。"
+                )
+        else:
+            result_info = {"result_exists": False}
 
     success = returncode == 0 and result_info.get("result_exists", False)
     if success and result_info.get("all_nan_warning"):
         success = False
+        returncode = -2  # 标记 all-NaN 错误，让调用方明确知道不是正常失败
 
     return {
         "tmpdir": tmpdir,
         "success": success,
         "returncode": returncode,
+        "stdout": stdout or "",
+        "stderr": stderr or "",
         "stdout_tail": stdout[-2000:] if stdout else "",
         "stderr_tail": stderr[-2000:] if stderr else "",
         **result_info,
@@ -727,7 +769,9 @@ def cmd_test_and_export(args):
             "success": False,
             "detected_type": type_key,
             "detected_lookback": lookback,
+            "stderr_full": test_result.get("stderr", ""),
             "stderr_tail": test_result["stderr_tail"],
+            "stdout_full": test_result.get("stdout", ""),
             "stdout_tail": test_result["stdout_tail"],
             "returncode": test_result["returncode"],
             **{k: v for k, v in test_result.items() if k in extra_keys},
@@ -1468,6 +1512,17 @@ def cmd_retrieve_knowledge(args):
     return 0
 
 
+def cmd_find_similar(args):
+    """查找同类因子参考"""
+    cols = [c.strip() for c in args.cols.split(",")] if args.cols else None
+    result = find_similar_factors(args.type, cols=cols, lookback=args.lookback, top_k=args.top_k)
+    if result:
+        print(result)
+    else:
+        print("无匹配的同类因子参考")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Subcommand: add-idea
 # ---------------------------------------------------------------------------
@@ -1595,6 +1650,13 @@ def main():
     p_rk.add_argument("--min-score", type=float, default=0.01, help="Minimum similarity score (default: 0.01)")
     p_rk.add_argument("--json", action="store_true", help="Output as JSON")
 
+    # find-similar
+    p_fs = sub.add_parser("find-similar", help="Find similar factors from factor memory")
+    p_fs.add_argument("--type", required=True, help="Factor type (daily, minute, cross_section, minute_cs)")
+    p_fs.add_argument("--cols", default=None, help="Comma-separated columns used")
+    p_fs.add_argument("--lookback", type=int, default=None, help="Lookback days")
+    p_fs.add_argument("--top-k", type=int, default=3, help="Number of results (default: 3)")
+
     # wait-full
     p_wait = sub.add_parser("wait-full", help="Wait for all submitted full pipeline tasks to complete")
 
@@ -1629,6 +1691,7 @@ def main():
         "add-idea": cmd_add_idea,
         "show-columns": cmd_show_columns,
         "retrieve-knowledge": cmd_retrieve_knowledge,
+        "find-similar": cmd_find_similar,
     }
     fn = cmd_map[args.command]
     return fn(args)

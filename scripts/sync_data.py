@@ -159,6 +159,7 @@ def _ensure_local_structure():
         "stock_data/minutes",
     ]:
         (DATA_DIR / sub).mkdir(parents=True, exist_ok=True)
+        (DATA_DIR_1000 / sub).mkdir(parents=True, exist_ok=True)
 
 
 def sync_daily_incremental(dry_run: bool = False) -> list[str]:
@@ -373,6 +374,54 @@ def sync_jhjj_hsl(dry_run: bool = False):
         old.to_parquet(stock_file)
 
     print(f"  ✅ jhjj_hsl 合并完成: {len(df)} 行", flush=True)
+    local_csv.unlink(missing_ok=True)
+
+
+def sync_shareholder_count(dry_run: bool = False):
+    """同步股东户数数据（shareholder_count.csv）"""
+    print("\n=== 股东户数同步 ===", flush=True)
+    if dry_run:
+        print("  [dry-run] 将下载 shareholder_count.csv", flush=True)
+        return
+
+    local_csv = TMP_DIR / "shareholder_count.csv"
+    _smb_download("shareholder_count.csv", local_csv)
+    df = pd.read_csv(local_csv)
+
+    # 检测新列
+    schema = _load_schema()
+    remote_cols = set(df.columns) - {"code", "date"}
+    schema_cols = set(schema["daily"]["columns"].keys())
+    new_cols = remote_cols - schema_cols
+    if new_cols:
+        print(f"  检测到新列: {new_cols}", flush=True)
+        for c in new_cols:
+            schema["daily"]["columns"][c] = {"description": c, "source": "shareholder_count.csv"}
+        _save_schema(schema)
+        update_factor_field_schema(new_cols, "shareholder_count.csv")
+        _new_cols_all["daily"].extend(sorted(new_cols))
+
+    # 逐股票合并
+    for stock_code in df["code"].unique():
+        stock_str = str(stock_code).zfill(6)
+        sub = df[df["code"] == stock_code].copy()
+        sub = sub.drop(columns=["code"])
+        if "date" in sub.columns:
+            sub = sub.set_index("date")
+        sub.index = pd.to_datetime(sub.index)
+
+        stock_file = DATA_DIR / "stock_data" / "daily" / f"{stock_str}.parquet"
+        if not stock_file.exists():
+            continue
+        old = pd.read_parquet(stock_file)
+        for col in sub.columns:
+            if col in old.columns:
+                old[col] = old[col].fillna(sub[col])
+            else:
+                old[col] = sub[col]
+        old.to_parquet(stock_file)
+
+    print(f"  ✅ 股东户数合并完成: {len(df)} 行, {df['code'].nunique()} 只股票", flush=True)
     local_csv.unlink(missing_ok=True)
 
 
@@ -597,6 +646,121 @@ def _rebuild_limit_up():
     print(f"  ✅ 涨停列表: {len(result)} 条, 日期 {result['datetime'].min().date()} ~ {result['datetime'].max().date()}", flush=True)
 
 
+def _ensure_test_subset(n_stocks=300, n_days=600):
+    """从全量数据中裁剪 300 只 × 600 天 的测试子集。
+
+    选股：按 stock code 排序后固定间隔抽样（可复现）。
+    选日期：每只股票保留最近 n_days 个交易日。
+    minute_by_date：只保留最近 n_days 个日期的文件。
+    """
+    import shutil
+    daily_dir = DATA_DIR / "stock_data" / "daily"
+    daily_1000 = DATA_DIR_1000 / "stock_data" / "daily"
+    if not daily_dir.exists():
+        return
+
+    # 确定 300 只股票的 code
+    all_stocks = sorted(daily_dir.glob("*.parquet"))
+    if len(all_stocks) <= n_stocks:
+        picks = all_stocks
+    else:
+        step = len(all_stocks) / n_stocks
+        picks = [all_stocks[int(i * step)] for i in range(n_stocks)]
+    pick_names = {p.stem for p in picks}
+
+    # 1. daily per-stock：裁剪到最近 n_days 天
+    n_copied = 0
+    for src in picks:
+        dst = daily_1000 / src.name
+        # 检查是否已有且最新日期一致
+        if dst.exists():
+            try:
+                existing_end = pd.read_parquet(dst, columns=[]).index[-1]  # 只读索引
+                full_end = pd.read_parquet(src, columns=[]).index[-1]
+                if existing_end >= full_end:
+                    continue
+            except Exception:
+                pass
+        df = pd.read_parquet(src)
+        if len(df) > n_days:
+            df = df.iloc[-n_days:]
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(dst)
+        n_copied += 1
+
+    # 清理多余的股票
+    for f in daily_1000.glob("*.parquet"):
+        if f.stem not in pick_names:
+            f.unlink(missing_ok=True)
+
+    print(f"  ✅ 测试日线: {len(picks)} 只 × {n_days} 天 ({n_copied} 只更新)", flush=True)
+
+    # 2. minute per-stock（同上）
+    min_dir = DATA_DIR / "stock_data" / "minute"
+    min_1000 = DATA_DIR_1000 / "stock_data" / "minute"
+    if min_dir.exists():
+        n_min = 0
+        for src in picks:
+            src_min = min_dir / src.name
+            if not src_min.exists():
+                continue
+            dst = min_1000 / src.name
+            if dst.exists():
+                try:
+                    existing_end = pd.read_parquet(dst, columns=[]).index[-1]
+                    full_end = pd.read_parquet(src_min, columns=[]).index[-1]
+                    if existing_end >= full_end:
+                        continue
+                except Exception:
+                    pass
+            df = pd.read_parquet(src_min)
+            # 分钟数据按日期裁剪：保留最近 n_days 个交易日
+            unique_dates = sorted(set(df.index.date))
+            if len(unique_dates) > n_days:
+                cutoff = unique_dates[-n_days]
+                df = df[df.index.date >= cutoff]
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            df.to_parquet(dst)
+            n_min += 1
+        print(f"  ✅ 测试分钟: {n_min} 只更新", flush=True)
+
+    # 3. minute_by_date：保留最近 n_days 天的文件
+    mbd_dir = DATA_DIR / "stock_data" / "minute_by_date"
+    mbd_1000 = DATA_DIR_1000 / "stock_data" / "minute_by_date"
+    if mbd_dir.exists():
+        mbd_1000.mkdir(parents=True, exist_ok=True)
+        all_mbd = sorted(mbd_dir.glob("*.parquet"))
+        keep_mbd = set()
+        if all_mbd:
+            # 从文件名解析日期（YYYY-MM-DD.parquet）或从文件内容解析
+            dated = []
+            for f in all_mbd:
+                try:
+                    dt = pd.Timestamp(f.stem)
+                    dated.append((dt, f))
+                except Exception:
+                    dated.append((pd.Timestamp.min, f))
+            dated.sort()
+            keep_mbd = {f.name for _, f in dated[-n_days:]}
+        for f in all_mbd:
+            dst = mbd_1000 / f.name
+            if f.name in keep_mbd and not dst.exists():
+                shutil.copy2(f, dst)
+            elif f.name not in keep_mbd and dst.exists():
+                dst.unlink()
+        print(f"  ✅ 测试 minute_by_date: 保留 {len(keep_mbd)} 天", flush=True)
+
+    # 4. 元数据文件
+    for fname in ("trade_dates.json", "stock_list.json"):
+        for src_dir in (daily_dir, daily_dir.parent):
+            src = src_dir / fname
+            if src.exists():
+                dst = daily_1000.parent / fname
+                if not dst.exists() or src.stat().st_mtime > dst.stat().st_mtime:
+                    shutil.copy2(src, dst)
+    print(f"  ✅ 测试数据目录已就绪 ({DATA_DIR_1000})", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="增量数据同步工具")
     parser.add_argument("--full", action="store_true", help="强制全量同步")
@@ -654,6 +818,12 @@ def main():
             if "jhjj_hsl" not in sample_cols or args.full:
                 sync_jhjj_hsl(dry_run=args.dry_run)
 
+        # 4.5 股东户数（如果本地没有该列）
+        if sample_stock:
+            sample_cols = set(pq.read_schema(sample_stock[0]).names)
+            if "total_holders" not in sample_cols or args.full:
+                sync_shareholder_count(dry_run=args.dry_run)
+
         # 5. 分钟线增量
         sync_minute_incremental()
 
@@ -669,6 +839,9 @@ def main():
 
         # 8. 从日线数据重新生成涨停列表 (limit_up_daily.parquet)
         _rebuild_limit_up()
+
+        # 9. 从全量裁剪 300 只 × 600 天 测试子集
+        _ensure_test_subset()
 
         print(f"\n✅ 全部完成, {time.time()-t0:.0f}s", flush=True)
 

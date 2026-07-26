@@ -331,7 +331,7 @@ if __name__ == '__main__':
         print(f"计算因子 (n_jobs={N_JOBS}), {len(STOCK_LIST)} stocks...", flush=True)
         all_records = []
         _total = len(STOCK_LIST)
-        for _idx, stock_results in enumerate(Parallel(n_jobs=N_JOBS, backend="loky")(
+        for _idx, stock_results in enumerate(Parallel(n_jobs=N_JOBS, backend="threading")(
             delayed(_compute_stock)(s, _LOAD_COLS) for s in STOCK_LIST
         )):
             all_records.extend(stock_results)
@@ -1033,7 +1033,7 @@ if __name__ == '__main__':
 import numpy as np
 import sys, json, os, time
 from pathlib import Path
-from joblib import Parallel, delayed
+from concurrent.futures import ProcessPoolExecutor as _PPE, ThreadPoolExecutor as _TPE, as_completed as _as_completed
 import gc as _gc
 
 _D = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or "")
@@ -1053,72 +1053,13 @@ if not _D or not (_D/"stock_data"/"minute_by_date").exists():
                             _D = Path(".")
 DATA_DIR = _D
 MINUTE_BY_DATE_DIR = DATA_DIR / "stock_data" / "minute_by_date"
+MINUTE_DIR = DATA_DIR / "stock_data" / "minute"
 STOCK_LIST = json.load(open(MINUTE_BY_DATE_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(MINUTE_BY_DATE_DIR / "trade_dates.json"))
 LOOKBACK_DAYS = max(1, {lookback_days})  # 分钟线至少1天
 _CODE_DIR = Path(__file__).parent
 
-# 并行控制：threading 后端共享进程内存，默认4线程，环境变量FACTOR_N_WORKERS覆盖
 N_WORKERS = int(os.environ.get("FACTOR_N_WORKERS", "4"))
-
-def load_day(td):
-    return pd.read_parquet(MINUTE_BY_DATE_DIR / f"{{td}}.parquet", columns=_LOAD_COLS)
-
-# 行业分类数据（申万一级行业）：INDUSTRY_DICT[股票代码] = 行业名
-_DAILY_DATA_DIR = DATA_DIR / "stock_data" / "daily"
-_INDUSTRY_FILE = _DAILY_DATA_DIR / "industry.json"
-INDUSTRY_DICT = json.load(open(_INDUSTRY_FILE, encoding="utf-8")) if _INDUSTRY_FILE.exists() else {{}}
-
-def get_jq_data(symbol, data_type='price', start_date='2018-01-01', end_date='2026-05-15'):
-    \"\"\"通用聚宽数据获取函数。优先读本地缓存，没有再通过聚宽在线下载。
-    本地数据中已有的字段（如日频价量、基本面等）直接走本地，不会调用聚宽。
-    用法:
-      idx = get_jq_data('000300.XSHG', 'price')  # 指数行情
-      stocks = get_jq_data('000905.XSHG', 'index_components')  # 中证500成分股列表
-    data_type 支持: 'price'(行情), 'index_components'(指数成分股)
-    \"\"\"
-    import hashlib as _hashlib
-    _cache_key = f"jq_{{data_type}}_{{_hashlib.md5(symbol.encode()).hexdigest()[:8]}}"
-    _cache_path = _DAILY_DATA_DIR / f"{{_cache_key}}.parquet"
-    if _cache_path.exists():
-        return pd.read_parquet(_cache_path)
-    # 文件锁防止并发 JQData 连接数超限（账号最多3个连接）
-    import filelock as _fl
-    _lock_path = _DAILY_DATA_DIR / f"{{_cache_key}}.parquet.lock"
-    with _fl.FileLock(str(_lock_path), timeout=120):
-        if _cache_path.exists():
-            return pd.read_parquet(_cache_path)
-        _jq_user = os.environ.get("JQ_USER", "")
-        _jq_pass = os.environ.get("JQ_PASS", "")
-        if not _jq_user or not _jq_pass:
-            raise RuntimeError("JQ_USER/JQ_PASS 环境变量未设置，无法通过聚宽获取数据")
-        import jqdatasdk as jq
-        jq.auth(_jq_user, _jq_pass)
-        try:
-            if data_type == 'price':
-                from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _TErr
-                _tp = _TPE(max_workers=1)
-                _tf = _tp.submit(jq.get_price, symbol, start_date=start_date, end_date=end_date, frequency='daily', skip_paused=False, fq='pre')
-                try:
-                    df = _tf.result(timeout=180)
-                except _TErr:
-                    print(f"JQData get_price timeout (180s), symbol={symbol}", flush=True)
-                    df = pd.DataFrame()
-                finally:
-                    _tp.shutdown(wait=False)
-            elif data_type == 'index_components':
-                stocks = jq.get_index_stocks(symbol)
-                df = pd.DataFrame({{'stock': stocks}})
-            else:
-                raise ValueError(f"unsupported data_type: {{data_type}}")
-            if df is not None and not df.empty:
-                try:
-                    df.to_parquet(_cache_path)
-                except OSError:
-                    pass
-            return df
-        finally:
-            jq.logout()
 
 {user_code}
 
@@ -1126,8 +1067,8 @@ def get_jq_data(symbol, data_type='price', start_date='2018-01-01', end_date='20
 import re as _re, inspect as _inspect, pyarrow.parquet as _pq
 _LOAD_COLS = None
 try:
-    _SAMPLE_FILE = next(MINUTE_BY_DATE_DIR.glob("*.parquet"))
-    _AVAILABLE_COLS = set(_pq.read_schema(_SAMPLE_FILE).names) - {'datetime', 'instrument'}
+    _SAMPLE_FILE = next(MINUTE_DIR.glob("*.parquet"))
+    _AVAILABLE_COLS = set(_pq.read_schema(_SAMPLE_FILE).names) - {{'datetime'}}
     _USER_SOURCE = ""
     try:
         _USER_SOURCE += _inspect.getsource(calc_factor_minute_raw)
@@ -1137,70 +1078,71 @@ try:
         _USER_SOURCE += "\\n" + _inspect.getsource(cross_section_transform)
     except Exception:
         pass
-    # 提取代码中所有引号字符串，与可用列取交集
-    _ALL_QUOTED = set(_re.findall(r'''['\"](\w+)['\"]''', _USER_SOURCE))
+    _ALL_QUOTED = set(_re.findall(r'''['\"](\\w+)['\"]''', _USER_SOURCE))
     _LOAD_COLS = sorted(_ALL_QUOTED & _AVAILABLE_COLS) if _ALL_QUOTED else None
     if not _LOAD_COLS:
         _LOAD_COLS = None
 except Exception:
     pass
-print(f"检测到因子使用的列: {_LOAD_COLS}", flush=True)
+print(f"检测到因子使用的列: {{_LOAD_COLS}}", flush=True)
 # ──
 
-# ── 内存自适应 stock group ──
-_N_COLS_LOADED = len(_LOAD_COLS) if (_LOAD_COLS is not None and len(_LOAD_COLS) > 0) else 10
-_MAX_WDATA_BYTES = 1.5e9
-_BYTES_PER_STOCK_DAY = 330 * 8 * 1.5 * _N_COLS_LOADED
-_DAYS_PER_LOAD = max(LOOKBACK_DAYS, 1)
-_MAX_STOCKS_PER_LOAD = max(1, int(_MAX_WDATA_BYTES / max(_BYTES_PER_STOCK_DAY * _DAYS_PER_LOAD, 1)))
-if _MAX_STOCKS_PER_LOAD < len(STOCK_LIST):
-    _N_GROUPS = (len(STOCK_LIST) + _MAX_STOCKS_PER_LOAD - 1) // _MAX_STOCKS_PER_LOAD
-    _N_GROUPS = max(1, int(os.environ.get("FACTOR_N_GROUPS", str(_N_GROUPS))))
-    _group_size = (len(STOCK_LIST) + _N_GROUPS - 1) // _N_GROUPS
-    _stock_subset_groups = [STOCK_LIST[i:i+_group_size] for i in range(0, len(STOCK_LIST), _group_size)]
-    _stock_subset_sets = [set(g) for g in _stock_subset_groups]
-    print(f"  内存保护: {_N_GROUPS} stock groups ({_group_size}只/组, "
-          f"{_DAYS_PER_LOAD}天/load, {_N_COLS_LOADED}列)", flush=True)
-else:
-    _stock_subset_groups = [None]  # None means load all stocks
-    _stock_subset_sets = [None]
-    _N_GROUPS = 1
+def _process_stock(stock_code):
+    # Process a single stock: load all data, compute raw values per day with rolling window
+    import pandas as pd, numpy as np
+    from pathlib import Path
+    from datetime import timedelta as _timedelta
 
-def _compute_day_raw(td, stock_subset=None):
-    \"\"\"加载一天（+lookback）的分钟数据，计算指定股票的原始值\"\"\"
-    if LOOKBACK_DAYS > 1:
-        idx = TRADE_DATES.index(td)
-        start_idx = max(0, idx - LOOKBACK_DAYS + 1)
-        lookback_dates = TRADE_DATES[start_idx:idx + 1]
-        if stock_subset is not None:
-            _stock_set = stock_subset
-            _parts = []
-            for _d in lookback_dates:
-                _df = load_day(_d)
-                _df = _df[_df.index.get_level_values('instrument').isin(_stock_set)]
-                _parts.append(_df)
-            day_all = pd.concat(_parts).sort_index()
-            del _parts
-        else:
-            day_all = pd.concat([load_day(d) for d in lookback_dates]).sort_index()
-    else:
-        day_all = load_day(td)
-        if stock_subset is not None:
-            day_all = day_all[day_all.index.get_level_values('instrument').isin(stock_subset)]
+    _f = MINUTE_DIR / f"{{stock_code}}.parquet"
+    if not _f.exists():
+        return stock_code, {{}}
+
+    _df = pd.read_parquet(_f, columns=_LOAD_COLS)
+    if _df.empty:
+        return stock_code, {{}}
+
+    _idx = _df.index
+    _all_dates = sorted(set(_idx.date))
+    _date_to_idx = {{d: i for i, d in enumerate(_all_dates)}}
+
+    # 预计算每日期 boundary（searchsorted），每 stock 一次 O(N)
+    _date_start = {{}}
+    _date_end = {{}}
+    for _d in _all_dates:
+        _ts_start = pd.Timestamp(_d)
+        _ts_end = _ts_start + _timedelta(days=1)
+        _date_start[_d] = np.searchsorted(_idx, _ts_start)
+        _date_end[_d] = np.searchsorted(_idx, _ts_end)
+
     results = {{}}
-    for stock, sub in day_all.groupby(level="instrument"):
-        sub = sub.droplevel("instrument")
-        if sub.empty:
+    for _td_str in TRADE_DATES:
+        _td_date = pd.Timestamp(_td_str).date()
+        if _td_date not in _date_to_idx:
             continue
-        r = calc_factor_minute_raw(sub, stock)
-        if r:
-            results[str(stock)] = r
-    del day_all
+
+        _di = _date_to_idx[_td_date]
+        _start_di = max(0, _di - LOOKBACK_DAYS + 1)
+        _window_dates = _all_dates[_start_di:_di + 1]
+
+        # 用预计算 boundary 切片，O(1) per date
+        _row_start = _date_start[_window_dates[0]]
+        _row_end = _date_end[_window_dates[-1]]
+        _window_df = _df.iloc[_row_start:_row_end]
+
+        if _window_df.empty:
+            continue
+
+        _val = calc_factor_minute_raw(_window_df, stock_code)
+        if _val:
+            results[_td_str] = _val
+
+    del _df
     _gc.collect()
-    return str(td), results
+    return stock_code, results
+
 
 def _process_chunk(chunk, fname):
-    \"\"\"每个 worker 独立处理一段日期的截面变换\"\"\"
+    # Each worker processes a chunk of dates for cross-section transform
     records = []
     for td, stock_raw_dict in chunk:
         all_values = {{s: d.get(fname, np.nan) for s, d in stock_raw_dict.items()}}
@@ -1212,110 +1154,107 @@ def _process_chunk(chunk, fname):
                 records.append({{"datetime": td, "instrument": stock, fname: val}})
     return records
 
-def _merge_group_results(group_results_list, factor_name):
-    \"\"\"合并多个stock group的结果为单个 DataFrame\"\"\"
-    _parts = []
-    for _gr in group_results_list:
-        if _gr is not None and not _gr.empty:
-            _parts.append(_gr)
-    if _parts:
-        return pd.concat(_parts, ignore_index=True)
-    return pd.DataFrame()
 
 if __name__ == '__main__':
     try:
         _t0_main = time.time()
 
-        # 按 stock group 处理，每个 group 独立跑完整流程
-        _all_group_results = []
-        for _g_idx in range(_N_GROUPS):
-            _g_stock_subset = _stock_subset_groups[_g_idx]
-            _g_t0 = time.time()
-            _g_tag = f"[g{_g_idx+1}/{_N_GROUPS}]" if _N_GROUPS > 1 else ""
-            print(f"{_g_tag} 开始处理 stock group...", flush=True)
+        # ═══════════════════════════════════════════════
+        # Phase 1: 并行处理所有股票（ProcessPoolExecutor）
+        # 每个 worker 独立加载 parquet，无 fork 兼容问题
+        # ═══════════════════════════════════════════════
+        print(f"Phase 1: 并行处理 {{len(STOCK_LIST)}} 只股票 ({{N_WORKERS}} workers)...", flush=True)
 
-            # 第一步：按天并行计算原始值
-            raw_day_results = {{}}
-            _progress_interval = max(1, len(TRADE_DATES) // 20)
-            for _day_idx, (day_td, day_values) in enumerate(
-                Parallel(n_jobs=N_WORKERS, backend="threading")(
-                    delayed(_compute_day_raw)(td, _g_stock_subset) for td in TRADE_DATES
-                ),
-                1
-            ):
-                if day_values:
-                    raw_day_results[day_td] = day_values
-                if _day_idx % _progress_interval == 0 or _day_idx == len(TRADE_DATES):
-                    print(f"  {_g_tag} 第一步进度: {{_day_idx}}/{{len(TRADE_DATES)}} 天完成", flush=True)
+        import multiprocessing as _mp
+        _ctx = _mp.get_context('spawn')
 
-            if not raw_day_results:
-                print(f"{_g_tag} 无有效数据，跳过", flush=True)
-                _all_group_results.append(pd.DataFrame())
-                continue
+        _all_stock_results = {{}}
+        _completed = 0
+        _progress_interval = max(1, len(STOCK_LIST) // 20)
 
-            # 确定因子名（取第一个非空结果的首个 key）
-            _first_day = next(iter(raw_day_results.values()))
-            _first_stock = next(iter(_first_day))
-            factor_name = list(_first_day[_first_stock].keys())[0]
+        with _PPE(max_workers=N_WORKERS, mp_context=_ctx) as _pool:
+            _futures = {{_pool.submit(_process_stock, s): s for s in STOCK_LIST}}
+            for _future in _as_completed(_futures):
+                _stock, _results = _future.result()
+                if _results:
+                    _all_stock_results[_stock] = _results
+                _completed += 1
+                if _completed % _progress_interval == 0 or _completed == len(STOCK_LIST):
+                    print(f"  Phase 1: {{_completed}}/{{len(STOCK_LIST)}} 股票完成 "
+                          f"({{time.time()-_t0_main:.0f}}s)", flush=True)
 
-            # 第二步：按天做截面处理（并行）
-            all_dates = list(raw_day_results.items())
-            N_CS_JOBS = min(N_WORKERS, len(all_dates))
-            def _chunkify(lst, n):
-                k, m = divmod(len(lst), n)
-                return [lst[i*k+min(i,m):(i+1)*k+min(i+1,m)] for i in range(n)]
-            td_chunks = _chunkify(all_dates, N_CS_JOBS)
-            all_records = []
-            print(f"  {_g_tag} 第二步截面变换 ({{N_CS_JOBS}} workers)...", flush=True)
-            for _chunk_idx, chunk_records in enumerate(
-                Parallel(n_jobs=N_CS_JOBS, backend="threading")(
-                    delayed(_process_chunk)(chunk, factor_name) for chunk in td_chunks
-                ),
-                1
-            ):
-                all_records.extend(chunk_records)
-                print(f"  {_g_tag} 第二步进度: {{_chunk_idx}}/{{N_CS_JOBS}} chunks 完成", flush=True)
-
-            long_df = pd.DataFrame(all_records)
-            long_df["datetime"] = pd.to_datetime(long_df["datetime"])
-            _g_wide = long_df.pivot(index="datetime", columns="instrument", values=factor_name)
-            _g_wide = _g_wide.sort_index().sort_index(axis=1)
-            _g_wide = _g_wide.replace([np.inf, -np.inf], np.nan)
-            _g_wide.attrs["factor_name"] = factor_name
-            _all_group_results.append(_g_wide)
-            _g_elapsed = time.time() - _g_t0
-            print(f"  {_g_tag} group完成: {{_g_wide.shape[0]}}天 x {{_g_wide.shape[1]}}只, "
-                  f"{{_g_elapsed:.0f}}s", flush=True)
-
-        # 合并所有 group 结果
-        _result_parts = [g for g in _all_group_results if g is not None and not g.empty]
-        if not _result_parts:
+        if not _all_stock_results:
             print("无有效数据，退出")
             sys.exit(0)
-        wide = pd.concat(_result_parts, axis=1)
-        # 去重列（如果 group 间有重叠）
-        wide = wide.loc[:, ~wide.columns.duplicated(keep='first')]
-        wide = wide.sort_index().sort_index(axis=1)
-        wide.index.name = "trade_date"
-        wide.columns.name = "stock_code"
+
+        print(f"Phase 1 完成: {{len(_all_stock_results)}} 只股票有数据, "
+              f"{{time.time()-_t0_main:.0f}}s", flush=True)
+
+        # ═══════════════════════════════════════════════
+        # Phase 2: 重组为按天数据
+        # ═══════════════════════════════════════════════
+        print("Phase 2: 重组为按天数据...", flush=True)
+        _raw_day_results = {{}}
+        for _stock, _s_results in _all_stock_results.items():
+            for _td, _val in _s_results.items():
+                if _td not in _raw_day_results:
+                    _raw_day_results[_td] = {{}}
+                _raw_day_results[_td][_stock] = _val
+
+        # 释放股票结果内存
+        del _all_stock_results
+        _gc.collect()
+
+        # 确定因子名
+        _first_day = next(iter(_raw_day_results.values()))
+        _first_stock = next(iter(_first_day))
+        factor_name = list(_first_day[_first_stock].keys())[0]
+
+        # ═══════════════════════════════════════════════
+        # Phase 3: 截面变换（ThreadPoolExecutor 并行）
+        # ═══════════════════════════════════════════════
+        _all_dates = list(_raw_day_results.items())
+        N_CS_JOBS = min(N_WORKERS, len(_all_dates))
+        def _chunkify(lst, n):
+            k, m = divmod(len(lst), n)
+            return [lst[i*k+min(i,m):(i+1)*k+min(i+1,m)] for i in range(n)]
+        _td_chunks = _chunkify(_all_dates, N_CS_JOBS)
+        _all_records = []
+        print(f"Phase 3: 截面变换 ({{N_CS_JOBS}} workers)...", flush=True)
+        with _TPE(max_workers=N_CS_JOBS) as _cs_pool:
+            _futures = {{_cs_pool.submit(_process_chunk, chunk, factor_name): i for i, chunk in enumerate(_td_chunks)}}
+            for _future in _as_completed(_futures):
+                _chunk_idx = _futures[_future]
+                _chunk_records = _future.result()
+                _all_records.extend(_chunk_records)
+                print(f"  Phase 3: {{_chunk_idx+1}}/{{N_CS_JOBS}} chunks 完成", flush=True)
+
+        del _raw_day_results
+        _gc.collect()
+
+        long_df = pd.DataFrame(_all_records)
+        long_df["datetime"] = pd.to_datetime(long_df["datetime"])
+        _g_wide = long_df.pivot(index="datetime", columns="instrument", values=factor_name)
+        _g_wide = _g_wide.sort_index().sort_index(axis=1)
+        _g_wide = _g_wide.replace([np.inf, -np.inf], np.nan)
+        _g_wide.attrs["factor_name"] = factor_name
         # 涨停剔除(minute_cs)
         _LU_PATH = DATA_DIR / "limit_up_daily.parquet"
         if _LU_PATH.exists():
             _lu_df = pd.read_parquet(_LU_PATH, columns=['datetime', 'instrument'])
-            wide = wide.replace([np.inf, -np.inf], np.nan)
+            _g_wide = _g_wide.replace([np.inf, -np.inf], np.nan)
             for _lu_dt, _lu_grp in _lu_df.groupby(_lu_df['datetime'].dt.normalize()):
-                if _lu_dt in wide.index:
-                    _c = [str(x) for x in _lu_grp['instrument'] if str(x) in wide.columns]
+                if _lu_dt in _g_wide.index:
+                    _c = [str(x) for x in _lu_grp['instrument'] if str(x) in _g_wide.columns]
                     if _c:
-                        wide.loc[_lu_dt, _c] = np.nan
+                        _g_wide.loc[_lu_dt, _c] = np.nan
         else:
-            wide = wide.replace([np.inf, -np.inf], np.nan)
+            _g_wide = _g_wide.replace([np.inf, -np.inf], np.nan)
         # /涨停剔除
-        # 统一格式：index→string日期, columns→int股票代码
-        wide.index = wide.index.strftime('%Y-%m-%d')
-        wide.columns = wide.columns.astype(int)
-        wide.to_parquet(_CODE_DIR / f"{Path(__file__).stem.removesuffix('.code')}.parquet")
-        print(f"完成！共 {{wide.shape[0]}} 天 x {{wide.shape[1]}} 只股票, "
+        _g_wide.index = _g_wide.index.strftime('%Y-%m-%d')
+        _g_wide.columns = _g_wide.columns.astype(int)
+        _g_wide.to_parquet(_CODE_DIR / f"{{Path(__file__).stem.removesuffix('.code')}}.parquet")
+        print(f"完成！共 {{_g_wide.shape[0]}} 天 x {{_g_wide.shape[1]}} 只股票, "
               f"{{time.time()-_t0_main:.0f}}s", flush=True)
     except Exception:
         import traceback

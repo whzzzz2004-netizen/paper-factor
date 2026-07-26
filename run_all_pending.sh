@@ -9,7 +9,7 @@ echo " 自动挂载远程E盘 → 扫描待运行因子 → 逐一计算"
 echo "============================================"
 echo ""
 
-python3 scripts/run_all_pending_full.py
+python3 scripts/run_all.py
 
 echo ""
 echo "按 Enter 退出..."
