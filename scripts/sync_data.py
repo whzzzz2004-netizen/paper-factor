@@ -156,7 +156,7 @@ def _ensure_local_structure():
     """确保本地目录结构完整"""
     for sub in [
         "stock_data/daily", "stock_data/minute_by_date",
-        "stock_data/minutes",
+        "stock_data/minute",
     ]:
         (DATA_DIR / sub).mkdir(parents=True, exist_ok=True)
         (DATA_DIR_1000 / sub).mkdir(parents=True, exist_ok=True)
@@ -481,6 +481,67 @@ def sync_minute_incremental(dry_run: bool = False) -> list[str]:
 
     print(f"  ✅ 完成: {len(new_dates)} 天, {len(all_stocks)} 只", flush=True)
     return new_dates
+
+
+def sync_minute_to_per_stock(new_dates: list[str]):
+    """将分钟线 per-date parquet 转为 per-stock parquet（增量），
+    供新模板 (ProcessPoolExecutor per-stock) 使用。
+    """
+    if not new_dates:
+        return
+
+    minute_dir = DATA_DIR / "stock_data" / "minute"
+    minute_by_date_dir = DATA_DIR / "stock_data" / "minute_by_date"
+    minute_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n=== 分钟线 per-date → per-stock 转换 ({len(new_dates)} 天) ===", flush=True)
+
+    from collections import defaultdict
+
+    # 第一遍：收集新数据，按股票分组
+    stock_data = defaultdict(list)
+    total_rows = 0
+    schema = None
+
+    for date_str in new_dates:
+        src = minute_by_date_dir / f"{date_str}.parquet"
+        if not src.exists():
+            continue
+        df = pd.read_parquet(src)
+        if schema is None:
+            schema = df.columns.tolist()
+        # 按 instrument 分组（index 是 MultiIndex: datetime, instrument）
+        for stock, sub in df.groupby(level="instrument"):
+            stock_code = str(stock).zfill(6)
+            sub = sub.droplevel("instrument")  # → DatetimeIndex
+            stock_data[stock_code].append(sub)
+        total_rows += len(df)
+
+    if not stock_data:
+        return
+
+    # 第二遍：写入 per-stock parquet
+    n_written = 0
+    for stock_code, parts in stock_data.items():
+        dst = minute_dir / f"{stock_code}.parquet"
+        new_data = pd.concat(parts).sort_index()
+        new_data = new_data[~new_data.index.duplicated(keep="last")]
+
+        if dst.exists():
+            existing = pd.read_parquet(dst)
+            combined = pd.concat([existing, new_data])
+            combined = combined[~combined.index.duplicated(keep="last")]
+            combined.sort_index(inplace=True)
+            combined.to_parquet(dst)
+        else:
+            new_data.to_parquet(dst)
+
+        n_written += 1
+        if n_written % 1000 == 0:
+            print(f"  进度: {n_written}/{len(stock_data)} 只股票", flush=True)
+
+    print(f"  ✅ 完成: {len(new_dates)} 天 → {len(stock_data)} 只股票, "
+          f"{total_rows} 行", flush=True)
 
 
 def update_prompt_files(schema: dict):
@@ -824,8 +885,9 @@ def main():
             if "total_holders" not in sample_cols or args.full:
                 sync_shareholder_count(dry_run=args.dry_run)
 
-        # 5. 分钟线增量
-        sync_minute_incremental()
+        # 5. 分钟线增量（per-date → per-stock）
+        new_minute_dates = sync_minute_incremental()
+        sync_minute_to_per_stock(new_minute_dates)
 
         # 6. 如果有新列 → 输出给 agent
         all_new = sorted(set(_new_cols_all["daily"] + _new_cols_all["minute"]))
