@@ -781,7 +781,8 @@ def cmd_test_and_export(args):
     # Success → export
     report_name = args.report
     factor_name = args.factor
-    factor_dir = LITERATURE_REPORTS_DIR / report_name / factor_name
+    reports_base = (LITERATURE_REPORTS_DIR / args.date) if args.date else LITERATURE_REPORTS_DIR
+    factor_dir = reports_base / report_name / factor_name
     factor_dir.mkdir(parents=True, exist_ok=True)
 
     dst_code = factor_dir / f"{factor_name}.code.py"
@@ -1046,10 +1047,11 @@ def cmd_deploy_to_full(args):
         return 1
     report_name = report_dir.name
 
-    # Target: 文献因子_全量/<report>/<factor>/
+    # Target: 文献因子_全量/[<date>/]<report>/<factor>/
     sys.path.insert(0, str(PROJECT_ROOT))
     from rdagent.app.qlib_rd_loop.factor_full_pipeline import FULL_OUTPUT_BASE
-    full_factor_dir = FULL_OUTPUT_BASE / report_name / factor_name
+    full_base = (FULL_OUTPUT_BASE / args.date) if args.date else FULL_OUTPUT_BASE
+    full_factor_dir = full_base / report_name / factor_name
     full_factor_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Copy .code.py, patch DATA_DIR
@@ -1119,6 +1121,7 @@ def cmd_sync_full(args):
 
     Only syncs .code.py, .meta.json, and .parquet files (skips checkpoints, logs, etc.).
     Supports --report and --factor for single-report sync, or --all for all.
+    Use --date to sync from a date subdirectory (e.g. --date 20260726).
     """
     sys.path.insert(0, str(PROJECT_ROOT))
     from rdagent.app.qlib_rd_loop.factor_full_pipeline import FULL_OUTPUT_BASE
@@ -1129,6 +1132,14 @@ def cmd_sync_full(args):
         return 1
 
     from scripts.sync_utils import REMOTE_BASE_FULL
+
+    # Determine base directories (with or without date subdir)
+    if args.date:
+        full_base = FULL_OUTPUT_BASE / args.date
+        remote_base = f"{REMOTE_BASE_FULL}\\{args.date}"
+    else:
+        full_base = FULL_OUTPUT_BASE
+        remote_base = REMOTE_BASE_FULL
 
     SYNC_EXTS = {'.code.py', '.meta.json', '.parquet'}
 
@@ -1148,15 +1159,15 @@ def cmd_sync_full(args):
         return n
 
     if args.all:
-        if not FULL_OUTPUT_BASE.exists():
-            print("ERROR: full output base not found", file=sys.stderr)
+        if not full_base.exists():
+            print(f"ERROR: full output base not found: {full_base}", file=sys.stderr)
             return 1
-        report_dirs = sorted(FULL_OUTPUT_BASE.iterdir())
+        report_dirs = sorted(full_base.iterdir())
         total_files = 0
         for report_dir in report_dirs:
             if not report_dir.is_dir():
                 continue
-            remote_report = f"{REMOTE_BASE_FULL}\\{report_dir.name}"
+            remote_report = f"{remote_base}\\{report_dir.name}"
             for factor_dir in sorted(report_dir.iterdir()):
                 if not factor_dir.is_dir():
                     continue
@@ -1165,7 +1176,7 @@ def cmd_sync_full(args):
                 total_files += n
         print(f"OK: synced {total_files} files from {len(report_dirs)} reports")
     elif args.report:
-        report_dir = FULL_OUTPUT_BASE / args.report
+        report_dir = full_base / args.report
         if not report_dir.exists():
             print(f"ERROR: report not found: {report_dir}", file=sys.stderr)
             return 1
@@ -1174,11 +1185,11 @@ def cmd_sync_full(args):
             if not factor_dir.exists():
                 print(f"ERROR: factor not found: {factor_dir}", file=sys.stderr)
                 return 1
-            remote_path = f"{REMOTE_BASE_FULL}\\{args.report}\\{args.factor}"
+            remote_path = f"{remote_base}\\{args.report}\\{args.factor}"
             n = _sync_factor_dir(factor_dir, remote_path)
             print(f"OK: synced {n} files for {args.report}/{args.factor}")
         else:
-            remote_path = f"{REMOTE_BASE_FULL}\\{args.report}"
+            remote_path = f"{remote_base}\\{args.report}"
             total = 0
             for factor_dir in sorted(report_dir.iterdir()):
                 if not factor_dir.is_dir():
@@ -1408,13 +1419,15 @@ def cmd_mark_done(args):
 # ---------------------------------------------------------------------------
 def cmd_save_extracted(args):
     """Save factor definitions JSON to extracted_reports/ (read from stdin)."""
-    extracted_dir = LITERATURE_REPORTS_DIR.parent / "extracted_reports"
-    extracted_dir.mkdir(parents=True, exist_ok=True)
+    extracted_base = LITERATURE_REPORTS_DIR.parent / "extracted_reports"
+    if args.date:
+        extracted_base = extracted_base / args.date
+    extracted_base.mkdir(parents=True, exist_ok=True)
     content = sys.stdin.read()
     if not content.strip():
         print("ERROR: no content on stdin", file=sys.stderr)
         return 1
-    path = extracted_dir / f"{args.name}.extracted.json"
+    path = extracted_base / f"{args.name}.extracted.json"
     path.write_text(content, encoding="utf-8")
     print(f"OK: {path}")
     return 0
@@ -1590,6 +1603,7 @@ def main():
     p_export.add_argument("--source-report-title", default=None, help="Source report title")
     p_export.add_argument("--source-report-path", default=None, help="Source report path")
     p_export.add_argument("--source-excerpt", default=None, help="Source excerpt text")
+    p_export.add_argument("--date", default=None, help="Date subdirectory (YYYYMMDD)")
 
     # test-and-export
     p_tae = sub.add_parser("test-and-export", help="Wrap + test + export in one shot (auto-detect type/lookback)")
@@ -1606,6 +1620,7 @@ def main():
     p_tae.add_argument("--source-report-path", default=None, help="Source report path (auto-fills source_report_path in meta)")
     p_tae.add_argument("--source-excerpt", default=None, help="Source excerpt text (auto-fills source_excerpt in meta)")
     p_tae.add_argument("--timeout", type=int, default=3600, help="Test timeout in seconds (default: 3600)")
+    p_tae.add_argument("--date", default=None, help="Date subdirectory (YYYYMMDD), e.g. --date 20260726")
 
     # trigger-full
     p_full = sub.add_parser("trigger-full", help="Trigger full-scale run via FullPipelineExecutor")
@@ -1634,6 +1649,7 @@ def main():
     # save-extracted
     p_se = sub.add_parser("save-extracted", help="Save factor definitions JSON to extracted_reports/ (read from stdin)")
     p_se.add_argument("--name", required=True, help="Report title (stem, e.g. '基于GRU的因子选股')")
+    p_se.add_argument("--date", default=None, help="Date subdirectory (YYYYMMDD)")
 
     # add-idea
     p_idea = sub.add_parser("add-idea", help="Add a factor idea (title optional; agent auto-generates if omitted)")
@@ -1662,14 +1678,16 @@ def main():
 
     # deploy-to-full
     p_deploy = sub.add_parser("deploy-to-full", help="Deploy tested factor to full-scale directory (copy code + patch DATA_DIR + inherit meta, no computation)")
-    p_deploy.add_argument("--code", required=True, help="Factor .code.py file (in literature_reports/<report>/<factor>/)")
+    p_deploy.add_argument("--code", required=True, help="Factor .code.py file (in literature_reports/<date>/<report>/<factor>/)")
     p_deploy.add_argument("--type", default=None, help="Factor type (daily, minute, cross_section, minute_cs, deep_learning)")
+    p_deploy.add_argument("--date", default=None, help="Date subdirectory (YYYYMMDD), e.g. --date 20260726")
 
     # sync-full
     p_sync = sub.add_parser("sync-full", help="Sync deployed factors from 文献因子_全量 to remote")
     p_sync.add_argument("--report", default=None, help="Report name (required unless --all)")
     p_sync.add_argument("--factor", default=None, help="Factor name (optional, syncs whole report if omitted)")
     p_sync.add_argument("--all", action="store_true", help="Sync all deployed factors")
+    p_sync.add_argument("--date", default=None, help="Date subdirectory (YYYYMMDD), e.g. --date 20260726")
 
     args = parser.parse_args()
 

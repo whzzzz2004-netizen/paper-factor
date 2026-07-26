@@ -17,6 +17,7 @@
   python scripts/run_all.py --workers 3            # 并行数
   python scripts/run_all.py --dry-run              # 只打印计划，不执行
   python scripts/run_all.py --skip-sync            # 跳过数据同步
+  python scripts/run_all.py --date 20260726        # 只扫描指定日期子目录
 """
 
 import argparse
@@ -486,6 +487,7 @@ def main():
     parser.add_argument("--skip-sync", action="store_true", help="跳过数据同步")
     parser.add_argument("--skip-mount", action="store_true", help="跳过挂载检查")
     parser.add_argument("--local", action="store_true", help="仅用本地数据，不尝试远程挂载，输出也写到本地目录")
+    parser.add_argument("--date", type=str, default=None, help="指定日期子目录 (YYYYMMDD)，如 --date 20260726")
     args = parser.parse_args()
 
     t_start = time.time()
@@ -503,6 +505,13 @@ def main():
         sync_data()
 
     # ── Step 3: 扫描因子 ──
+    if args.date:
+        dated_base = OUTPUT_BASE / args.date
+        if dated_base.exists():
+            OUTPUT_BASE = dated_base
+            print(f"📅 扫描日期子目录: {args.date}")
+        else:
+            print(f"⚠️ 日期子目录不存在: {dated_base}，回退到根目录")
     pending = find_pending_factors(args.report, args.force)
 
     if not pending:

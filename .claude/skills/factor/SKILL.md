@@ -4,7 +4,7 @@
 
 ## 用法
 
-- `/factor` — 扫描所有未处理内容，**全部并行提取 → 编码 → 测试 → 导出到 literature_reports**
+- `/factor` — 扫描所有未处理内容，**全部并行提取 → 编码 → 测试 → 导出到 literature_reports/YYYYMMDD/**
 - `/factor papers/inbox/某篇.pdf` — 处理单个 PDF
 - `/factor 一段因子描述` — 处理纯文本
 
@@ -102,6 +102,7 @@ prompt = f"""
 - 文件名: {{filename}}  (仅 paper)
 - 网站索引: {{index}}  (仅 website)
 - slug: {{slug}}
+- 运行日期: {DATE}  (YYYYMMDD，所有输出路径必须包含此日期子目录)
 
 ### 你的任务
 
@@ -133,8 +134,8 @@ prompt = f"""
 
 **数据可用性检查：** 定义因子前先运行 `python scripts/claude_factor_helper.py show-columns` 查看可用列。如果因子需要的数据在可用列中不存在（如期权数据、期货数据、Level2 订单簿、另类数据等），直接跳过该因子，不浪费时间去编码测试。**只有所需列都在可用列表中的因子才进入 Step C。**
 
-全部定义完成后，保存：
-  python scripts/claude_factor_helper.py save-extracted --name "{{报告标题}}" < 你的因子列表 JSON
+全部定义完成后，保存（需加 `--date` 写入日期子目录）：
+  python scripts/claude_factor_helper.py save-extracted --name "{{报告标题}}" --date {DATE} < 你的因子列表 JSON
 
 #### Step C: 逐个编码 + 测试（顺序执行）
 对 Step B 定义的每个因子，逐个执行。**关键：连续执行，不要在每步之间停顿思考。**
@@ -155,6 +156,7 @@ python scripts/claude_factor_helper.py retrieve-knowledge <因子描述/关键�
 ```bash
 # 写代码到 /tmp/factor_{{name}}.py
 # 然后立刻跑 test-and-export，不要停下来确认代码
+# 重要：必须加 --date {DATE} 把输出写入日期子目录 literature_reports/{DATE}/
 python scripts/claude_factor_helper.py test-and-export \
   --code /tmp/factor_{{name}}.py \
   --report "{{报告标题}}" --factor "{{name}}" \
@@ -162,7 +164,8 @@ python scripts/claude_factor_helper.py test-and-export \
   --description "{{description}}" --formulation "{{formulation}}" \
   --source-excerpt "{{source_excerpt}}" \
   --source-report-title "{{报告标题}}" \
-  --source-report-path "{{path if type == 'paper' else ''}}"
+  --source-report-path "{{path if type == 'paper' else ''}}" \
+  --date {DATE}
 ```
 
 **写代码规则：**
@@ -210,24 +213,27 @@ python scripts/claude_factor_helper.py test-and-export \
 
 ```bash
 python scripts/claude_factor_helper.py deploy-to-full \
-  --code literature_reports/<报告>/<因子>/<因子>.code.py
+  --code literature_reports/<报告>/<因子>/<因子>.code.py \
+  --date YYYYMMDD
 ```
 
+`--date` 参数指定日期子目录（如 `20260726`），部署到 `文献因子_全量/YYYYMMDD/<报告>/<因子>/`。
+
 这个命令自动完成：
-1. 复制 `.code.py` 到 `文献因子_全量/<报告>/<因子>/`，同时把 DATA_DIR 路径中的 `_1000` 去掉（测试数据→全量数据）
+1. 复制 `.code.py` 到 `文献因子_全量/[YYYYMMDD/]<报告>/<因子>/`，同时把 DATA_DIR 路径中的 `_1000` 去掉（测试数据→全量数据）
 2. 从测试目录继承 `meta.json`，标注 `pipeline_status: "deployed"`（未运行，仅部署）
 3. 输出部署结果 JSON
 
-然后同步到远程：
+然后同步到远程（`--date` 可选，指定日期子目录）：
 ```bash
 # 同步单个因子
-python scripts/claude_factor_helper.py sync-full --report "报告标题" --factor "因子名"
+python scripts/claude_factor_helper.py sync-full --report "报告标题" --factor "因子名" --date 20260726
 
 # 或同步整份报告的所有因子
-python scripts/claude_factor_helper.py sync-full --report "报告标题"
+python scripts/claude_factor_helper.py sync-full --report "报告标题" --date 20260726
 
 # 或同步所有已部署因子
-python scripts/claude_factor_helper.py sync-full --all
+python scripts/claude_factor_helper.py sync-full --all --date 20260726
 ```
 
 最后标记完成：
@@ -320,6 +326,21 @@ python scripts/claude_factor_helper.py retrieve-knowledge "涨停阈值 科创�
 python scripts/claude_factor_helper.py retrieve-knowledge "日线计算收益率"
 python scripts/claude_factor_helper.py retrieve-knowledge "分钟数据列名"
 ```
+
+## 日期子目录结构
+
+每次 `/factor` 运行会在以下目录中创建 `YYYYMMDD/` 日期子目录：
+
+```
+git_ignore_folder/factor_outputs/
+├── literature_reports/20260726/<report>/<factor>/
+│   ├── .code.py, .parquet, .meta.json
+├── extracted_reports/20260726/<report>.json
+└── 文献因子_全量/20260726/<report>/<factor>/
+    ├── .code.py (全量数据路径), meta.json (pipeline_status=deployed)
+```
+
+`run_all --date YYYYMMDD` 只扫描该日期子目录下的因子。`daily_update --date YYYYMMDD` 同理。
 
 ## lookback 转换
 

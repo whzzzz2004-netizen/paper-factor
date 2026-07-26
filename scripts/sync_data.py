@@ -774,7 +774,8 @@ def _ensure_test_subset(n_stocks=300, n_days=600):
 
     # 1. daily per-stock：裁剪到最近 n_days 天
     n_copied = 0
-    for src in picks:
+    n_total = len(picks)
+    for i, src in enumerate(picks):
         dst = daily_1000 / src.name
         # 检查是否已有且最新日期一致
         if dst.exists():
@@ -791,6 +792,8 @@ def _ensure_test_subset(n_stocks=300, n_days=600):
         dst.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(dst)
         n_copied += 1
+        if n_copied % 50 == 0:
+            print(f"   日线测试子集: {i}/{n_total} ({n_copied} 更新)", flush=True)
 
     # 清理多余的股票
     for f in daily_1000.glob("*.parquet"):
@@ -804,7 +807,8 @@ def _ensure_test_subset(n_stocks=300, n_days=600):
     min_1000 = DATA_DIR_1000 / "stock_data" / "minute"
     if min_dir.exists():
         n_min = 0
-        for src in picks:
+        n_total = len(picks)
+        for i, src in enumerate(picks):
             src_min = min_dir / src.name
             if not src_min.exists():
                 continue
@@ -814,6 +818,8 @@ def _ensure_test_subset(n_stocks=300, n_days=600):
                     existing_end = pd.read_parquet(dst, columns=[]).index[-1]
                     full_end = pd.read_parquet(src_min, columns=[]).index[-1]
                     if existing_end >= full_end:
+                        if n_min % 50 == 0 and i > 0:
+                            print(f"   分钟测试子集: {i}/{n_total} 检查 ({n_min} 更新)", flush=True)
                         continue
                 except Exception:
                     pass
@@ -826,6 +832,8 @@ def _ensure_test_subset(n_stocks=300, n_days=600):
             dst.parent.mkdir(parents=True, exist_ok=True)
             df.to_parquet(dst)
             n_min += 1
+            if n_min % 50 == 0:
+                print(f"   分钟测试子集: {i}/{n_total} ({n_min} 更新)", flush=True)
         print(f"  ✅ 测试分钟: {n_min} 只更新", flush=True)
 
     # 3. minute_by_date：保留最近 n_days 天的文件

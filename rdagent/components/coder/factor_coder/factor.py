@@ -338,6 +338,13 @@ if __name__ == '__main__':
             if (_idx + 1) % 500 == 0 or (_idx + 1) == _total:
                 print(f"  进度: {_idx+1}/{_total}", flush=True)
         long_df = pd.DataFrame(all_records)
+        if long_df.empty:
+            _debug = (f"all_records 为空! TRADE_DATES={len(TRADE_DATES)}条, "
+                      f"STOCK_LIST={len(STOCK_LIST)}只, "
+                      f"LOOKBACK_DAYS={LOOKBACK_DAYS}, "
+                      f"DATA_DIR={DATA_DIR}")
+            print(f"  ❌ {_debug}", flush=True)
+            raise RuntimeError(_debug)
         long_df["datetime"] = pd.to_datetime(long_df["datetime"])
         factor_name = [c for c in long_df.columns if c not in ("datetime", "instrument")][0]
         wide = long_df.pivot(index="datetime", columns="instrument", values=factor_name)
@@ -365,7 +372,7 @@ if __name__ == '__main__':
         import traceback
         traceback.print_exc()
     finally:
-        os._exit(0)
+        pass
 """
 
     # 分钟线框架代码模板（按日期并行，每个日期一个 parquet，MultiIndex(instrument, datetime)）
@@ -736,10 +743,7 @@ if __name__ == '__main__':
     except Exception as e:
         import traceback
         traceback.print_exc()
-        os._exit(1)
-    finally:
-        os._exit(0)
-"""
+        os._exit(1)"""
 
     def __init__(
         self,
@@ -756,6 +760,7 @@ import numpy as np
 import sys, json, os, time
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing as _mp
 
 _D = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or "")
 if not _D or not (_D/"stock_data"/"daily").exists():
@@ -844,7 +849,7 @@ def get_jq_data(symbol, data_type='price', start_date='2018-01-01', end_date='20
 
 {user_code}
 
-# ── 进程共享缓存（fork COW，子进程共享父进程预加载数据） ──
+# ── 进程缓存（spawn 模式下各进程独立加载） ──
 _WCACHE = {}
 _WPOS = {}
 _WVALID = None
@@ -853,7 +858,7 @@ _SD = None
 _LOAD_COLS = None
 
 def _init_shared():
-    \"\"\"初始化全局共享缓存（主进程执行一次，fork COW 共享给子进程）\"\"\"
+    \"\"\"初始化全局变量（主进程）\"\"\"
     global _WVALID, _WTDIDX, _SD, _LOAD_COLS
     _SD = STOCK_DATA_DIR
     _WVALID = STOCK_LIST
@@ -861,7 +866,7 @@ def _init_shared():
     print(f"  [主进程] 共享缓存就绪，{len(STOCK_LIST)}只股票按需加载", flush=True)
 
 def _init_worker():
-    \"\"\"子进程初始化（Windows spawn 模式下子进程需要重新初始化共享变量）\"\"\"
+    \"\"\"子进程初始化（spawn 模式下子进程需要重新初始化共享变量）\"\"\"
     global _WVALID, _WTDIDX, _SD, _WCACHE, _WPOS
     _SD = STOCK_DATA_DIR
     _WVALID = STOCK_LIST
@@ -870,7 +875,7 @@ def _init_worker():
     _WPOS = {}
 
 def _get_stock(s):
-    \"\"\"延迟加载 — 全量位置预计算，跨chunk复用（fork前预填充，子进程COW读取）\"\"\"
+    \"\"\"延迟加载 — 全量位置预计算，跨chunk复用\"\"\"
     global _WCACHE, _WPOS
     if s not in _WCACHE:
         try:
@@ -945,12 +950,12 @@ if __name__ == '__main__':
         _t0_main = time.time()
 
         print(f"截面计算: {len(TRADE_DATES)} 天, chunk={_CHUNK} 天, processes={N_WORKERS}", flush=True)
-        print(f"并行模式: ProcessPoolExecutor (Linux fork / Windows spawn)", flush=True)
+        print(f"并行模式: ProcessPoolExecutor (spawn)", flush=True)
 
         # 初始化全局共享缓存
         _init_shared()
 
-        # 预加载所有股票数据到 _WCACHE，确保 fork 子进程通过 COW 共享
+        # 预加载所有股票数据到 _WCACHE
         for _s in STOCK_LIST:
             _get_stock(_s)
         print(f"  [主进程] {len(_WCACHE)}只股票预加载完成", flush=True)
@@ -961,8 +966,9 @@ if __name__ == '__main__':
             _ce = min(_cs + _CHUNK, len(TRADE_DATES))
             _t_chk = time.time()
 
-            # ProcessPoolExecutor：Linux 用 fork 共享预加载数据，Windows spawn 由 _init_worker 初始化
-            with ProcessPoolExecutor(max_workers=N_WORKERS, initializer=_init_worker) as _pool:
+            # ProcessPoolExecutor：spawn 上下文避免 pyarrow fork 不兼容
+            _ctx = _mp.get_context('spawn')
+            with ProcessPoolExecutor(max_workers=N_WORKERS, initializer=_init_worker, mp_context=_ctx) as _pool:
                 # 将chunk内日期分成N_WORKERS组
                 _day_indices = list(range(_cs, _ce))
                 _splits = np.array_split(_day_indices, min(N_WORKERS, len(_day_indices)))
@@ -1491,7 +1497,7 @@ if __name__ == '__main__':
         import traceback
         traceback.print_exc()
     finally:
-        os._exit(0)"""
+        pass"""
 
     # Target function names that constitute the "user code" portion.
     # Everything else (imports, DATA_DIR, load_stock, _compute_stock, __main__)

@@ -168,17 +168,20 @@ if _INC_START:
     return code_text[:pos] + patch + code_text[pos:]
 
 
-def find_factor_source(report: str, factor_name: str) -> tuple[Path | None, Path | None]:
+def find_factor_source(report: str, factor_name: str, date_subdir: str | None = None) -> tuple[Path | None, Path | None]:
     """
     在全量输出目录中查找因子的 .code.py 和 .parquet。
     """
+    full_base = (FULL_OUTPUT / date_subdir) if date_subdir else FULL_OUTPUT
     # 搜索多个可能的位置
     candidates = [
-        FULL_OUTPUT / report / factor_name / f"{factor_name}.code.py",
-        FULL_OUTPUT / report / factor_name / f"{factor_name}.parquet",
+        full_base / report / factor_name / f"{factor_name}.code.py",
+        full_base / report / factor_name / f"{factor_name}.parquet",
     ]
     # 也搜索 literature_reports
     lit = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "literature_reports"
+    if date_subdir:
+        lit = lit / date_subdir
     candidates.extend([
         lit / report / factor_name / f"{factor_name}.code.py",
         lit / report / factor_name / f"{factor_name}.parquet",
@@ -194,6 +197,7 @@ def update_factor(
     dry_run: bool = False,
     skip_eval: bool = False,
     skip_sync: bool = False,
+    date_subdir: str | None = None,
 ) -> dict:
     """
     更新单个因子。返回状态 dict。
@@ -212,7 +216,7 @@ def update_factor(
 
     # 2. 首次：从全量复制（非 dry-run 时才实际复制）
     if not daily_parquet.exists():
-        full_code, full_parquet = find_factor_source(report, factor_name)
+        full_code, full_parquet = find_factor_source(report, factor_name, date_subdir)
         if full_parquet is None:
             result["status"] = "error"
             result["error"] = "全量 parquet 不存在，无法初始化"
@@ -425,11 +429,12 @@ def update_factor(
     return result
 
 
-def scan_all_factors() -> list[str]:
+def scan_all_factors(date_subdir: str | None = None) -> list[str]:
     """扫描文献因子_全量/ 下所有已有 .parquet 的因子"""
     factors = []
-    if FULL_OUTPUT.exists():
-        for report_dir in sorted(FULL_OUTPUT.iterdir()):
+    scan_base = (FULL_OUTPUT / date_subdir) if date_subdir else FULL_OUTPUT
+    if scan_base.exists():
+        for report_dir in sorted(scan_base.iterdir()):
             if not report_dir.is_dir():
                 continue
             for factor_dir in sorted(report_dir.iterdir()):
@@ -437,7 +442,8 @@ def scan_all_factors() -> list[str]:
                     continue
                 parquet = factor_dir / f"{factor_dir.name}.parquet"
                 if parquet.exists():
-                    factors.append(f"{report_dir.name}/{factor_dir.name}")
+                    prefix = f"{date_subdir}/" if date_subdir else ""
+                    factors.append(f"{prefix}{report_dir.name}/{factor_dir.name}")
     return factors
 
 
@@ -449,12 +455,13 @@ def main():
     parser.add_argument("--skip-sync", action="store_true", help="跳过远程同步")
     parser.add_argument("--workers", type=int, default=3, help="并行 worker 数（默认3）")
     parser.add_argument("--report", default=None, help="只更新指定研报（模糊匹配）")
+    parser.add_argument("--date", type=str, default=None, help="指定日期子目录 (YYYYMMDD)，如 --date 20260726")
     args = parser.parse_args()
 
     if args.factor:
         factors = [args.factor]
     else:
-        factors = scan_all_factors()
+        factors = scan_all_factors(args.date)
         if args.report:
             factors = [f for f in factors if args.report.lower() in f.lower()]
 
@@ -486,7 +493,7 @@ def main():
     if args.workers <= 1 or args.dry_run:
         for i, f in enumerate(factors):
             _write_status(i + 1, len(factors), f"处理 {f}")
-            r = update_factor(f, dry_run=args.dry_run, skip_eval=args.skip_eval, skip_sync=args.skip_sync)
+            r = update_factor(f, dry_run=args.dry_run, skip_eval=args.skip_eval, skip_sync=args.skip_sync, date_subdir=args.date)
             results.append(r)
     else:
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
@@ -494,7 +501,7 @@ def main():
             for i, f in enumerate(factors):
                 _write_status(i + 1, len(factors), f"提交 {f}")
                 fut = executor.submit(
-                    update_factor, f, args.dry_run, args.skip_eval, args.skip_sync
+                    update_factor, f, args.dry_run, args.skip_eval, args.skip_sync, args.date
                 )
                 futures[fut] = f
 
