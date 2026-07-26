@@ -102,23 +102,28 @@ def ensure_mounted() -> bool:
 # ── 数据同步 ──
 
 def sync_data() -> bool:
-    """运行 sync_data.py 同步最新数据"""
+    """运行 sync_data.py 同步最新数据，实时显示输出"""
     if not SYNC_SCRIPT.exists():
         print("  ⚠️ sync_data.py 不存在，跳过数据同步")
         return False
     print("📌 同步最新数据...")
-    ret = subprocess.run(
+    t0 = time.time()
+    proc = subprocess.Popen(
         [sys.executable, str(SYNC_SCRIPT)],
-        capture_output=True, text=True, timeout=3600,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
     )
-    for line in ret.stdout.split("\n"):
+    for line in proc.stdout:
         line = line.strip()
         if line:
             print(f"  {line}")
-    if ret.returncode != 0:
-        print(f"  ⚠️ 数据同步异常，继续执行")
+    proc.wait(timeout=3600)
+    elapsed = time.time() - t0
+    if proc.returncode != 0:
+        print(f"  ⚠️ 数据同步异常 (exit={proc.returncode}, {elapsed:.0f}s)，继续执行")
         return False
-    print("  ✅ 数据同步完成")
+    print(f"  ✅ 数据同步完成 ({elapsed:.0f}s)")
+    return True
     return True
 
 

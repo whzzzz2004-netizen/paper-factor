@@ -99,14 +99,14 @@ def update_factor_field_schema(new_cols: set[str], source: str):
             print(f"  ✅ 已更新: {path.parent.name}/factor_field_schema.json (+{len(new_cols)} 列)", flush=True)
 
 
-def _smb_cmd(cmd: str) -> subprocess.CompletedProcess:
+def _smb_cmd(cmd: str, timeout: int = 30) -> subprocess.CompletedProcess:
     """执行 smbclient 命令，返回 CompletedProcess"""
     full_cmd = [
         "smbclient", f"//{SMB_HOST}/{SMB_SHARE}",
         "-U", f"{SMB_USER}%{SMB_PASS}",
         "-c", cmd,
     ]
-    return subprocess.run(full_cmd, capture_output=True, text=True, timeout=120)
+    return subprocess.run(full_cmd, capture_output=True, text=True, timeout=timeout)
 
 
 def _smb_list(dir_path: str) -> list[tuple[str, int]]:
@@ -128,7 +128,8 @@ def _smb_list(dir_path: str) -> list[tuple[str, int]]:
 def _smb_download(remote_path: str, local_path: Path):
     """从远程下载文件"""
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    r = _smb_cmd(f"cd {Path(remote_path).parent}; get {Path(remote_path).name} {local_path}")
+    r = _smb_cmd(f"cd {Path(remote_path).parent}; get {Path(remote_path).name} {local_path}",
+                 timeout=120)
     if r.returncode != 0:
         raise RuntimeError(f"下载失败: {remote_path} ({r.stderr.strip()})")
 
