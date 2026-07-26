@@ -117,34 +117,176 @@ python scripts/claude_factor_helper.py run-all-full
   └────────┘    └──────────────────────┘
 ```
 
-## 关键概念
+## 数据目录结构与格式
 
-### 数据目录
+### git_ignore_folder 完整结构
 
-| 目录 | 内容 | 用途 |
+```
+git_ignore_folder/
+├── factor_implementation_source_data/        # 全量数据源（5435只股票）
+│   ├── stock_data/
+│   │   ├── daily/{code}.parquet              # 日线 per-stock parquet（5435个文件）
+│   │   │                                      # 列: open, close, high, low, volume, factor,
+│   │   │                                      #      pct_chg, pre_close, turnover_rate,
+│   │   │                                      #      market_cap, pe_ttm, pb, roe, roa, ... 共120+列
+│   │   ├── minute/{code}.parquet             # 分钟 per-stock parquet（5435个文件）
+│   │   │                                      # 列: open, close, high, low, volume, vwap, factor, return
+│   │   ├── minute_by_date/{YYYY-MM-DD}.parquet # 分钟 by date（2029个文件，每天一个）
+│   │   │                                      # 列: datetime, instrument, open, close, high, low, volume, vwap, factor, return
+│   │   ├── stock_list.json                   # 全量股票列表（5435只）
+│   │   ├── trade_dates.json                  # 交易日列表（2027天）
+│   │   └── industry.json                     # 申万一级行业分类
+│   ├── daily_pv.h5                           # 日线 H5 格式（MultiIndex [datetime, instrument]）
+│   ├── minute_pv.h5                          # 分钟 H5 格式（备用）
+│   ├── limit_up_daily.parquet                # 涨停列表
+│   ├── factor_field_schema.json              # 字段注册表
+│   └── data_field_dictionary.md              # 完整字段字典
+│
+├── factor_implementation_source_data_1000/   # 测试数据子集（300只×600天）
+│   └── stock_data/                           # 同全量结构，但只有300只股票
+│       ├── daily/{code}.parquet
+│       ├── minute/{code}.parquet
+│       ├── minute_by_date/{YYYY-MM-DD}.parquet
+│       ├── stock_list.json
+│       └── trade_dates.json
+│
+├── factor_outputs/
+│   ├── literature_reports/YYYYMMDD/          # 测试因子产出
+│   │   └── <报告名>/<因子名>/
+│   │       ├── <因子名>.code.py              # 自包含的因子代码（含模板）
+│   │       ├── <因子名>.parquet              # 测试结果（300只×600天）
+│   │       └── <因子名>.meta.json            # 因子元数据
+│   │
+│   ├── 文献因子_全量/YYYYMMDD/               # 全量因子产出（本地缓存）
+│   │   └── <报告名>/<因子名>/
+│   │       ├── <因子名>.code.py              # 自包含的因子代码（全量数据路径）
+│   │       ├── <因子名>.parquet              # 全量结果（5435只×2027天，~80MB）
+│   │       ├── <因子名>.decile.png           # 十分位收益图
+│   │       └── <因子名>.meta.json            # 因子元数据（含评估指标）
+│   │
+│   └── 文献因子_每日更新/YYYYMMDD/           # 每日增量更新产出
+│       └── <报告名>/<因子名>/
+│           └── <因子名>.parquet              # 增量更新的 parquet
+│
+├── barra_model/                              # Barra 风险模型数据
+├── logs/                                     # 日志文件
+│   └── daily_update.log
+├── daily_update_config.json                  # 每日更新配置
+└── daily_update_status.json                  # 每日更新状态
+```
+
+### 如何从远程复制数据到本地
+
+远程数据存储在 `192.168.1.13` 的 `E:\` 盘，通过 SMB 协议访问。
+
+**方法 1：使用 sync_data.py（推荐）**
+
+```bash
+# 全量同步（首次使用）
+python scripts/sync_data.py --full
+
+# 增量同步（日常更新）
+python scripts/sync_data.py
+
+# 仅检查远程有无新数据
+python scripts/sync_data.py --check
+```
+
+`sync_data.py` 自动完成：
+- 从远程 E 盘拉取日线 + 分钟线 + 财务 + 行业数据
+- 转换为 per-stock parquet 格式（5435只）
+- 裁剪 300只 × 600天 测试子集
+- 注册新列到 schema，更新 prompt 文件
+- 生成涨停列表
+
+**方法 2：手动挂载 CIFS**
+
+```bash
+# 挂载远程 E 盘
+sudo mkdir -p /mnt/remote_e
+sudo mount -t cifs //192.168.1.13/E /mnt/remote_e \
+  -o username=pc,password=,rw,uid=$(id -u),gid=$(id -g),iocharset=utf8,file_mode=0755,dir_mode=0755,noperm
+
+# 手动复制数据
+cp -r /mnt/remote_e/_paper_factor_unified/factor_implementation_source_data/stock_data/daily/ \
+  git_ignore_folder/factor_implementation_source_data/stock_data/daily/
+
+# 复制因子产出
+cp -r "/mnt/remote_e/paper_factors/文献因子_全量/" \
+  git_ignore_folder/factor_outputs/文献因子_全量/
+
+# 卸载
+sudo umount /mnt/remote_e
+```
+
+**方法 3：使用 smbclient**
+
+```bash
+# 下载单个文件
+smbclient //192.168.1.13/E -U pc -c 'get paper_factors\文献因子_全量\报告\因子\因子.parquet /tmp/因子.parquet'
+
+# 递归下载目录（需 tar 配合）
+smbclient //192.168.1.13/E -U pc -c 'tar c paper_factors\文献因子_全量\报告\' | tar x
+```
+
+### 日线 parquet 文件格式
+
+每只股票的日线 parquet 包含全部历史数据，列如下：
+
+| 列名 | 含义 | 备注 |
 |------|------|------|
-| `factor_implementation_source_data/` | 5435 只全量数据 | 全量计算 |
-| `factor_implementation_source_data_1000/` | 300 只 × 600 天子集 | 因子测试 |
-| `git_ignore_folder/factor_outputs/literature_reports/` | 测试产出 | 因子调试 |
-| `git_ignore_folder/factor_outputs/文献因子_全量/` | 全量产出（本地缓存） | 本地备份 |
-| 远程 `E:\paper_factors\文献因子_全量\` | 全量产出（主存储） | 远程同步 |
+| datetime | 交易日 | DatetimeIndex |
+| open | 开盘价 | 前复权 |
+| close | 收盘价 | 前复权 |
+| high | 最高价 | 前复权 |
+| low | 最低价 | 前复权 |
+| volume | 成交量(股) | |
+| factor | 复权因子 | 前复权因子 |
+| pct_chg | 涨跌幅(%) | 含隔夜跳空 |
+| pre_close | 前收盘价 | |
+| turnover_rate | 换手率(%) | |
+| market_cap | 总市值(元) | |
+| circulating_market_cap | 流通市值(元) | |
+| pe_ttm | 市盈率(TTM) | |
+| pb | 市净率 | |
+| roe | 净资产收益率(%) | |
+| roa | 总资产净利率(%) | |
+| revenue_yoy | 营收同比(%) | |
+| profit_yoy | 净利润同比(%) | |
+| ... | 共120+列 | 含基本面、技术指标等 |
 
-### 数据格式
+### 全量因子产出格式
 
-- **日线**：per-stock parquet，`stock_data/daily/{code}.parquet`
-- **分钟 per-stock**：`stock_data/minute/{code}.parquet`
-- **分钟 by date**：`stock_data/minute_by_date/{YYYY-MM-DD}.parquet`
-- 每只股票的 parquet 包含全部历史，追加新日期
+每个因子的 parquet 文件为宽表格式：
 
-### 因子类型
+- **index**: trade_date（字符串格式 `YYYY-MM-DD`）
+- **columns**: 股票代码（int64）
+- **values**: 因子值（float64，含 NaN）
+- 行列已排序，`index.name = "trade_date"`，`columns.name = "stock_code"`
+- 涨停日期的因子值已被剔除（设为 NaN）
+- 每个 parquet 约 80MB（2027天 × 5435只）
 
-| 类型 | 函数签名 | 数据源 | 说明 |
-|------|----------|--------|------|
-| `daily` | `calc_factor_single_stock(df, trade_date, stock)` | 日线 per-stock | 截面/时间序列 |
-| `minute` | `calc_factors_one_day(df, stock)` | 分钟 per-stock | 日内因子 |
-| `cross_section` | `calc_factor_cross_section(all_data, trade_date)` | 日线 per-stock | 截面比较 |
-| `minute_cs` | `calc_factor_minute_raw(df, stock)` + `cross_section_transform(all_values)` | 分钟 by date | 日内截面 |
-| `deep_learning` | `train_model(all_data, trade_date)` + `predict_batch(model, data_dict, trade_date)` | 日线 per-stock | 深度学习 |
+## 日期子目录结构
+
+每次运行按当天日期新建 `YYYYMMDD/` 子目录：
+
+```
+factor_outputs/
+├── literature_reports/20260726/<报告>/<因子>/
+├── 文献因子_全量/20260726/<报告>/<因子>/
+└── 文献因子_每日更新/20260726/<报告>/<因子>/
+```
+
+`run_all.py --date YYYYMMDD` 只处理指定日期子目录下的因子。`daily_update.py` 同理。
+
+## 向量化日线模板
+
+2026-07-26 新增 `calc_factor_series` 向量化模式，将单因子计算从 O(n²) 优化到 O(n)：
+
+- **旧模式**：`calc_factor_single_stock(df, trade_date, stock)` — 每只股票调用 2027 次
+- **新模式**：`calc_factor_series(df, stock)` → `pd.Series` — 每只股票调用 1 次
+- 性能提升：~28分钟/因子 → ~5分钟/因子（5435只股票）
+- 旧模式自动回退：模板检测 `calc_factor_series` 不存在时自动使用旧模式
 
 ## 技能命令
 
