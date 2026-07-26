@@ -682,17 +682,22 @@ def sync_limit_up():
     # 尝试 SMB 下载
     try:
         _smb_download(remote_lu, lu_path)
+        # 检查文件是否有效（远程可能为空文件）
+        if not lu_path.exists() or lu_path.stat().st_size < 100:
+            raise RuntimeError(f"文件为空或太小 ({lu_path.stat().st_size} bytes)")
         # 同步到测试目录
-        if lu_path.exists():
-            lu_path_1000.parent.mkdir(parents=True, exist_ok=True)
-            import shutil
-            shutil.copy2(lu_path, lu_path_1000)
+        lu_path_1000.parent.mkdir(parents=True, exist_ok=True)
+        import shutil
+        shutil.copy2(lu_path, lu_path_1000)
         n = len(pd.read_parquet(lu_path))
         print(f"  ✅ 从远程下载涨停列表: {n} 条", flush=True)
         _new_cols_all.setdefault("daily", [])
         return
     except Exception as e:
         print(f"  ⚠️ 远程下载失败 ({e})，本地重新生成", flush=True)
+        # 清理空文件，避免干扰后续逻辑
+        if lu_path.exists():
+            lu_path.unlink(missing_ok=True)
 
     # 保底：本地重新生成
     _rebuild_limit_up()
