@@ -18,9 +18,9 @@ import numpy as np
 import pandas as pd
 
 try:
-    from evaluate_factor import load_full_data_label, compute_decile_returns
+    from evaluate_factor import load_full_data_label, compute_decile_returns, to_factor_long_series
 except ImportError:
-    from scripts.evaluate_factor import load_full_data_label, compute_decile_returns
+    from scripts.evaluate_factor import load_full_data_label, compute_decile_returns, to_factor_long_series
 
 PROJECT_ROOT = Path(__file__).parent.parent
 FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data")))
@@ -29,13 +29,7 @@ FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "git_i
 def plot_decile_returns(factor_df: pd.DataFrame, label_df: pd.DataFrame, factor_name: str, output_path: str):
     """生成十分组累计收益图"""
     # 合并因子和标签
-    if factor_df.index.name == "Date" and factor_df.columns.name == "Code":
-        factor_long = factor_df.stack()
-        factor_long.index.names = ["datetime", "instrument"]
-        factor_series = factor_long
-    else:
-        factor_series = factor_df.iloc[:, 0]
-    factor_series.name = "factor"
+    factor_series = to_factor_long_series(factor_df)
     factor_series = pd.to_numeric(factor_series, errors="coerce").dropna()
 
     merged = factor_series.to_frame().join(label_df, how="inner").dropna()

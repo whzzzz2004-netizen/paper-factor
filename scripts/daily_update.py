@@ -23,17 +23,29 @@
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
-import tempfile
-import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+
+# 确保项目根目录在 sys.path 中（用于 from scripts.xxx import）
+_proj_root = str(Path(__file__).resolve().parent.parent)
+if _proj_root not in sys.path:
+    sys.path.insert(0, _proj_root)
+
+from scripts.factor_utils import (
+    load_trade_dates,
+    run_factor_subprocess,
+    merge_incremental_result,
+    backup_parquet,
+    cleanup_parquet_backup,
+    update_factor_meta,
+    evaluate_factor,
+)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
@@ -116,58 +128,6 @@ def save_config(cfg: dict):
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def load_trade_dates() -> list[str]:
-    """从全量数据读取 trade_dates.json"""
-    # 优先尝试 daily 目录，fallback 到 minute_by_date
-    for p in [
-        FULL_DATA_DIR / "stock_data" / "daily" / "trade_dates.json",
-        FULL_DATA_DIR / "stock_data" / "minute_by_date" / "trade_dates.json",
-    ]:
-        if p.exists():
-            return json.loads(p.read_text())
-    raise FileNotFoundError("trade_dates.json not found")
-
-
-def detect_factor_type(code_text: str) -> str:
-    if any(k in code_text for k in ('MINUTE_BY_DATE_DIR', 'minute_pv', 'calc_factors_one_day')):
-        if 'cross_section' in code_text.lower() or 'calc_factor_minute_raw' in code_text:
-            return "minute_cross_section"
-        return "minute"
-    if 'cross_section' in code_text.lower() or 'calc_factor_cross_section' in code_text:
-        return "cross_section"
-    return "daily"
-
-
-def inject_incremental_patch(code_text: str) -> str:
-    """
-    在 .code.py 中注入增量日期过滤代码。
-    在 TRADE_DATES = json.load(...) 行之后插入 patch。
-    """
-    # Pattern: LOOKBACK_DAYS = ...  (LOOKBACK_DAYS 总在 TRADE_DATES 之后)
-    # 在 LOOKBACK_DAYS 赋值行之后注入 patch，确保 LOOKBACK_DAYS 已可用
-    pattern = re.compile(r'^(LOOKBACK_DAYS\s*=\s*.+)', re.MULTILINE)
-
-    match = pattern.search(code_text)
-    if not match:
-        print("    ⚠️ 未找到 LOOKBACK_DAYS 赋值，跳过 patch 注入")
-        return code_text
-
-    patch = """
-
-# ── 增量更新 patch（由 daily_update.py 自动注入）──
-_INC_START = os.environ.get("FACTOR_INCREMENTAL_START_DATE")
-if _INC_START:
-    _start_dt = pd.Timestamp(_INC_START)
-    _td_idx = pd.DatetimeIndex(TRADE_DATES)
-    _start_pos = max(0, _td_idx.searchsorted(_start_dt) - LOOKBACK_DAYS)
-    TRADE_DATES = TRADE_DATES[_start_pos:]
-# ── patch end ──
-"""
-
-    pos = match.end()
-    return code_text[:pos] + patch + code_text[pos:]
-
-
 def find_factor_source(report: str, factor_name: str, date_subdir: str | None = None) -> tuple[Path | None, Path | None]:
     """
     在全量输出目录中查找因子的 .code.py 和 .parquet。
@@ -246,7 +206,7 @@ def update_factor(
 
     # 4. 读 trade_dates → latest_date
     try:
-        trade_dates = load_trade_dates()
+        trade_dates = load_trade_dates(FULL_DATA_DIR)
         latest_date = pd.Timestamp(trade_dates[-1])
         result["latest_date"] = latest_date.strftime("%Y-%m-%d")
     except Exception as e:
@@ -281,136 +241,45 @@ def update_factor(
         result["error"] = ".code.py 不存在"
         return result
 
-    # 7. 注入 patch → 写入临时文件 → 执行
+    # 7. 执行子进程
     code_text = code_path.read_text(encoding="utf-8")
-    patched_code = inject_incremental_patch(code_text)
+    start_date_str = last_date.strftime("%Y-%m-%d")
+    result_parquet = run_factor_subprocess(
+        code_text, factor_name, FULL_DATA_DIR,
+        start_date=start_date_str, n_workers=8, timeout=7200,
+    )
+    if result_parquet is None:
+        result["status"] = "error"
+        result["error"] = "子进程执行失败"
+        return result
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-        tmp_code = tmpdir / f"{factor_name}.py"
-        tmp_code.write_text(patched_code, encoding="utf-8")
+    # 8. 读取结果，裁掉重叠，合并
+    result_df = pd.read_parquet(result_parquet)
+    result_parquet.unlink(missing_ok=True)
 
-        env = {k: str(v) for k, v in os.environ.items()}
-        env["FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
-        env["HDF5_USE_FILE_LOCKING"] = "FALSE"
-        env["FACTOR_INCREMENTAL_START_DATE"] = last_date.strftime("%Y-%m-%d")
-        factor_type = detect_factor_type(code_text)
-        env.setdefault("FACTOR_N_WORKERS", "8")
+    combined = merge_incremental_result(existing_df, result_df, last_date)
+    if combined is existing_df:
+        result["status"] = "error"
+        result["error"] = "增量结果为空（可能 lookback 不足）"
+        return result
 
-        print(f"  执行中... (start={last_date.strftime('%Y-%m-%d')}, type={factor_type})")
-        try:
-            proc = subprocess.run(
-                [sys.executable, f"{factor_name}.py"],
-                cwd=tmpdir,
-                capture_output=True, text=True, timeout=7200,
-                env=env,
-            )
-            for line in proc.stdout.split("\n"):
-                line = line.strip()
-                if line:
-                    print(f"    {line}")
-            if proc.returncode != 0:
-                stderr = proc.stderr[-500:] if len(proc.stderr) > 500 else proc.stderr
-                result["status"] = "error"
-                result["error"] = f"执行失败: {stderr.strip()}"
-                return result
-        except subprocess.TimeoutExpired:
-            result["status"] = "error"
-            result["error"] = "执行超时（2h）"
-            return result
-        except Exception as e:
-            result["status"] = "error"
-            result["error"] = str(e)
-            return result
+    # 备份 + 写回
+    backup_parquet(daily_parquet)
+    combined.to_parquet(daily_parquet)
 
-        # 8. 读取 .code.py 输出的 parquet（文件名 = 因子名），裁掉 lookback，合并
-        result_parquet = tmpdir / f"{factor_name}.parquet"
-        if not result_parquet.exists():
-            result["status"] = "error"
-            result["error"] = f"未生成 {factor_name}.parquet"
-            return result
-
-        new_df = pd.read_parquet(result_parquet)
-        # 统一 index 为 DatetimeIndex（.code.py 可能输出字符串索引）
-        if not isinstance(new_df.index, pd.DatetimeIndex):
-            new_df.index = pd.to_datetime(new_df.index)
-        if not isinstance(existing_df.index, pd.DatetimeIndex):
-            existing_df.index = pd.to_datetime(existing_df.index)
-        # 只保留 date > last_date 的行
-        new_df = new_df[new_df.index > last_date]
-        if new_df.empty:
-            result["status"] = "error"
-            result["error"] = "增量结果为空（可能 lookback 不足）"
-            return result
-
-        # 合并：已有 + 新增
-        # 先备份
-        bak_path = daily_parquet.with_suffix(f".parquet.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}")
-        shutil.copy2(daily_parquet, bak_path)
-
-        combined = pd.concat([existing_df, new_df])
-        combined = combined[~combined.index.duplicated(keep='last')]
-        combined.sort_index(inplace=True)
-        combined.to_parquet(daily_parquet)
-
-        print(f"  合并完成: {combined.shape[0]} 天 ({len(new_df)} 新增)")
+    print(f"  合并完成: {combined.shape[0]} 天 ({combined.shape[0] - len(existing_df)} 新增)")
 
     # 9. 更新 meta.json
     result["status"] = "success"
-    result["new_dates"] = len(new_df)
+    result["new_dates"] = combined.shape[0] - len(existing_df)
     result["total_dates"] = combined.shape[0]
 
     meta_path = daily_dir / f"{factor_name}.meta.json"
-    meta = {}
-    if meta_path.exists():
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    meta["date_range"] = f"{combined.index.min().strftime('%Y-%m-%d')} ~ {combined.index.max().strftime('%Y-%m-%d')}"
-    meta["rows"] = combined.shape[0]
-    meta["stock_count"] = combined.shape[1]
-    meta["updated_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    meta["daily_update"] = True
-    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    update_factor_meta(meta_path, combined, extra={"pipeline_status": "completed"})
 
     # 10. 评估 + 绘图（除非跳过）
     if not skip_eval:
-        eval_script = PROJECT_ROOT / "scripts" / "evaluate_factor.py"
-        if eval_script.exists():
-            try:
-                eval_result = subprocess.run(
-                    [sys.executable, str(eval_script), str(daily_parquet),
-                     "--data-dir", str(FULL_DATA_DIR)],
-                    capture_output=True, text=True, timeout=600,
-                )
-                if eval_result.returncode == 0:
-                    # evaluate_factor.py 会更新 meta.json
-                    if meta_path.exists():
-                        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                    for line in eval_result.stdout.split("\n"):
-                        if any(k in line for k in ("IC (Pearson)", "Rank IC", "Sharpe")):
-                            print(f"    {line.strip()}")
-                else:
-                    print(f"    ⚠️ 评估失败")
-            except Exception as e:
-                print(f"    ⚠️ 评估异常: {e}")
-
-        plot_script = PROJECT_ROOT / "scripts" / "plot_decile.py"
-        plot_output = daily_dir / f"{factor_name}.decile.png"
-        if plot_script.exists():
-            try:
-                plot_result = subprocess.run(
-                    [sys.executable, str(plot_script), str(daily_parquet),
-                     "--data-dir", str(FULL_DATA_DIR), "--output", str(plot_output)],
-                    capture_output=True, text=True, timeout=600,
-                )
-                if plot_result.returncode == 0:
-                    print(f"    ✅ 图表已更新")
-                else:
-                    print(f"    ⚠️ 图表生成失败")
-            except Exception as e:
-                print(f"    ⚠️ 图表异常: {e}")
+        evaluate_factor(daily_parquet, factor_name, daily_dir, FULL_DATA_DIR)
 
     # 11. 同步远程
     if not skip_sync:
@@ -424,6 +293,10 @@ def update_factor(
                 print(f"    ⚠️ 远程不可用，跳过同步")
         except Exception as e:
             print(f"    ⚠️ 远程同步失败: {e}")
+
+    # 12. 动态清理：删除写回时创建的 .parquet.bak 备份，
+    #     让因子目录看着就和全新计算的一样（无中间产物残留）
+    cleanup_parquet_backup(daily_parquet)
 
     print(f"  ✅ [{factor_key}] 更新完成")
     return result

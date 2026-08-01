@@ -11,6 +11,7 @@ git_ignore_folder/
 /log/
 logs/
 workspace_cache/
+_template_cache/
 release_assets/
 *.tar
 *.tar.gz

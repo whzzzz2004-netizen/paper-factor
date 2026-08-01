@@ -353,6 +353,8 @@ evolving_strategy_factor_implementation_v1_system: |-
   - low: 最低价（日线最低价）
   - money: 成交额
   - open: 开盘价（日线开盘价）
+  - return
+  - trade_date
   - volume: 成交量（单位：股）
 <!-- /MINUTE_COLUMNS -->
   ⚠️ 多天数据时，如需按天操作，用 df.index.date 提取日期分组

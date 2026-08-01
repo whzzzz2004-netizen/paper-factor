@@ -22,6 +22,8 @@ def calc_factors_one_day(df, stock):
   - low: 最低价（日线最低价）
   - money: 成交额
   - open: 开盘价（日线开盘价）
+  - return
+  - trade_date
   - volume: 成交量（单位：股）
 <!-- /MINUTE_COLUMNS -->
 
@@ -40,6 +42,8 @@ def calc_factors_one_day(df, stock):
 
 - 只用当天数据时 lookback_days=1（不是 0）
 - 回看天数按日历日估算（不是交易日数）
+- **最大 120（约 6 个月）**，即使论文用 1 年也要截断
+  - 原因：分钟模板用 fork COW，高 lookback → 主进程加载数据量过大 → OOM
 
 ## 模板特点
 

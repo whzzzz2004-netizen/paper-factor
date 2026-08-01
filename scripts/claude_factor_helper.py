@@ -531,17 +531,17 @@ def cmd_export_factor(args):
     else:
         has_result = False
 
-    # Build meta.json
+    # Build meta.json（缺失字段自动从因子名/研报名派生）
     meta = {
         "factor_name": factor_name,
         "source_report": report_name,
         "created_at": __import__("datetime").datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "source_type": "literature_report",
-        "factor_description": args.description or "",
-        "factor_formulation": args.formulation or "",
-        "source_report_title": args.source_report_title or "",
+        "factor_description": args.description or f"因子 {factor_name}，来自研报 {report_name}",
+        "factor_formulation": args.formulation or f"见因子 {factor_name} 代码实现",
+        "source_report_title": args.source_report_title or report_name,
         "source_report_path": args.source_report_path or "",
-        "source_excerpt": args.source_excerpt or "",
+        "source_excerpt": args.source_excerpt or f"因子 {factor_name}，来自 {report_name}",
     }
     # Merge extra meta from --meta-json
     if args.meta_json:
@@ -671,6 +671,11 @@ def _run_test_in_tmpdir(code_path: Path, timeout: int = 3600) -> dict:
         # 模板把 parquet 写到 _CODE_DIR（即 code_path 的父目录），文件名由 stem 决定
         _PARQUET_STEM = Path(code_path).stem.removesuffix('.code')
         _alt_path = Path(code_path).parent / f"{_PARQUET_STEM}.parquet"
+        # minute_cs 模板将因子名追加到文件名：{stem}_{factor_name}.parquet
+        if not _alt_path.exists():
+            _glob = sorted(Path(code_path).parent.glob(f"{_PARQUET_STEM}_*.parquet"))
+            if _glob:
+                _alt_path = _glob[0]
         if _alt_path.exists():
             import pandas as pd
             df = pd.read_parquet(_alt_path)
@@ -795,18 +800,18 @@ def cmd_test_and_export(args):
         dst_result = factor_dir / f"{factor_name}.parquet"
         shutil.copy2(src_result, dst_result)
 
-    # Build meta.json with accepted=true
+    # Build meta.json with accepted=true（缺失字段自动从因子名/研报名派生）
     meta = {
         "factor_name": factor_name,
         "source_report": report_name,
         "created_at": __import__("datetime").datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "source_type": "literature_report",
         "accepted": True,
-        "factor_description": args.description or "",
-        "factor_formulation": args.formulation or "",
-        "source_report_title": args.source_report_title or "",
+        "factor_description": args.description or f"因子 {factor_name}，来自研报 {report_name}",
+        "factor_formulation": args.formulation or f"见因子 {factor_name} 代码实现",
+        "source_report_title": args.source_report_title or report_name,
         "source_report_path": args.source_report_path or "",
-        "source_excerpt": args.source_excerpt or "",
+        "source_excerpt": args.source_excerpt or f"因子 {factor_name}，来自 {report_name}",
     }
     if args.meta_json:
         extra = json.loads(args.meta_json)
@@ -1039,18 +1044,19 @@ def cmd_deploy_to_full(args):
     factor_name = code_path.stem.replace(".code", "")
 
     # Locate report + factor from directory structure
-    # Expected: literature_reports/<report>/<factor>/<factor>.code.py
+    # Expected: literature_reports/<date>/<report>/<factor>/<factor>.code.py
     test_factor_dir = code_path.parent
     report_dir = test_factor_dir.parent
     if report_dir.name == "literature_reports":
-        print(f"ERROR: code.py must be inside literature_reports/<report>/<factor>/", file=sys.stderr)
+        print(f"ERROR: code.py must be inside literature_reports/<date>/<report>/<factor>/", file=sys.stderr)
         return 1
     report_name = report_dir.name
 
-    # Target: 文献因子_全量/[<date>/]<report>/<factor>/
+    # Target: 文献因子_全量/[<date>/]<report>/<factor>/  （默认当天日期）
     sys.path.insert(0, str(PROJECT_ROOT))
     from rdagent.app.qlib_rd_loop.factor_full_pipeline import FULL_OUTPUT_BASE
-    full_base = (FULL_OUTPUT_BASE / args.date) if args.date else FULL_OUTPUT_BASE
+    date_str = args.date or __import__("datetime").datetime.now().strftime("%Y%m%d")
+    full_base = FULL_OUTPUT_BASE / date_str
     full_factor_dir = full_base / report_name / factor_name
     full_factor_dir.mkdir(parents=True, exist_ok=True)
 

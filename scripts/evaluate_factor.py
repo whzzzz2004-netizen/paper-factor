@@ -101,19 +101,41 @@ def compute_decile_returns(merged: pd.DataFrame) -> dict:
     return result
 
 
-def evaluate_factor(factor_df: pd.DataFrame, data_dir: Path, label_df: pd.DataFrame = None) -> dict:
-    """对因子进行完整回测评估"""
-    if label_df is None:
-        label_df = load_full_data_label(data_dir)
+def to_factor_long_series(factor_df: pd.DataFrame) -> pd.Series:
+    """把因子 DataFrame 统一转成长表 Series (index=[datetime, instrument])。
 
-    # 合并因子和标签
-    if factor_df.index.name == "Date" and factor_df.columns.name == "Code":
+    兼容三种格式:
+      1. 模板输出宽表: 行=trade_date(字符串), 列=int股票代码
+      2. 旧格式: 行="Date", 列="Code"
+      3. 已是长表单列: 直接取该列
+    """
+    if factor_df.shape[1] > 1 and not isinstance(factor_df.index, pd.MultiIndex):
+        factor_long = factor_df.stack()
+        dates = pd.to_datetime(factor_long.index.get_level_values(0))
+        instruments = factor_long.index.get_level_values(1).astype(str)
+        factor_series = factor_long.copy()
+        factor_series.index = pd.MultiIndex.from_arrays(
+            [dates, instruments], names=["datetime", "instrument"]
+        )
+        # 防御：同一 (datetime, instrument) 只保留一条
+        factor_series = factor_series[~factor_series.index.duplicated(keep="first")]
+    elif factor_df.index.name == "Date" and factor_df.columns.name == "Code":
         factor_long = factor_df.stack()
         factor_long.index.names = ["datetime", "instrument"]
         factor_series = factor_long
     else:
         factor_series = factor_df.iloc[:, 0]
     factor_series.name = "factor"
+    return factor_series
+
+
+def evaluate_factor(factor_df: pd.DataFrame, data_dir: Path, label_df: pd.DataFrame = None) -> dict:
+    """对因子进行完整回测评估"""
+    if label_df is None:
+        label_df = load_full_data_label(data_dir)
+
+    # 合并因子和标签
+    factor_series = to_factor_long_series(factor_df)
     factor_series = pd.to_numeric(factor_series, errors="coerce").dropna()
 
     merged = factor_series.to_frame().join(label_df, how="inner").dropna()

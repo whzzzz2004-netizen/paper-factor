@@ -34,6 +34,8 @@ def cross_section_transform(all_values):
   - low: 最低价（日线最低价）
   - money: 成交额
   - open: 开盘价（日线开盘价）
+  - return
+  - trade_date
   - volume: 成交量（单位：股）
 <!-- /MINUTE_COLUMNS -->
 
@@ -43,3 +45,13 @@ def cross_section_transform(all_values):
 2. `cross_section_transform` 接收 `all_values`（dict {股票代码: 原始值}），输出标准化/排名后的值
 3. 数据源是 `minute_by_date` 格式（按日期文件夹组织，每文件含当天所有股票），不是 per-stock
 4. 无 `pct_chg`、`pre_close` 等日线列
+
+## lookback 天数限制（重要）
+
+- **lookback_days 最大 120（约 6 个月）**，即使论文用 1 年也要截断
+- 分钟截面模板按天并行，每 chunk 重建进程池 → worker 缓存重置
+- 高 lookback 导致：
+  - 每 chunk 前 lookback 天都要重新读盘
+  - 每个 worker 内存 ≈ lookback × 列数 × 7.8MB
+  - 全量 5000 只股票下 OOM 风险增加
+- 例外：如果因子只依赖当天分钟数据（不跨天），可以用 lookback_days=1

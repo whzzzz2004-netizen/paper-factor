@@ -11,29 +11,39 @@
      └─ 已最新 → 跳过
 
 用法:
-  python scripts/run_all.py                        # 默认流程
+  python scripts/run_all.py                        # 本地模式，扫描所有因子
+  python scripts/run_all.py 20260726               # 只扫描指定目录
   python scripts/run_all.py --report 研报名        # 只跑指定研报
   python scripts/run_all.py --force                # 强制重跑（无视状态）
   python scripts/run_all.py --workers 3            # 并行数
   python scripts/run_all.py --dry-run              # 只打印计划，不执行
-  python scripts/run_all.py --skip-sync            # 跳过数据同步
-  python scripts/run_all.py --date 20260726        # 只扫描指定日期子目录
+  python scripts/run_all.py --remote               # 启用远程挂载+数据同步
 """
 
 import argparse
-import json
 import os
-import re
-import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+
+# 确保项目根目录在 sys.path 中（用于 from scripts.xxx import）
+_proj_root = str(Path(__file__).resolve().parent.parent)
+if _proj_root not in sys.path:
+    sys.path.insert(0, _proj_root)
+
+from scripts.factor_utils import (
+    load_trade_dates,
+    run_factor_subprocess,
+    merge_incremental_result,
+    backup_parquet,
+    cleanup_parquet_backup,
+    update_factor_meta,
+    evaluate_factor,
+)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
@@ -128,52 +138,6 @@ def sync_data() -> bool:
     return True
 
 
-# ── 工具函数 ──
-
-def load_trade_dates() -> list[str]:
-    """从数据目录读取交易日列表"""
-    for p in [
-        FULL_DATA_DIR / "stock_data" / "daily" / "trade_dates.json",
-        FULL_DATA_DIR / "stock_data" / "minute_by_date" / "trade_dates.json",
-    ]:
-        if p.exists():
-            return json.loads(p.read_text())
-    raise FileNotFoundError(f"trade_dates.json 未找到 (搜索: {FULL_DATA_DIR})")
-
-
-def detect_factor_type(code_text: str) -> str:
-    if any(k in code_text for k in ('MINUTE_BY_DATE_DIR', 'minute_pv', 'calc_factors_one_day')):
-        if 'cross_section' in code_text.lower() or 'calc_factor_minute_raw' in code_text:
-            return "minute_cross_section"
-        return "minute"
-    if 'cross_section' in code_text.lower() or 'calc_factor_cross_section' in code_text:
-        return "cross_section"
-    return "daily"
-
-
-def inject_incremental_patch(code_text: str, last_date: str) -> str:
-    """在 .code.py 中注入增量日期过滤代码"""
-    pattern = re.compile(r'^(LOOKBACK_DAYS\s*=\s*.+)', re.MULTILINE)
-    match = pattern.search(code_text)
-    if not match:
-        print("    ⚠️ 未找到 LOOKBACK_DAYS，跳过 patch 注入")
-        return code_text
-
-    patch = f"""
-
-# ── 增量更新 patch（由 run_all.py 自动注入）──
-_INC_START = os.environ.get("FACTOR_INCREMENTAL_START_DATE")
-if _INC_START:
-    _start_dt = pd.Timestamp(_INC_START)
-    _td_idx = pd.DatetimeIndex(TRADE_DATES)
-    _start_pos = max(0, _td_idx.searchsorted(_start_dt) - LOOKBACK_DAYS)
-    TRADE_DATES = TRADE_DATES[_start_pos:]
-# ── patch end ──
-"""
-    pos = match.end()
-    return code_text[:pos] + patch + code_text[pos:]
-
-
 # ── 扫描 ──
 
 def find_pending_factors(report_filter: str | None, force: bool) -> list[dict]:
@@ -249,7 +213,7 @@ def find_pending_factors(report_filter: str | None, force: bool) -> list[dict]:
             # 延迟加载 trade_dates
             if trade_dates is None:
                 try:
-                    trade_dates = load_trade_dates()
+                    trade_dates = load_trade_dates(FULL_DATA_DIR)
                 except Exception as e:
                     print(f"  ⚠️ 无法读取 trade_dates: {e}")
                     continue
@@ -342,176 +306,87 @@ def run_incremental_for_factor(item: dict) -> dict:
         print(f"  ❌ 读取现有 parquet 失败: {e}，降级为全量")
         return run_full_pipeline_for_factor(item)
 
-    # 2. 注入 patch → 写入临时文件 → 执行
+    # 2. 执行子进程
     code_text = code_path.read_text(encoding="utf-8")
-    patched_code = inject_incremental_patch(code_text, last_date.strftime("%Y-%m-%d"))
+    start_date_str = last_date.strftime("%Y-%m-%d")
+    result_parquet = run_factor_subprocess(
+        code_text, factor_name, FULL_DATA_DIR,
+        start_date=start_date_str, n_workers=4, timeout=7200,
+    )
+    if result_parquet is None:
+        result["status"] = "failed"
+        result["error"] = "子进程执行失败"
+        return result
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-        tmp_code = tmpdir / "factor.py"
-        tmp_code.write_text(patched_code, encoding="utf-8")
+    # 3. 读取结果，裁掉重叠，合并
+    new_df = pd.read_parquet(result_parquet)
+    result_parquet.unlink(missing_ok=True)  # 清理临时文件
 
-        env = {k: str(v) for k, v in os.environ.items()}
-        env["FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
-        env["HDF5_USE_FILE_LOCKING"] = "FALSE"
-        env["FACTOR_INCREMENTAL_START_DATE"] = last_date.strftime("%Y-%m-%d")
+    combined = merge_incremental_result(existing_df, new_df, last_date)
+    if combined is existing_df:
+        print("  ⚠️ 增量结果为空")
+        result["status"] = "skipped"
+        return result
 
-        factor_type = detect_factor_type(code_text)
-        if factor_type == "daily":
-            env.setdefault("FACTOR_N_WORKERS", "4")
-        else:
-            env.setdefault("FACTOR_N_WORKERS", "4")
+    # 备份 + 写回
+    backup_parquet(parquet_path)
+    combined.to_parquet(parquet_path)
+    print(f"  ✅ 合并完成: {combined.shape[0]} 行 ({combined.shape[0] - len(existing_df)} 新增)")
 
-        print(f"  执行中... (start={last_date.strftime('%Y-%m-%d')}, type={factor_type})")
-        try:
-            proc = subprocess.run(
-                [sys.executable, "factor.py"],
-                cwd=tmpdir,
-                capture_output=True, text=True, timeout=7200,
-                env=env,
-            )
-            for line in proc.stdout.split("\n"):
-                line = line.strip()
-                if line:
-                    print(f"    {line}")
-            if proc.returncode != 0:
-                stderr = proc.stderr[-500:] if len(proc.stderr) > 500 else proc.stderr
-                print(f"  ❌ 执行失败: {stderr.strip()}")
-                result["status"] = "failed"
-                result["error"] = stderr.strip()
-                return result
-        except subprocess.TimeoutExpired:
-            print("  ❌ 执行超时（2h）")
-            result["status"] = "failed"
-            result["error"] = "timeout"
-            return result
-        except Exception as e:
-            print(f"  ❌ 执行异常: {e}")
-            result["status"] = "failed"
-            result["error"] = str(e)
-            return result
-
-        # 3. 读取 result.parquet，裁掉重叠，合并
-        result_parquet = tmpdir / "result.parquet"
-        if not result_parquet.exists():
-            print("  ❌ 未生成 result.parquet")
-            result["status"] = "failed"
-            result["error"] = "no result.parquet"
-            return result
-
-        new_df = pd.read_parquet(result_parquet)
-        # 只保留 date > last_date
-        new_df = new_df[new_df.index > last_date]
-        if new_df.empty:
-            print("  ⚠️ 增量结果为空")
-            result["status"] = "skipped"
-            return result
-
-        # 备份 + 合并
-        bak_path = parquet_path.with_suffix(f".parquet.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}")
-        shutil.copy2(parquet_path, bak_path)
-
-        combined = pd.concat([existing_df, new_df])
-        combined = combined[~combined.index.duplicated(keep='last')]
-        combined.sort_index(inplace=True)
-        combined.to_parquet(parquet_path)
-
-        print(f"  ✅ 合并完成: {combined.shape[0]} 行 ({len(new_df)} 新增)")
-
-    # 4. 评估 + 绘图
-    try:
-        sys.path.insert(0, str(PROJECT_ROOT))
-        from scripts.evaluate_factor import evaluate_factor as _eval_fn, load_full_data_label
-        from scripts.plot_decile import plot_decile_returns as _plot_fn
-
-        print(f"  评估中...", flush=True)
-        _label_df = load_full_data_label(FULL_DATA_DIR)
-        _eval_result = _eval_fn(combined, FULL_DATA_DIR, label_df=_label_df)
-
-        if _eval_result and "error" not in _eval_result:
-            ic = _eval_result.get("ic_mean", float("nan"))
-            ir = _eval_result.get("ic_ir", "N/A")
-            ric = _eval_result.get("rank_ic_mean", float("nan"))
-            ls = _eval_result.get("long_short_mean", None)
-            lss = _eval_result.get("long_short_sharpe", None)
-            print(f"    IC={ic:.6f}  IR={ir}  RankIC={ric:.6f}"
-                  f"{'' if ls is None else f'  多空={ls:.4%}'}"
-                  f"{'' if lss is None else f'  Sharpe={lss:.2f}'}")
-
-            print(f"  生成图表...", flush=True)
-            _png_path = output_dir / f"{factor_name}.decile.png"
-            _plot_fn(combined, _label_df, factor_name, str(_png_path))
-            print(f"  图表已保存: {_png_path}")
-        else:
-            err = _eval_result.get("error", "未知错误") if _eval_result else "评估返回空"
-            print(f"  ⚠️ 评估异常: {err}")
-            _eval_result = {}
-    except Exception as e:
-        print(f"  ⚠️ 评估/绘图失败: {e}")
-        _eval_result = {}
-        import traceback
-        traceback.print_exc()
+    # 4. 评估 + 绘图（重新生成 decile.png，更新 meta.json 的 evaluation）
+    _eval_result = evaluate_factor(parquet_path, factor_name, output_dir, FULL_DATA_DIR)
 
     # 5. 更新 meta.json
-    meta = {}
-    meta_path = output_dir / f"{factor_name}.meta.json"
-    if meta_path.exists():
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    meta["date_range"] = f"{combined.index.min().strftime('%Y-%m-%d')} ~ {combined.index.max().strftime('%Y-%m-%d')}"
-    meta["rows"] = combined.shape[0]
-    meta["stock_count"] = combined.shape[1]
-    meta["updated_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    if _eval_result and "error" not in _eval_result:
-        meta["evaluation"] = _eval_result
-    meta["daily_update"] = True
-    meta["pipeline_status"] = "completed"
-    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    meta_extra = {"pipeline_status": "completed"}
+    if _eval_result:
+        meta_extra["evaluation"] = _eval_result
+    update_factor_meta(output_dir / f"{factor_name}.meta.json", combined, extra=meta_extra)
+
+    # 6. 动态清理：删除写回时创建的 .parquet.bak 备份，
+    #    让因子目录看着就和全新计算的一样（无中间产物残留）
+    cleanup_parquet_backup(parquet_path)
 
     print(f"  ✅ [增量] {report_name}/{factor_name} 完成")
     result["status"] = "success"
-    result["new_dates"] = len(new_df)
+    result["new_dates"] = max(0, combined.shape[0] - len(existing_df))
     return result
 
 
 # ── 主流程 ──
 
 def main():
-    parser = argparse.ArgumentParser(description="一键全量流水线：挂载 → 同步数据 → 全量/增量补算因子")
+    parser = argparse.ArgumentParser(description="一键全量流水线：全量/增量补算因子（默认本地模式）")
+    parser.add_argument("subdir", nargs="?", default=None, help="日期子目录 (如 20260726)，默认当天")
     parser.add_argument("--report", help="指定研报名 (模糊匹配)", default=None)
     parser.add_argument("--force", action="store_true", help="强制重跑（无视状态）")
     parser.add_argument("--workers", type=int, default=1, help="并行 worker 数 (默认: 1)")
     parser.add_argument("--dry-run", action="store_true", help="仅列出待跑因子，不执行")
-    parser.add_argument("--skip-sync", action="store_true", help="跳过数据同步")
-    parser.add_argument("--skip-mount", action="store_true", help="跳过挂载检查")
-    parser.add_argument("--local", action="store_true", help="仅用本地数据，不尝试远程挂载，输出也写到本地目录")
-    parser.add_argument("--date", type=str, default=None, help="指定日期子目录 (YYYYMMDD)，如 --date 20260726")
+    parser.add_argument("--remote", action="store_true", help="启用远程挂载（数据始终先同步，无需此参数）")
     args = parser.parse_args()
 
     t_start = time.time()
 
-    # ── Step 1: 挂载 ──
-    if args.local:
+    # ── Step 1: 挂载（仅 --remote 时） ──
+    if args.remote:
+        ensure_mounted()
+    else:
         global OUTPUT_BASE, FULL_DATA_DIR
         OUTPUT_BASE = LOCAL_FULL
         print("📌 本地模式，跳过远程挂载")
-    elif not args.skip_mount:
-        ensure_mounted()
 
-    # ── Step 2: 同步数据 ──
-    if not args.skip_sync:
-        sync_data()
+    # ── Step 2: 同步数据（始终先更新数据，再算因子） ──
+    sync_data()
 
-    # ── Step 3: 扫描因子 ──
-    if args.date:
-        dated_base = OUTPUT_BASE / args.date
-        if dated_base.exists():
-            OUTPUT_BASE = dated_base
-            print(f"📅 扫描日期子目录: {args.date}")
-        else:
-            print(f"⚠️ 日期子目录不存在: {dated_base}，回退到根目录")
+    # ── Step 3: 确定日期子目录（默认当天） ──
+    date_str = args.subdir or datetime.now().strftime("%Y%m%d")
+    dated_base = OUTPUT_BASE / date_str
+    if dated_base.exists():
+        OUTPUT_BASE = dated_base
+        print(f"📅 扫描子目录: {date_str}")
+    else:
+        print(f"⚠️ 子目录不存在: {dated_base}，回退到根目录")
+
+    # ── Step 4: 扫描因子 ──
     pending = find_pending_factors(args.report, args.force)
 
     if not pending:

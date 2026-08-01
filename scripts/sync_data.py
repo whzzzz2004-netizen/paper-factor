@@ -203,11 +203,13 @@ def sync_daily_incremental(dry_run: bool = False) -> list[str]:
 
         df = pd.read_parquet(local_tmp)
         for _, row in df.iterrows():
-            stock = str(row["symbol"]).zfill(6)
+            # 本地日线文件命名是 str(int(code))（去前导零），如 1.parquet / 300725.parquet
+            stock = str(int(row["symbol"]))
             all_stocks.add(stock)
             if stock not in new_stock_data:
                 new_stock_data[stock] = []
             new_stock_data[stock].append({
+                "datetime": date_str,
                 "open": row.get("open", np.nan),
                 "close": row.get("close", np.nan),
                 "high": row.get("high", np.nan),
@@ -238,11 +240,23 @@ def sync_daily_incremental(dry_run: bool = False) -> list[str]:
     # 追加到 per-stock parquet
     for stock, rows in new_stock_data.items():
         new_df = pd.DataFrame(rows)
-        new_df.index = pd.to_datetime(date_str)  # placeholder, will be properly set
+        new_df["datetime"] = pd.to_datetime(new_df["datetime"], format="%Y%m%d")
+        new_df = new_df.set_index("datetime").sort_index()
         stock_file = DATA_DIR / "stock_data" / "daily" / f"{stock}.parquet"
         if stock_file.exists():
             old = pd.read_parquet(stock_file)
-            combined = pd.concat([old, new_df])
+            # combine_first: 新数据补齐旧数据的NaN，旧数据已有的非NaN值（财务列等）保留。
+            # 之前用 concat+keep="last" 会让 sparse 增量行覆盖 rich 财务行 → 丢财务数据 + 重复日期。
+            combined = new_df.combine_first(old).sort_index()
+            # 防御性去重（combine_first 已保证唯一索引，此处兜底）
+            combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+            # 补算 pct_chg / pre_close（仅 NaN 处填充，不覆盖已有值）
+            if "pct_chg" in combined.columns and "close" in combined.columns:
+                combined["pct_chg"] = combined["pct_chg"].fillna(
+                    combined["close"].pct_change() * 100.0
+                )
+            if "pre_close" in combined.columns and "close" in combined.columns:
+                combined["pre_close"] = combined["pre_close"].fillna(combined["close"].shift(1))
             combined.to_parquet(stock_file)
         else:
             new_df.to_parquet(stock_file)
@@ -250,6 +264,13 @@ def sync_daily_incremental(dry_run: bool = False) -> list[str]:
     # 更新日期列表
     all_dates = sorted(local_dates | set(new_dates))
     (DATA_DIR / "stock_data/daily/trade_dates.json").write_text(json.dumps(all_dates))
+    # stock_list 与已有列表合并（不能只写新数据股票，否则全量股票会丢失）
+    if (DATA_DIR / "stock_data/daily/stock_list.json").exists():
+        try:
+            existing_stocks = set(json.loads((DATA_DIR / "stock_data/daily/stock_list.json").read_text()))
+        except Exception:
+            existing_stocks = set()
+        all_stocks = existing_stocks | all_stocks
     (DATA_DIR / "stock_data/daily/stock_list.json").write_text(json.dumps(sorted(all_stocks)))
 
     print(f"  ✅ 完成: {len(new_dates)} 天, {len(new_stock_data)} 只有增量", flush=True)
@@ -287,7 +308,7 @@ def sync_daily_full(dry_run: bool = False):
 
     print("  逐股票写入...", flush=True)
     for stock in df["symbol"].unique():
-        stock_str = str(stock).zfill(6)
+        stock_str = str(int(stock))  # 非前导零命名，与本地文件一致
         sub = df[df["symbol"] == stock].copy()
         sub = sub.drop(columns=["symbol"])
         if "date" in sub.columns:
@@ -300,12 +321,10 @@ def sync_daily_full(dry_run: bool = False):
         stock_file = DATA_DIR / "stock_data" / "daily" / f"{stock_str}.parquet"
         if stock_file.exists():
             old = pd.read_parquet(stock_file)
-            # 只追加新日期
-            existing_dates = set(old.index.date)
-            new_rows = sub[~sub.index.date.isin(existing_dates)]
-            if not new_rows.empty:
-                combined = pd.concat([old, new_rows])
-                combined.to_parquet(stock_file)
+            # combine_first: sub(rich全量) 优先, old 补齐NaN与旧日期; 天然去重
+            combined = sub.combine_first(old).sort_index()
+            combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+            combined.to_parquet(stock_file)
         else:
             sub.to_parquet(stock_file)
 
@@ -364,7 +383,7 @@ def sync_jhjj_hsl(dry_run: bool = False):
 
     # 逐股票合并
     for stock in df["symbol"].unique():
-        stock_str = str(stock).zfill(6)
+        stock_str = str(int(stock))  # 非前导零命名，与本地文件一致
         sub = df[df["symbol"] == stock].copy()
         sub = sub.drop(columns=["symbol"])
         if "date" in sub.columns:
@@ -412,7 +431,7 @@ def sync_shareholder_count(dry_run: bool = False):
 
     # 逐股票合并
     for stock_code in df["code"].unique():
-        stock_str = str(stock_code).zfill(6)
+        stock_str = str(int(stock_code))  # 非前导零命名，与本地文件一致
         sub = df[df["code"] == stock_code].copy()
         sub = sub.drop(columns=["code"])
         if "date" in sub.columns:
@@ -432,6 +451,25 @@ def sync_shareholder_count(dry_run: bool = False):
 
     print(f"  ✅ 股东户数合并完成: {len(df)} 行, {df['code'].nunique()} 只股票", flush=True)
     local_csv.unlink(missing_ok=True)
+
+
+def _normalize_minute_by_date(df: pd.DataFrame) -> pd.DataFrame:
+    """将下载的分钟 per-date parquet 统一为 MultiIndex(instrument, datetime) 格式。
+
+    远程文件可能是 RangeIndex + symbol/trade_date 列（新格式），
+    模板要求 MultiIndex(instrument, datetime)（旧格式）。
+    """
+    if not isinstance(df.index, pd.MultiIndex) and "symbol" in df.columns and "trade_date" in df.columns:
+        df = df.copy()
+        df = df.set_index(["symbol", "trade_date"])
+        df.index = df.index.set_names(["instrument", "datetime"])
+        # 删除冗余 date 列
+        if "date" in df.columns:
+            df = df.drop(columns=["date"])
+        df.index = df.index.set_levels(
+            [df.index.levels[0], pd.to_datetime(df.index.levels[1])]
+        )
+    return df
 
 
 def sync_minute_incremental(dry_run: bool = False) -> list[str]:
@@ -462,9 +500,13 @@ def sync_minute_incremental(dry_run: bool = False) -> list[str]:
             print(f"  ⚠️ 下载失败 {date_str}: {e}", flush=True)
             continue
 
+        # 统一为 MultiIndex(instrument, datetime) 格式并写回
+        df = pd.read_parquet(local_dst)
+        df = _normalize_minute_by_date(df)
+        df.to_parquet(local_dst)
+
         # 检测新列
-        df = pq.read_schema(local_dst)
-        remote_cols = set(df.names) - {"symbol", "date", "datetime", "instrument"}
+        remote_cols = set(df.columns) - {"symbol", "date", "datetime", "instrument"}
         schema = _load_schema()
         schema_cols = set(schema["minute"]["columns"].keys())
         new_cols = remote_cols - schema_cols
@@ -476,17 +518,23 @@ def sync_minute_incremental(dry_run: bool = False) -> list[str]:
             update_factor_field_schema(new_cols, "remote_minute")
             _new_cols_all["minute"].extend(sorted(new_cols))
 
-        # 提取股票列表
-        df = pd.read_parquet(local_dst, columns=["symbol"] if "symbol" in df.names else ["instrument"])
-        for col in ["symbol", "instrument"]:
-            if col in df.columns:
-                all_stocks.update(str(s).zfill(6) for s in df[col].unique())
-                break
+        # 提取股票列表（非前导零命名）
+        if "instrument" in df.index.names:
+            all_stocks.update(str(int(s)) for s in df.index.get_level_values("instrument").unique())
+        elif "symbol" in df.columns:
+            all_stocks.update(str(int(s)) for s in df["symbol"].unique())
 
-    # 更新元数据
+    # 更新元数据（stock_list 与已有列表合并）
     all_dates = sorted(local_dates | set(new_dates))
     (DATA_DIR / "stock_data/minute_by_date/trade_dates.json").write_text(json.dumps(all_dates))
-    (DATA_DIR / "stock_data/minute_by_date/stock_list.json").write_text(json.dumps(sorted(all_stocks)))
+    stock_list_path = DATA_DIR / "stock_data/minute_by_date/stock_list.json"
+    if stock_list_path.exists():
+        try:
+            existing_stocks = set(json.loads(stock_list_path.read_text()))
+        except Exception:
+            existing_stocks = set()
+        all_stocks = existing_stocks | all_stocks
+    stock_list_path.write_text(json.dumps(sorted(all_stocks)))
 
     print(f"  ✅ 完成: {len(new_dates)} 天, {len(all_stocks)} 只", flush=True)
     return new_dates
@@ -517,11 +565,15 @@ def sync_minute_to_per_stock(new_dates: list[str]):
         if not src.exists():
             continue
         df = pd.read_parquet(src)
+        # 兼容两种格式：RangeIndex+symbol/trade_date 或 MultiIndex(instrument, datetime)
+        df = _normalize_minute_by_date(df)
+        if not isinstance(df.index, pd.MultiIndex) or "instrument" not in df.index.names:
+            continue
         if schema is None:
             schema = df.columns.tolist()
         # 按 instrument 分组（index 是 MultiIndex: datetime, instrument）
         for stock, sub in df.groupby(level="instrument"):
-            stock_code = str(stock).zfill(6)
+            stock_code = str(int(stock))  # 非前导零命名
             sub = sub.droplevel("instrument")  # → DatetimeIndex
             stock_data[stock_code].append(sub)
         total_rows += len(df)

@@ -87,12 +87,7 @@ def _detect_data_dir() -> Path:
     return Path(".")
 
 FULL_DATA_DIR = _detect_data_dir()
-_REMOTE_OUTPUTS = [
-    Path("/mnt/remote_e/paper_factors/文献因子_全量"),
-    Path("E:\\paper_factors\\文献因子_全量"),
-    Path("Z:\\paper_factors\\文献因子_全量"),
-]
-OUTPUT_BASE = next((p for p in _REMOTE_OUTPUTS if p.exists()), PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量")
+OUTPUT_BASE = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
 
 try:
     from scripts.sync_utils import ensure_remote_mounted, REMOTE_BASE_FULL as REMOTE_BASE
@@ -134,9 +129,15 @@ def run_locally(code_path: Path, workspace: Path, data_dir: Path, timeout: int =
             if line:
                 print(f"    {line}")
         return None
-    output = workspace / "result.parquet"
-    if not output.exists():
-        print(f"  ❌ 未找到输出文件 result.parquet")
+    # 寻找实际输出的 parquet（模板可能以因子名命名而非 result.parquet）
+    parquet_files = sorted(workspace.glob("*.parquet"))
+    result_parquet = workspace / "result.parquet"
+    if result_parquet.exists():
+        output = result_parquet
+    elif parquet_files:
+        output = parquet_files[-1]
+    else:
+        print(f"  ❌ 未找到输出 parquet 文件")
         return None
     return output
 
@@ -164,8 +165,12 @@ def run_in_docker(code_path: Path, workspace: Path, data_dir: Path, timeout: int
         return None
     output = workspace / "result.parquet"
     if not output.exists():
-        print(f"  ❌ 未找到输出文件 result.parquet")
-        return None
+        parquet_files = sorted(workspace.glob("*.parquet"))
+        if parquet_files:
+            output = parquet_files[-1]
+        else:
+            print(f"  ❌ 未找到输出 parquet 文件")
+            return None
     return output
 
 
@@ -212,6 +217,10 @@ def create_source_report_md(source_meta: dict, factor_name: str) -> str:
 
 def create_metadata(factor_name: str, factor_type: str, parquet_path: Path, code_path: Path, source_meta: dict = None) -> dict:
     df = pd.read_parquet(parquet_path)
+    try:
+        date_range = f"{df.index.min().strftime('%Y-%m-%d')} ~ {df.index.max().strftime('%Y-%m-%d')}"
+    except AttributeError:
+        date_range = f"{df.index.min()} ~ {df.index.max()}"
     meta = {
         "factor_name": factor_name,
         "display_name": factor_name,
@@ -223,7 +232,7 @@ def create_metadata(factor_name: str, factor_type: str, parquet_path: Path, code
         "time_granularity": "daily",
         "dataset": "full",
         "stock_count": df.shape[1],
-        "date_range": f"{df.index.min().strftime('%Y-%m-%d')} ~ {df.index.max().strftime('%Y-%m-%d')}",
+        "date_range": date_range,
         "tags": ["literature_factor", factor_type, "full_dataset"],
         "updated_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "source_report_title": source_meta.get("source_report_title", "") if source_meta else "",

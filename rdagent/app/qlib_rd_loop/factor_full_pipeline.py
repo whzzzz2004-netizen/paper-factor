@@ -115,16 +115,8 @@ def _detect_data_dir() -> Path:
                 return Path(p)
     return Path(".")
 
-# 输出目录优先远程（模块级别 try-except 保底，防止 CIFS 卡死）
-_REMOTE_OUTPUTS = [
-    Path("/mnt/remote_e/paper_factors/文献因子_全量"),
-    Path("E:\\paper_factors\\文献因子_全量"),
-    Path("Z:\\paper_factors\\文献因子_全量"),
-]
-try:
-    FULL_OUTPUT_BASE = next((p for p in _REMOTE_OUTPUTS if p.exists()), PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量")
-except Exception:
-    FULL_OUTPUT_BASE = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
+# 输出目录：默认本地，不依赖远程 CIFS 挂载
+FULL_OUTPUT_BASE = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
 
 try:
     _detected = _detect_data_dir()
@@ -349,10 +341,12 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
     """用本地模板运行分钟因子（直接复用 .code.py，已含 per-stock 模板）"""
     factor_dir.mkdir(parents=True, exist_ok=True)
 
-    # 复制 .code.py（优先用远程已更新的版本）
+    # 复制 .code.py（默认用本地文献因子_全量版本；显式启用时才拉取远程已更新版本）
     code_dst = factor_dir / f"{factor_name}.code.py"
     report_name = factor_dir.parent.name
-    remote_code = _find_remote_code(factor_name, report_name)
+    remote_code = None
+    if os.environ.get("FACTOR_USE_REMOTE_CODE") == "1":
+        remote_code = _find_remote_code(factor_name, report_name)
     src_code = remote_code if remote_code else code_path
     if src_code.resolve() != code_dst.resolve():
         shutil.copy(src_code, code_dst)
@@ -483,6 +477,84 @@ def pd_read_parquet(path):
 # ── 后处理 ──
 
 
+def _load_test_meta(factor_dir: Path, factor_name: str) -> dict:
+    """从测试输出目录（literature_reports）查找因子的测试阶段 meta。
+
+    优先匹配带日期子目录的路径（literature_reports/{DATE}/{report}/{factor}），
+    其次回退到无日期子目录路径（兼容旧结构）。
+    若测试 meta 仍缺描述字段，再从 extracted_reports/{DATE}/{report}.extracted.json
+    按因子名补全 description/formulation/source_excerpt/cols→variables。
+    """
+    lit = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "literature_reports"
+    meta = {}
+    candidates = [
+        lit / factor_dir.parent.parent.name / factor_dir.parent.name
+        / factor_name / f"{factor_name}.meta.json",
+        lit / factor_dir.parent.name / factor_name / f"{factor_name}.meta.json",
+    ]
+    for c in candidates:
+        if c.exists():
+            try:
+                meta = json.loads(c.read_text(encoding="utf-8"))
+                break
+            except Exception:
+                pass
+    # 兜底：日期子目录结构对不上时，递归搜索同名因子 meta（按修改时间取最新）
+    if not meta:
+        hits = sorted(lit.rglob(f"{factor_name}.meta.json"),
+                      key=lambda p: p.stat().st_mtime, reverse=True)
+        for h in hits[:5]:
+            try:
+                m = json.loads(h.read_text(encoding="utf-8"))
+                if m:
+                    meta = m
+                    break
+            except Exception:
+                continue
+
+    # 描述字段或 variables 仍为空 → 从 extracted_reports 提取 JSON 补全
+    if (not meta.get("factor_description") or not meta.get("factor_formulation")
+            or not meta.get("variables")):
+        report_name = factor_dir.parent.name
+        date_str = factor_dir.parent.parent.name if factor_dir.parent.parent.name.isdigit() else ""
+        _lit = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "extracted_reports"
+        extract_candidates = []
+        if date_str:
+            extract_candidates.append(_lit / date_str / f"{report_name}.extracted.json")
+        extract_candidates.append(_lit / f"{report_name}.extracted.json")
+        # 兜底：结构对不上时递归搜索同名 extracted.json（按修改时间取最新）
+        if not any(ec.exists() for ec in extract_candidates):
+            hits = sorted(_lit.rglob(f"{report_name}.extracted.json"),
+                          key=lambda p: p.stat().st_mtime, reverse=True)
+            extract_candidates.extend(hits[:3])
+        for ec in extract_candidates:
+            if not ec.exists():
+                continue
+            try:
+                data = json.loads(ec.read_text(encoding="utf-8"))
+            except Exception:
+                continue  # 文件损坏（如 source_excerpt 引号未转义）→ 跳过，不影响其他字段
+            if isinstance(data, list):
+                factors = data
+            elif isinstance(data, dict):
+                factors = data.get("factors", [])
+            else:
+                continue
+            if not isinstance(factors, list):
+                continue
+            for f in factors:
+                if f.get("name") == factor_name:
+                    meta.setdefault("factor_description", f.get("description", ""))
+                    meta.setdefault("factor_formulation", f.get("formulation", ""))
+                    meta.setdefault("source_excerpt", f.get("source_excerpt", ""))
+                    meta.setdefault("source_report_title", report_name)
+                    if not meta.get("variables") and f.get("cols"):
+                        meta["variables"] = {c: c for c in f["cols"]}
+                    break
+            break
+    return meta
+
+
 def post_process(factor_name: str, factor_dir: Path, factor_type: str,
                  test_meta: dict | None = None, skip_eval: bool = False) -> bool:
     """评估 + 绘图 + meta.json + 复制报告"""
@@ -591,6 +663,13 @@ def post_process(factor_name: str, factor_dir: Path, factor_type: str,
 
     # meta.json
     test_meta = test_meta or {}
+    # 回退：若传入的 test_meta 缺少描述字段，从测试输出目录补全（逐字段合并，不覆盖已有值）
+    _tm = _load_test_meta(factor_dir, factor_name)
+    if _tm:
+        for _k in ("factor_description", "factor_formulation", "variables",
+                   "source_report_title", "source_report_path", "source_excerpt"):
+            if not test_meta.get(_k):
+                test_meta[_k] = _tm.get(_k, "")
     meta = {
         "factor_name": factor_name,
         "display_name": factor_name,

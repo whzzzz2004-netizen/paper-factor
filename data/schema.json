@@ -179,6 +179,14 @@
       "factor": {
         "description": "复权因子",
         "source": "remote_minute"
+      },
+      "return": {
+        "description": "return",
+        "source": "remote_minute"
+      },
+      "trade_date": {
+        "description": "trade_date",
+        "source": "remote_minute"
       }
     }
   }

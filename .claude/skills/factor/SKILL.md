@@ -1,354 +1,279 @@
-# /factor — 研报/文章因子端到端处理
-
-完全替代 `start` 命令。全自动决策，不问用户任何问题。
+# /factor — 研报/文章因子端到端处理（两阶段架构）
 
 ## 用法
 
-- `/factor` — 扫描所有未处理内容，**全部并行提取 → 编码 → 测试 → 导出到 literature_reports/YYYYMMDD/**
+- `/factor` — 扫描所有未处理内容，处理所有待处理项
 - `/factor papers/inbox/某篇.pdf` — 处理单个 PDF
 - `/factor 一段因子描述` — 处理纯文本
 
 ## 核心规则
 
-0. **高效使用工具，禁止重复造轮子**：所有数据获取（PDF提取、网站抓取、因子测试、部署等）都必须用 `claude_factor_helper.py` 提供的命令，不要自己安装库、写爬虫、或手动处理数据。给的命令不够用再问，不要擅自尝试其他方法。
+0. **必须用 `claude_factor_helper.py` 的命令**，不得自己写爬虫、装库、手动处理数据
+1. **全自动决策**，不问用户
+2. **强制提取**：每篇最多15个因子，无论是否明确写"因子"二字。择时策略的阈值→截面排序因子；行业轮动→行业偏离度；选股逻辑→多单维度因子
+3. **子因子独立提取**，formulation 必须完整（从原始数据字段出发），禁止 `f(·)` 占位符
+4. **禁止合成因子**
+5. **唯一跳过场景**：所需数据完全不可用（如专有数据库API）。择时/选基/宏观/债券不跳过
+6. `source_excerpt` 从原文直接复制
 
-1. **全自动**：不问用户。数据不可用→跳过；3次修复仍失败→跳过并记录；网站反爬/无法读取→跳过并 mark-done
-2. **强制提取，宁可多提不可漏提**：每篇最多15个因子。**无论文章是否明确写了"因子"二字，都必须从中提炼可量化信号**。择时策略的阈值→转为截面排序因子；行业轮动→提炼行业偏离度；选股逻辑→拆解为多个单维度因子。**不允许"纯方法论跳过"——任何文章都有可因子化的东西。**
-3. **子因子独立提取**，不合并。方法论也要提取（阈值未给用median）
-4. **formulation 必须完整**：从原始数据字段出发的完整数学表达式，禁止 `f(·)` 等占位符
-5. **禁止合成因子**（等权合成、IC加权、Z-score标准化后相加等）
-6. **唯一跳过场景**：所需数据完全不可用（如需要专有数据库API、另类数据）。择时、选基、宏观、债券等研报**不跳过**，从中提取可量化的截面/时间序列因子
-7. `source_excerpt` 从研报原文直接复制，不做概括
-
-## 工作流
+## 两阶段工作流
 
 ```
-scan-pending → 收集所有待处理项（papers + websites + ideas 合并为一个队列）
-  → 启动 5 个 sub-agent worker（run_in_background=true）
-  → 每个 worker 领一个任务，处理完立即领下一个
-  → 队列为空后，worker 返回结果
-→ 主 Claude 收集全部结果 → mark-done
+scan-pending → [Phase 1] 提取+定义因子 (每个paper一个sub-agent, 只做extract+define)
+            → [Phase 2] 编码+测试 (每个factor一个sub-agent, 只写核心函数+跑test-and-export)
+            → deploy-to-full + mark-done
 ```
 
-**`/factor` 只负责测试线（提取 → 编码 → 测试 → 导出到 `literature_reports/`）。全量线（`文献因子_全量/`）是独立命令 `run-full`，不在 `/factor` 流程内。**
+**核心原则：每个 sub-agent 的任务极其简单，没有犯错空间。**
 
-核心原则：工作队列模式。把所有待处理项（不论类型）放进一个队列，启动固定数量的 worker，谁空闲谁领任务。不允许任何 worker 空闲等待。
+---
 
-错误做法（禁止）：
-- ❌ 分批启动（先 paper 再 website）
-- ❌ 等全部 paper 结束再启动 website
-- ❌ 主 Claude 串行派发
-
-正确做法（强制）：
-- ✅ scan-pending 后，所有 papers + websites + ideas 合并为一个任务列表
-- ✅ 同时启动 5 个 background sub-agent
-- ✅ 每个 sub-agent 处理完当前任务后，主 Claude 立即从队列取下一个任务派给它
-- ✅ 队列为空时，让 sub-agent 返回结果
-
-### Step 1: 扫描 + 建队列
-```
+### Step 0: 扫描
+```bash
 python scripts/claude_factor_helper.py scan-pending
 ```
-返回 JSON，含 `papers[]`、`websites[]`、`ideas[]` 三个列表。
+输出 JSON，含 `papers[]`、`websites[]`、`ideas[]` 三个列表。
 
-**将所有待处理项合并为一个队列**（不论类型），并按"浅层优先"排序：deep_learning 类型的研报放到末尾，确保普通因子不会被 DL 因子阻塞。每个队列元素含：
-- `type`: "paper" / "website" / "idea"
-- `path`: PDF 路径（仅 paper）
-- `filename`: PDF 文件名（仅 paper）
-- `index`: 在 scan-pending 返回列表中的序号（用于 website extract）
-- `slug`: 唯一标识（用于网站 extracted.json 读取和 mark-done）
-- `text`: idea 原文（仅 idea）
-- `title`: 标题（可能为 null）
-- `source_excerpt`: 网站摘要（仅 website）
+**队列排序规则：** 含 "深度学习/GRU/TCN/LSTM/deep_learning" 的排末尾，其他优先。
 
-### Step 2: 启动 worker 池
+---
 
-同时启动 **5 个** `general-purpose` sub-agent（`run_in_background=true`）。
+### Step 1: Phase 1 — 提取 + 定义因子
 
-**队列排序规则（浅层优先）：** 把所有任务按文件名/路径中是否含 "深度学习"、"GRU"、"TCN"、"LSTM"、"deep_learning" 等关键词排序。含这些词的排到队列末尾，不含的优先执行。这样普通因子先跑完释放 worker，DL 因子最后只剩少量 worker 处理，避免 GPU 争抢。
+对每个待处理项（paper/website/idea），启动一个 sub-agent。**每个 sub-agent 只做两件事：提取原文 → 定义因子。不做编码测试。**
 
-派发逻辑：
-```
-tasks = flatten(papers + websites + ideas)  # 全部任务
-next_task_idx = 0
+sub-agent 同时启动最多 **5 个**（`run_in_background=true`），完成后主 Claude 立即派发下一个。
 
-for _ in range(5):  # 启动 5 个 worker
-    task = tasks[next_task_idx]; next_task_idx += 1
-    start_worker(task)  # run_in_background=true
-
-每当一个 worker 返回结果:
-    if next_task_idx < len(tasks):
-        task = tasks[next_task_idx]; next_task_idx += 1
-        start_worker(task)  # 立即派新任务
-    else:
-        worker_pool_empty_slots += 1
-
-当 worker_pool_empty_slots == 5:  # 全部完成
-    进入 Step 3
-```
-
-**关键：worker 返回结果后，必须在同一轮立即派发下一个任务，不能等所有 worker 都结束再派。**
-
-#### 构造 sub-agent 的 prompt
+#### Phase 1 sub-agent prompt（极简 ~30 行）
 
 ```
 subagent_type=general-purpose
-prompt = f"""
-你是一个研报因子提取 agent。请全权处理以下这篇报告：读原文 → 提取因子 → 逐个编码测试。
+prompt = """
+你只做一件事：读原文 → 定义因子。不做编码，不做测试。
 
-### 报告信息
-- 类型: {{type}}  (paper / website / idea)
-- PDF 路径: {{path}}  (仅 paper)
-- 文件名: {{filename}}  (仅 paper)
-- 网站索引: {{index}}  (仅 website)
-- slug: {{slug}}
-- 运行日期: {DATE}  (YYYYMMDD，所有输出路径必须包含此日期子目录)
+### 输入
+- 类型: {type}
+- PDF路径: {path}  (仅paper)
+- 文本: {text}  (仅idea)
+- 网站索引: {index} (仅website)
 
-### 你的任务
-
-#### Step A: 获取原文
-{'  python scripts/claude_factor_helper.py extract-pdf ' + path if type == 'paper'
- else '  python scripts/claude_factor_helper.py extract-website --index ' + str(index) if type == 'website'
- else '  直接使用以下 text 字段作为原文'}
-**直接使用以上命令的输出结果**，不要自己安装 pdfminer/pymupdf 等库去读 PDF，不要用其他方式获取内容。命令的输出就是 JSON 格式的全文。
-输出是 JSON，含 `content`（全文）和 `metadata`（标题、作者等）。
-仔细阅读全文，理解其投资逻辑和核心方法论。**即使全文没提"因子"二字，也必须从中提炼可量化的信号。**
-
-**⚠️ 重要：如果 extract 失败（如网站反爬/无法读取/返回空内容），直接跳过该任务，返回：**
-```json
-{"report_name": "{{报告标题}}", "factors": [], "skipped": true, "skip_reason": "网站无法读取"}
-```
-**不要尝试其他方式获取内容，不要重试。**
-
-#### Step B: 定义因子
-分析原文，定义该篇报告的所有因子。每条因子包含：
-- name: 因子名（英文驼峰）
-- description: 中文描述
-- formulation: 从原始数据字段出发的完整数学表达式
-- type: daily / minute / cross_section / minute_cs / deep_learning
-- lookback: 回溯天数（1月≈20, 1季≈60, 6月≈120, 1年≈250）
-- cols: 需要的列名列表
-- source_excerpt: 从原文直接复制
-
-**规则：** 最多15个因子；formulation 必须完整，禁止 `f(·)`；子因子独立提取不合并；宁可多提不可漏提。
-
-**数据可用性检查：** 定义因子前先运行 `python scripts/claude_factor_helper.py show-columns` 查看可用列。如果因子需要的数据在可用列中不存在（如期权数据、期货数据、Level2 订单簿、另类数据等），直接跳过该因子，不浪费时间去编码测试。**只有所需列都在可用列表中的因子才进入 Step C。**
-
-全部定义完成后，保存（需加 `--date` 写入日期子目录）：
-  python scripts/claude_factor_helper.py save-extracted --name "{{报告标题}}" --date {DATE} < 你的因子列表 JSON
-
-#### Step C: 逐个编码 + 测试（顺序执行）
-对 Step B 定义的每个因子，逐个执行。**关键：连续执行，不要在每步之间停顿思考。**
-
-对每个因子，执行以下操作序列（一次完成，中间不要停下来"想"）：
-
-**① 获取参考信息**：连续执行以下两条命令，一次性获取全部参考：
-```bash
-# 先调 find_similar_factors（获取同类因子代码参考）
-python scripts/claude_factor_helper.py find-similar --type <模板类型> --cols "<列名>" --lookback <回溯天数>
-
-# 再调 retrieve-knowledge（获取相关领域规则）
-python scripts/claude_factor_helper.py retrieve-knowledge <因子描述/关键词>
-```
-两条命令的输出都拿到后，直接进入下一步，不要在中间思考。
-
-**② 写核心函数 + 跑测试**：连续执行，不要停顿：
-```bash
-# 写代码到 /tmp/factor_{{name}}.py
-# 然后立刻跑 test-and-export，不要停下来确认代码
-# 重要：必须加 --date {DATE} 把输出写入日期子目录 literature_reports/{DATE}/
-python scripts/claude_factor_helper.py test-and-export \
-  --code /tmp/factor_{{name}}.py \
-  --report "{{报告标题}}" --factor "{{name}}" \
-  --cols "{{cols}}" --lookback {{lookback}} \
-  --description "{{description}}" --formulation "{{formulation}}" \
-  --source-excerpt "{{source_excerpt}}" \
-  --source-report-title "{{报告标题}}" \
-  --source-report-path "{{path if type == 'paper' else ''}}" \
-  --date {DATE}
-```
-
-**写代码规则：**
-- 根据模板类型确定函数签名（见下方对照表），**只实现核心计算逻辑**
-- **不要写模板框架代码**（数据加载、日期遍历、并行调度、输出转换、涨停剔除等都由模板自动处理）
-- **不要调试模板行为**（如日期索引格式、数据加载方式）— 模板已处理好，看 test-and-export 的错误信息修改你的核心函数即可
-- **辅助函数必须定义在核心函数内部**（`def inner_func(): ...` 嵌在核心函数内），不得定义为外部函数（否则模板列检测扫不到 → KeyError）
-
-**③ 检查结果 + 重试**：看 test-and-export 的 JSON 输出：
-- `success: true` → 完成，进入下一个因子
-- `success: false` → 根据错误信息修改核心函数 → 立刻重跑（回到②），最多5次
-  - `all_nan_warning` 出现时：因子值几乎全为空，仔细检查数据流问题，不要简单重试同一代码
-  - **5次全失败后，禁止手动写任何文件**。在 Step D 如实报告 failure。
-
-**重要：** 因子之间可以共享上下文。因子2如果与因子1计算相似，可以复用因子1的代码模式。顺序执行完所有因子。
-
-#### Step D: 返回结果
-
-返回 JSON:
+### Step 1: 获取原文
 {{
-  "report_name": "{{报告标题}}",
-  "factors": [
-    {{"name": "因子1", "success": true, "code_path": "...", "error": null}},
-    {{"name": "因子2", "success": false, "code_path": "...", "error": "失败原因", "retries": 3}}
-  ]
+  'paper': f'python scripts/claude_factor_helper.py extract-pdf "{path}"',
+  'website': f'python scripts/claude_factor_helper.py extract-website --index {index}',
+  'idea': '直接使用 text 字段'
 }}
+命令输出是 JSON。如果提取失败/空内容，直接跳过：{{"skipped": true}}
 
-### 模板类型 → 用户函数名对照
-- daily → def calc_factor_single_stock(df, trade_date, stock):
-- minute → def calc_factors_one_day(df, stock):
-- cross_section → def calc_factor_cross_section(all_data, trade_date):
-- minute_cs → def calc_factor_minute_raw(df, stock): + def cross_section_transform(all_values):
-- deep_learning → def train_model(all_data, trade_date): + def predict_batch(model, data_dict, trade_date) -> (factor_name, {stock: value})
-- deep_learning (fallback) → def train_model(all_data, trade_date): + def predict(model, df, trade_date, stock):
-  > `predict_batch` 优先（GPU batch推理），`predict` 作为无GPU时的回退
+### Step 2: 定义因子
+运行 python scripts/claude_factor_helper.py show-columns 查看可用列。
 
-### 编码硬约束
-{ENCODING_RULES}
+分析原文，定义所有因子。每条：
+- name: 英文驼峰
+- description: 中文
+- formulation: 完整数学表达式
+- type: daily/minute/cross_section/minute_cs/deep_learning
+- lookback: 天数 (1月≈20, 1季≈60, 6月≈120, 1年≈250)。注意：minute/minute_cs 类型最大 120（约 6 个月），即使论文用 1 年也要截断
+- cols: 列名列表
+- source_excerpt: 原文复制
+
+最多15个因子。formulation 必须完整。只有可用列存在的因子才保留。
+
+### Step 3: 保存
+python scripts/claude_factor_helper.py save-extracted --name "标题" --date {DATE} < 因子JSON
+
+### Step 4: 返回
+{{{{
+  "report_name": "标题",
+  "date": "{DATE}",
+  "factors": [{{"name": "F1", "type": "daily", "lookback": 20, "cols": ["close"]}}, ...],
+  "skipped": false
+}}}}
+
+### 禁止
+- ❌ 不写代码，不跑测试
+- ❌ 不调 FactorFBWorkspace
+- ❌ 不加载 parquet
 """
 ```
 
-### Step 3: 部署到全量目录 + 同步远程 + 标记完成
-
-等所有 sub-agent 完成后，对**每个成功的因子**执行一条命令搞定：
-
-```bash
-python scripts/claude_factor_helper.py deploy-to-full \
-  --code literature_reports/<报告>/<因子>/<因子>.code.py \
-  --date YYYYMMDD
+#### 派发逻辑
 ```
+tasks = flatten(papers + websites + ideas, DL排最后)
+for _ in range(min(5, len(tasks))):
+    dispatch_phase1_worker(task)
 
-`--date` 参数指定日期子目录（如 `20260726`），部署到 `文献因子_全量/YYYYMMDD/<报告>/<因子>/`。
-
-这个命令自动完成：
-1. 复制 `.code.py` 到 `文献因子_全量/[YYYYMMDD/]<报告>/<因子>/`，同时把 DATA_DIR 路径中的 `_1000` 去掉（测试数据→全量数据）
-2. 从测试目录继承 `meta.json`，标注 `pipeline_status: "deployed"`（未运行，仅部署）
-3. 输出部署结果 JSON
-
-然后同步到远程（`--date` 可选，指定日期子目录）：
-```bash
-# 同步单个因子
-python scripts/claude_factor_helper.py sync-full --report "报告标题" --factor "因子名" --date 20260726
-
-# 或同步整份报告的所有因子
-python scripts/claude_factor_helper.py sync-full --report "报告标题" --date 20260726
-
-# 或同步所有已部署因子
-python scripts/claude_factor_helper.py sync-full --all --date 20260726
-```
-
-最后标记完成：
-```bash
-python scripts/claude_factor_helper.py mark-done --name "文件名.pdf"
-# 或 website/idea 用 slug:
-python scripts/claude_factor_helper.py mark-done --name <slug>
+每当一个 worker 返回:
+    results.append(worker.result)
+    if 还有剩余任务: dispatch_phase1_worker(下一个任务)
+    elif len(results) == len(tasks): 进入 Phase 2
 ```
 
 ---
 
-**`/factor` 到此结束。产出：**
+### Step 2: Phase 2 — 编码 + 测试
 
-| 目录 | 内容 | 状态 |
-|------|------|------|
-| `literature_reports/<report>/<factor>/` | .code.py, .parquet (测试300只), .meta.json | 测试通过 |
-| `文献因子_全量/<report>/<factor>/` | .code.py (全量数据路径), meta.json (pipeline_status=deployed) | 已部署，未运行 |
+收集 Phase 1 所有成功定义的因子，**为每个因子启动一个 sub-agent**。每个 sub-agent 只做：**写核心函数 → 跑 test-and-export**。
 
-全量计算是独立命令 `run-full`，需手动触发：
-```bash
-python scripts/claude_factor_helper.py run-full \
-  --code 文献因子_全量/<report>/<factor>/<factor>.code.py \
-  --factor-name MyFactor \
-  --report-name "报告名"
+最多同时启动 **5 个** sub-agent。主 Claude 控制派发。
+
+#### Phase 2 sub-agent prompt（极简 ~30 行）
+
 ```
+subagent_type=general-purpose
+prompt = """
+你只做一件事：写一个核心函数并跑 test-and-export。不做其他任何事。
+
+### 参考同类型因子（节省 token）
+查看已生成的成功因子代码，参考其核心函数结构：
+ls literature_reports/{DATE}/{report_name}/{name}/{name}.code.py
+只看核心函数部分（calc_factor_xxx），不要复制模板代码。
+注意参考同类型因子（daily 参考 daily，minute_cs 参考 minute_cs）。
+
+### 因子定义
+- 因子名: {name}
+- 类型: {type}
+- 函数名: {func_name}  (见下方对照表)
+- lookback: {lookback}
+- 列: {cols}
+- 报告名: {report_name}
+- formulation: {formulation}
+- description: {description}
+- source_excerpt: {source_excerpt}
+
+### 你的任务（只有两步）
+
+#### 1. 写核心函数到 /tmp/factor_{name}.py
+根据类型写核心函数：
+{daily: **`def calc_factor_series(df, stock) -> pd.Series`**（向量化，1次调用算完全部日期）。可选写 `calc_factor_single_stock(df, trade_date, stock)` 作为 fallback，模板默认提供包装。
+ minute: `def calc_factors_one_day(df, stock):`,
+ cross_section: `def calc_factor_cross_section(all_data, trade_date):`,
+ minute_cs: `def calc_factor_minute_raw(df, stock):` + `def cross_section_transform(all_values):`,
+ deep_learning: `def train_model(all_data, trade_date):` + `def predict_batch(model, data_dict, trade_date):`}
+
+**日线因子必须优先写 `calc_factor_series`（向量化版本）**：
+```python
+def calc_factor_series(df, stock):
+    \"\"\"一次算完全部日期的因子值。返回 pd.Series(index=原日期, name=因子名)\"\"\"
+    if df is None or len(df) < LOOKBACK_DAYS:
+        return pd.Series(dtype=float, name=因子名)
+    # 用 pandas rolling 向量化计算，避免逐日循环
+    s1 = df["col1"].rolling(20, min_periods=20).sum()
+    s2 = df["col2"].rolling(20, min_periods=20).mean()
+    ...
+    result = ...  # 组合逻辑
+    result.name = "因子名"
+    return result
+```
+**性能要求**：`calc_factor_series` 内禁止 for 循环逐行/逐日计算。必须用 pandas/numpy 向量化操作（rolling/expanding/shift/diff/groupby transform）。
+`calc_factor_single_stock` 可省略（模板自动 fallback 到逐日模式，但速度慢 10~100x）。
+
+只实现核心计算逻辑。不要写模板框架代码（数据加载、并行、涨停剔除等模板会自动处理）。
+
+**分钟模板有两条路径，LLM 自行判断用哪个：**
+- `calc_factors_one_day(df, stock)` → **非向量化**，模板按 LOOKBACK 滑动窗口逐天调用。
+  适合：单日截面因子、LOOKBACK≤21 的因子。每只股票调 N 次（N=天数），每次处理 LOOKBACK 天数据。
+- `calc_factor_series(df, stock)` → **向量化**，一次接收全部数据，返回 `pd.Series(index=日期, name="因子名")`。
+  适合：滚动累积/平均类因子（过去 N 天累加、累乘、均值等），LOOKBACK 大的因子。每只股票只调 1 次，快 10~30 倍。
+  **不需要删 `calc_factors_one_day`，模板会自动优先走 `calc_factor_series`。**
+
+**判断原则：** 如果因子逻辑可以拆成"先算每日值，再跨日 rolling" → 用 `calc_factor_series`。如果因子逻辑依赖滑动窗口内的全量数据计算 → 用 `calc_factors_one_day`。不确定时两种都写，模板自动优先走向量化。
+
+**性能注意（分钟截面）：** 全量 5435 只股票 × 120 天分钟数据，避免 Python 逐元素循环（`for i in range` + `np.argmin`/`np.sum` 等）。优先用 numpy 向量化、O(n) 单调队列或前缀和。
+
+#### 2. 立即跑 test-and-export（写完后立刻执行，不停顿）
+```bash
+python scripts/claude_factor_helper.py test-and-export \
+  --code /tmp/factor_{name}.py \
+  --report "{report_name}" --factor "{name}" \
+  --cols "{cols}" --lookback {lookback} \
+  --description "{description}" --formulation "{formulation}" \
+  --source-excerpt "{source_excerpt}" \
+  --source-report-title "{report_name}" \
+  --date {DATE}
+```
+
+#### ⚠️ 绝对禁止（违反将导致流程失败）
+1. ❌ 不要编译代码（`py_compile`）
+2. ❌ 不要 import FactorFBWorkspace
+3. ❌ 不要自己加载 parquet
+4. ❌ 不要检查 schema
+5. ❌ 不要手动 debug
+6. **写代码 → 跑 test-and-export，中间不做任何事**
+
+#### 如果 test-and-export 失败（含错误和超时）
+- **普通错误**：看错误信息，修改函数代码后重新跑，最多重试 2 次
+- **超时**（超过 300s 无结果）：修改代码优化性能（减天数、向量化等）后重试，最多 **2 次修改机会**
+- **累计 3 次都失败** → 在结果中报告 failure，不阻塞后续因子
+
+### 返回格式
+{{"name": "{name}", "success": true/false, "code_path": "/tmp/factor_{name}.py", "error": null 或 "失败原因"}}
+"""
+```
+
+#### 派发逻辑
+```
+all_factors = flatten(所有Phase1结果的factors)
+next_idx = 0
+
+for _ in range(min(5, len(all_factors))):
+    dispatch_phase2_worker(all_factors[next_idx]); next_idx += 1
+
+每当一个 worker 返回:
+    results.append(worker.result)
+    if next_idx < len(all_factors):
+        dispatch_phase2_worker(all_factors[next_idx]); next_idx += 1
+    elif len(results) == len(all_factors):
+        进入 Step 3
+```
+
+---
+
+### Step 3: 部署 + 同步 + 标记完成
+
+**⚠️ 本步骤只做下面三件事，绝不跑全量计算（`run_all.py`/`run_factor_full.py` 等一律不碰）。全量 parquet 由用户自行启动的增量运算负责。** 不要因为全量目录里还没有 .parquet 就"好心"去补算。
+
+对每个成功的因子：
+```bash
+python scripts/claude_factor_helper.py deploy-to-full \
+  --code literature_reports/{DATE}/{report}/{factor}/{factor}.code.py \
+  --date {DATE}
+```
+
+同步到远程：
+```bash
+python scripts/claude_factor_helper.py sync-full --all --date {DATE}
+```
+
+标记完成：
+```bash
+python scripts/claude_factor_helper.py mark-done --name "文件名.pdf"
+# 或 website/idea:
+python scripts/claude_factor_helper.py mark-done --name <slug>
+```
+
+**Step 3 完成后即结束，不执行任何额外计算步骤。**
+
+---
+
+## 模板类型 → 函数名对照
+- daily → `def calc_factor_series(df, stock) -> pd.Series`（向量化，优先）。可选 `def calc_factor_single_stock(df, trade_date, stock)`（逐日 fallback）
+- minute → `def calc_factors_one_day(df, stock):`
+- cross_section → `def calc_factor_cross_section(all_data, trade_date):`
+- minute_cs → `def calc_factor_minute_raw(df, stock):` + `def cross_section_transform(all_values):`
+- deep_learning → `def train_model(all_data, trade_date):` + `def predict_batch(model, data_dict, trade_date):`
 
 ## 编码硬约束
-
-1. **T日 = df.iloc[-1]**
-2. 条件不满足返回 `{"因子名": np.nan}`，不返回 None
-3. **禁止月末判断**：每交易日都算，用滚动窗口
-4. 日线用 `pct_chg`（%）或 `close.pct_change()`，无 return 列
-5. 复权价：`close * factor`；单日涨跌用 `pct_chg`
-6. `df.index.date` 不放循环内
-7. 布尔序列 shift() 后 fillna(False)
-8. 字段不可用时用语义最接近的替代，注明"近似"
-9. GPU 仅 4GB，分 batch
-10. **禁止 `len(df) < X` 做上市天数筛选**
-11. **禁止未来数据**
-12. 日频窗口是整数交易日数
-13. np.inf/-np.inf → np.nan
-14. **禁止 Python for 循环遍历分钟级数据**：分钟因子（minute/minute_cs）`calc_factors_one_day` 内禁止逐分钟 for 循环。必须用 `groupby+shift`、`numpy` 向量化操作。每只股票每次调用的数据跨度固定（LOOKBACK_DAYS 天 × 240 分钟），必须 vectorized
-15. **分钟因子返回的 `pd.Series`，index 用 `datetime.date`**：`r.index = pd.Index(r.index.date)`，不要返回 `DatetimeIndex`。日线/daily 因子无此问题（按天返回 dict）。
-16. **禁止 `transform('count')`，统一用 `transform('size')`**：pandas 2.3 + `copy_on_write=False` 下 `transform('count')` 触发 `UnboundLocalError`，`transform('size')` 语义完全等价且无此 bug。
-17. **分钟因子需要按天滑动窗口时，用 dict 预分组代替 `np.isin`**：`np.isin(d_dates, window)` 对2000天×5000分钟构造全量掩码 O(N²)，改为 dict 按日期预收集值再窗口内 extend，O(N) 且 ~4x 加速。注意 `d_dates` 转成 `list(df.index.date)` 避免线程共享问题。模式：
-
-```python
-# 预分组（快4倍）
-d_dates = list(df.index.date)  # list防线程共享
-j_bool = condition.values
-day_dict = {}
-for j in range(len(d_dates)):
-    if j_bool[j]:
-        dt = d_dates[j]
-        if isinstance(dt, pd.DataFrame): dt = dt.iloc[0, 0]  # 线程安全保护
-        day_dict.setdefault(dt, []).append(value[j])
-
-unique_dates = sorted(set(d_dates))
-result = pd.Series(index=pd.Index(unique_dates), dtype=float)
-for i in range(20, len(unique_dates)):
-    d = unique_dates[i]
-    vals = []
-    for dd in unique_dates[i-20:i+1]:
-        arr = day_dict.get(dd)
-        if arr is not None: vals.extend(arr)
-    # ... 计算 ...
-```
-
-## 禁止规则
-
-1. **禁止 `rolling.apply(lambda)`** → loky segfault
-2. **禁止分钟因子读日线数据**
-3. **禁止合成因子**
-4. **禁止 `transform('count')`** → pandas 2.3 bug，统一用 `transform('size')`
-
-## 收益率区分
-
-- 日收益率（含隔夜跳空）：`pct_chg` 列（%）或 `close.pct_change()`
-- 日内收益率：`close / open - 1`
-
-## 领域知识 RAG
-
-编码前可通过 `retrieve_domain_knowledge()` 检索市场规则参考，知识库位于 `.claude/skills/factor/knowledge/`：
-- `limit_up.md` — 涨跌停规则、代码区间判断
-- `daily.md` / `minute.md` / `cross_section.md` — 各类型模板的数据列定义和约束
-- `precomputed.md` — 预计算因子列（121个）
-
-```bash
-python scripts/claude_factor_helper.py retrieve-knowledge "涨停阈值 科创板"
-python scripts/claude_factor_helper.py retrieve-knowledge "日线计算收益率"
-python scripts/claude_factor_helper.py retrieve-knowledge "分钟数据列名"
-```
-
-## 日期子目录结构
-
-每次 `/factor` 运行会在以下目录中创建 `YYYYMMDD/` 日期子目录：
-
-```
-git_ignore_folder/factor_outputs/
-├── literature_reports/20260726/<report>/<factor>/
-│   ├── .code.py, .parquet, .meta.json
-├── extracted_reports/20260726/<report>.json
-└── 文献因子_全量/20260726/<report>/<factor>/
-    ├── .code.py (全量数据路径), meta.json (pipeline_status=deployed)
-```
-
-`run_all --date YYYYMMDD` 只扫描该日期子目录下的因子。`daily_update --date YYYYMMDD` 同理。
-
-## lookback 转换
-
-1月≈20天, 1季≈60, 6月≈120, 1年≈250
-
-## 输出目录
-
-```
-git_ignore_folder/factor_outputs/literature_reports/<report>/<factor>/
-  .code.py, .parquet, .meta.json
-```
+1. T日 = df.iloc[-1]
+2. 返回 `{"因子名": np.nan}`，不返回 None
+3. 禁止月末判断
+4. 日线用 `pct_chg` 或 `close.pct_change()`
+5. `df.index.date` 不放循环内
+6. 布尔 shift() 后 fillna(False)
+7. 禁止 `len(df) < X` 做上市天数筛选
+8. 禁止未来数据
+9. np.inf/-np.inf → np.nan
+10. 禁止分钟级 for 循环（用向量化操作）
+11. 禁止 `transform('count')` → 用 `transform('size')`
+12. 禁止 `rolling.apply(lambda)`
+13. 禁止合成因子
