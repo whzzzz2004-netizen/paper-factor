@@ -425,7 +425,9 @@ if not _D or not (_D/"stock_data"/"minute_by_date").exists():
             _D = Path(".")
 DATA_DIR = _D
 MINUTE_BY_DATE_DIR = DATA_DIR / "stock_data" / "minute_by_date"
-_CHUNK_DIR = MINUTE_BY_DATE_DIR / "_minute_chunks"
+# chunk 目录按 CHUNK_SIZE 分目录缓存，避免不同分片尺寸的因子互相污染（管线=15 vs 部署代码=25）
+_CHUNK_SIZE = int(os.environ.get("FACTOR_CHUNK_SIZE", "25"))
+_CHUNK_DIR = MINUTE_BY_DATE_DIR / f"_minute_chunks_c{_CHUNK_SIZE}"
 STOCK_LIST = json.load(open(MINUTE_BY_DATE_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(MINUTE_BY_DATE_DIR / "trade_dates.json"))
 LOOKBACK_DAYS = min(max(1, {lookback_days}), 120)  # 分钟线至少1天，不超过120天（约6个月）
@@ -438,7 +440,6 @@ if _INC_START:
 _CODE_DIR = Path(__file__).parent
 
 N_WORKERS = int(os.environ.get("FACTOR_N_WORKERS", str(min(4, os.cpu_count() or 4))))
-_CHUNK_SIZE = int(os.environ.get("FACTOR_CHUNK_SIZE", "25"))
 
 # 列过滤（由LLM自动推断）
 {_LOAD_COLS_DEF}
@@ -663,13 +664,19 @@ if __name__ == '__main__':
 
     _MANIFEST = _CHUNK_DIR / "_manifest.json"
     _STOCKS_KEY = sorted(STOCK_LIST)
-    _chunks_ok = all(cf.exists() for cf in _CHUNK_FILES) and _MANIFEST.exists() and json.load(open(_MANIFEST)).get("stocks") == _STOCKS_KEY
+    _MANIFEST_DATA = json.load(open(_MANIFEST)) if _MANIFEST.exists() else None
+    _chunks_ok = (
+        all(cf.exists() for cf in _CHUNK_FILES)
+        and _MANIFEST_DATA is not None
+        and _MANIFEST_DATA.get("stocks") == _STOCKS_KEY
+        and _MANIFEST_DATA.get("chunk_size") == _CHUNK_SIZE
+    )
 
     if _chunks_ok:
-        print(f"共享chunk已存在且股票列表匹配: {{_CHUNK_DIR}}, 跳过预分片 ({{time.time()-_t_split:.0f}}s)", flush=True)
+        print(f"共享chunk已存在且股票列表/尺寸匹配: {{_CHUNK_DIR}}, 跳过预分片 ({{time.time()-_t_split:.0f}}s)", flush=True)
     else:
         if all(cf.exists() for cf in _CHUNK_FILES):
-            print(f"⚠️ 股票列表变化或 manifest 缺失，重新预分片 ({{_CHUNK_DIR}})", flush=True)
+            print(f"⚠️ 股票列表/CHUNK_SIZE 变化或 manifest 缺失，重新预分片 ({{_CHUNK_DIR}})", flush=True)
         _writers = [None] * len(_CHUNKS_LIST)
         _stock2ci = {{}}
         for _ci, _cstocks in enumerate(_CHUNKS_LIST):
