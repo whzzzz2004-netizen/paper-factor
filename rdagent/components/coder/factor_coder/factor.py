@@ -565,7 +565,8 @@ def _compute_chunk(chunk_stocks, chunk_idx, chunk_file, read_cols):
         # 预切片缓存：按日拆分，避免重复 isin
         _norm_idx = sub.index.normalize()
         _uniq_dates = sorted(_norm_idx.unique())
-        _td_set = set(TRADE_DATES)
+        # TRADE_DATES 可能为 '20180102'(无横线) 或 '2025-02-19'(带横线)，统一归一化为 date 对象再匹配
+        _td_set = set(pd.Timestamp(d).date() for d in TRADE_DATES)
         _date_slices = {}
         for _dt in _uniq_dates:
             _mask = _norm_idx == _dt
@@ -576,7 +577,7 @@ def _compute_chunk(chunk_stocks, chunk_idx, chunk_file, read_cols):
         stock_records = []
         for _i, _dt in enumerate(_uniq_dates):
             _dt_str = _dt.strftime('%Y-%m-%d')
-            if _dt_str not in _td_set:
+            if _dt.date() not in _td_set:
                 continue
             _start_idx = max(0, _i - LOOKBACK_DAYS + 1)
             _window_dates = _uniq_dates[_start_idx:_i + 1]
