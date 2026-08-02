@@ -22,5 +22,13 @@
   {
     "title": "五种类型模板验证（daily/minute/cross_section/minute_cs/deep_learning 各一）",
     "text": "本 idea 包含五个因子，覆盖日线(daily)、分钟(minute)、日频截面(cross_section)、分钟截面(minute_cs)、深度学习(deep_learning)五种类型，每类一个：\n\n1. 双均线趋势因子（DoubleMAMomentum，daily，日线）：收盘价短期均线 MA10 与长期均线 MA30 的比值减 1，正值表示处于上升趋势、负值表示下跌趋势，数值越大趋势越强。回溯 30 天，需要 close 列。\n\n2. 日内VWAP动量因子（IntradayVwapMomentum，minute，分钟线）：基于分钟数据计算开盘（09:30-10:00）、午盘（10:30-11:30）、尾盘（13:00-14:00）三个时段的 VWAP 加权收益率，因子 = 0.3*开盘动量 + 0.4*午盘动量 + 0.3*尾盘动量。回溯 1 天，需要 close、volume、vwap 列。\n\n3. 截面盈利质量因子（CrossSectionQuality，cross_section，日频截面）：每日对全市场股票在 ROE、毛利率（gross_margin）、营收同比增速（revenue_yoy）三个维度分别做截面 zscore 标准化后等权相加，衡量个股相对全市场的盈利质量。回溯 1 天，需要 roe、gross_margin、revenue_yoy 列。\n\n4. 日内波动分布因子（IntradayVolRatio，minute_cs，分钟截面）：基于分钟数据计算早盘（09:30-10:30）已实现波动率占全天（09:30-15:00）已实现波动率的比例（使用分钟对数收益率标准差），衡量波动在日内是否集中于早盘，最后对该比例做截面标准化。回溯 5 天，需要 close、return 列。\n\n5. ML动量预测因子（MLMomentumPredictor，deep_learning，深度学习）：轻量多层感知机 MLP（基于 pytorch），walk-forward 按自然年训练：每年只用该年之前的历史数据训练一次，特征为过去20日累计收益率（动量）、过去20日收益率标准差（波动率）、20日均换手率相对60日的比值、收盘价相对20日均线偏离度，标签为未来5日收益率，输出每日预测得分作为因子值。回溯 20 天，需要 close、pct_chg、turnover_rate 列。"
+  },
+  {
+    "title": "分钟因子向量化路径验证（calc_factor_series）",
+    "text": "本 idea 用于验证分钟模板的向量化路径（calc_factor_series）。该因子逻辑可拆成\"先算每日值，再跨日 rolling\"，必须用 calc_factor_series 向量化实现（一次接收整只股票数据，返回以日期为索引的 pd.Series），不要只写 calc_factors_one_day。\n\n早盘成交集中度20日累加因子（EarlySessionVolumeRatio20，minute，分钟线）：每日计算早盘首小时（09:30-10:30）成交量占全天（09:30-15:00）成交量的比例，因子 = 过去20个交易日的该比例累加，衡量近期资金在早盘活跃度的累积水平。回溯 20 天，需要 volume 列。"
+  },
+  {
+    "title": "分钟因子非向量化路径验证（calc_factors_one_day）",
+    "text": "本 idea 用于验证分钟模板的非向量化路径（calc_factors_one_day）。该因子逻辑为单日截面类，只需当天的分钟数据、无跨日聚合，必须用 calc_factors_one_day 实现（不要写 calc_factor_series）。\n\n尾盘半小时动量因子（TailBarMomentum，minute，分钟线）：基于单个交易日的分钟数据，计算尾盘最后30分钟（14:30-15:00）的累计对数收益率，衡量尾盘拉升/砸盘强度。因子 = 当日 15:00 收盘价相对 14:30 价格的累计对数收益率。回溯 1 天，需要 close 列。"
   }
 ]
