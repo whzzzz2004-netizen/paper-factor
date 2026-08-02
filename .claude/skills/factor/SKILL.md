@@ -117,6 +117,9 @@ for _ in range(min(5, len(tasks))):
 
 最多同时启动 **5 个** sub-agent。主 Claude 控制派发。
 
+> **type→type_key 映射**（Phase 2 prompt 里填 `--type {type_key}` 用）：daily→daily_single, minute→minute, cross_section→cross_section, minute_cs→minute_cross_section, deep_learning→deep_learning。此映射只给主 Claude 填 prompt 用，不要复制进 sub-agent prompt。
+> **`--cols` 格式**：空格或逗号分隔均可（helper 自动 split），如 `--cols "close factor"` 或 `--cols "close,factor"`。
+
 #### Phase 2 sub-agent prompt（极简 ~30 行）
 
 ```
@@ -126,7 +129,7 @@ prompt = """
 
 ### 参考同类型因子（节省 token）
 查看已生成的成功因子代码，参考其核心函数结构：
-ls literature_reports/{DATE}/{report_name}/{name}/{name}.code.py
+ls git_ignore_folder/factor_outputs/literature_reports/{DATE}/{report_name}/{name}/{name}.code.py
 只看核心函数部分（calc_factor_xxx），不要复制模板代码。
 注意参考同类型因子（daily 参考 daily，minute_cs 参考 minute_cs）。
 
@@ -182,11 +185,13 @@ def calc_factor_series(df, stock):
 **性能注意（分钟截面）：** 全量 5435 只股票 × 120 天分钟数据，避免 Python 逐元素循环（`for i in range` + `np.argmin`/`np.sum` 等）。优先用 numpy 向量化、O(n) 单调队列或前缀和。
 
 #### 2. 立即跑 test-and-export（写完后立刻执行，不停顿）
+类型在 Phase 1 已定义，**显式传 `--type {type_key}`**（确定，不依赖自动检测）。
 ```bash
 python scripts/claude_factor_helper.py test-and-export \
   --code /tmp/factor_{name}.py \
   --report "{report_name}" --factor "{name}" \
   --cols "{cols}" --lookback {lookback} \
+  --type {type_key} \
   --description "{description}" --formulation "{formulation}" \
   --source-excerpt "{source_excerpt}" \
   --source-report-title "{report_name}" \
@@ -236,9 +241,10 @@ for _ in range(min(5, len(all_factors))):
 对每个成功的因子：
 ```bash
 python scripts/claude_factor_helper.py deploy-to-full \
-  --code literature_reports/{DATE}/{report}/{factor}/{factor}.code.py \
+  --code git_ignore_folder/factor_outputs/literature_reports/{DATE}/{report}/{factor}/{factor}.code.py \
   --date {DATE}
 ```
+（路径必须是仓库根起算的完整相对路径，helper 用 `Path.resolve()` 从 CWD 解析，短路径 `literature_reports/...` 会报 not found）
 
 同步到远程：
 ```bash
@@ -261,7 +267,7 @@ python scripts/claude_factor_helper.py mark-done --name <slug>
 - minute → `def calc_factors_one_day(df, stock):`
 - cross_section → `def calc_factor_cross_section(all_data, trade_date):`
 - minute_cs → `def calc_factor_minute_raw(df, stock):` + `def cross_section_transform(all_values):`
-- deep_learning → `def train_model(all_data, trade_date):` + `def predict_batch(model, data_dict, trade_date):`
+- deep_learning → `def train_model(all_data, trade_date):` + `def predict_batch(model, data_dict, trade_date):`（LOOKBACK_DAYS 只决定预测窗口大小；训练用截止日全部历史（walk-forward），模型内部自行决定用多少历史）
 
 ## 编码硬约束
 1. T日 = df.iloc[-1]
@@ -277,3 +283,4 @@ python scripts/claude_factor_helper.py mark-done --name <slug>
 11. 禁止 `transform('count')` → 用 `transform('size')`
 12. 禁止 `rolling.apply(lambda)`
 13. 禁止合成因子
+14. **标准化只能是截面 zscore，绝不能是时序标准化**：zscore/去均值除标准差/排名/分位永远是对同一交易日全市场股票做截面处理。禁止对单只股票的整个时间序列做 mean/std 归一化（全序列 mean/std 会让 T 日值受未来数据影响=泄露，且不符合量化惯例）。组合类因子必须用截面模板（cross_section/minute_cross_section）跨股票标准化。

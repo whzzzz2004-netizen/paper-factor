@@ -1425,6 +1425,9 @@ def get_jq_data(symbol, data_type='price', start_date='2018-01-01', end_date='20
         finally:
             jq.logout()
 
+# 列过滤（由LLM自动推断）
+{_LOAD_COLS_DEF}
+
 {user_code}
 
 if __name__ == '__main__':
@@ -1433,13 +1436,11 @@ if __name__ == '__main__':
         import re as _re, inspect as _inspect, pyarrow.parquet as _pq
         _SAMPLE_FILE = next(STOCK_DATA_DIR.glob("*.parquet"))
         _AVAILABLE_COLS = set(_pq.read_schema(_SAMPLE_FILE).names) - {'datetime', 'instrument'}
-        try:
-            _USER_SOURCE = _inspect.getsource(train_model) + "\\n" + _inspect.getsource(predict_batch)
-        except (NameError, OSError):
-            _USER_SOURCE = _inspect.getsource(train_model) + "\\n" + _inspect.getsource(predict)
-        # 提取代码中所有引号字符串，与可用列取交集
-        _ALL_QUOTED = set(_re.findall(r'''['"](\\w+)['"]''', _USER_SOURCE))
-        _LOAD_COLS = sorted(_ALL_QUOTED & _AVAILABLE_COLS) if _ALL_QUOTED else None
+        _USER_SOURCE = open(__file__, encoding="utf-8").read()
+        # 提取代码中所有引号字符串，与可用列取交集（覆盖辅助函数、模块级代码等所有位置）
+        _ALL_QUOTED = set(_re.findall(r'''['"]([A-Za-z_][A-Za-z0-9_]*)['"]''', _USER_SOURCE))
+        _DETECTED = sorted(_ALL_QUOTED & _AVAILABLE_COLS)
+        _LOAD_COLS = sorted(set((_LOAD_COLS or []) + _DETECTED))  # 注入值 ∪ 扫描值
         if not _LOAD_COLS:
             _LOAD_COLS = None
         print(f"检测到因子使用的列: {_LOAD_COLS}", flush=True)
@@ -1457,8 +1458,11 @@ if __name__ == '__main__':
         _td_index = pd.DatetimeIndex(TRADE_DATES)
         # 预计算每只股票对所有日期的切片位置
         _stock_positions = {{}}
+        # 训练切片用 side='left'（严格早于当年第一天），避免把当年首个交易日纳入训练（off-by-one）
+        _stock_positions_train = {{}}
         for stock, df in all_data.items():
             _stock_positions[stock] = np.searchsorted(df.index.values.astype('int64'), _td_index.values.astype('int64'), side='right')
+            _stock_positions_train[stock] = np.searchsorted(df.index.values.astype('int64'), _td_index.values.astype('int64'), side='left')
 
         all_records = []
         _has_predict_batch = 'predict_batch' in dir()
@@ -1473,16 +1477,10 @@ if __name__ == '__main__':
             _first_td = _td_index[_date_idxs[0]]
             data_for_train = {{}}
             for stock, df in all_data.items():
-                pos = _stock_positions[stock][_date_idxs[0]]
-                if LOOKBACK_DAYS > 0:
-                    if pos == 0:
-                        continue
-                    start = max(0, pos - LOOKBACK_DAYS - 1)
-                    sub = df.iloc[start:pos]
-                else:
-                    sub = df.iloc[:pos]
-                    if sub.empty:
-                        continue
+                pos = _stock_positions_train[stock][_date_idxs[0]]
+                sub = df.iloc[:pos]
+                if sub.empty:
+                    continue
                 data_for_train[stock] = sub
             if not data_for_train:
                 continue

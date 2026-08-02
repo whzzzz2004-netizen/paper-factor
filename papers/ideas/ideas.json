@@ -14,5 +14,13 @@
   {
     "title": "日内波动择时因子",
     "text": "日内波动择时因子（IntradayVolatilityTiming），基于分钟数据计算早盘（09:30-10:30）的已实现波动率占全天（09:30-15:00）已实现波动率的比例。使用5分钟收益率计算已实现波动率（标准差），早盘波动率 / 全天波动率。如果该比例大于0.5，说明波动主要集中在早盘，尾盘可能趋于平稳。截面标准化后作为因子值。分钟频数据，回溯5天，需要close、return、volume列。"
+  },
+  {
+    "title": "ML趋势预测因子",
+    "text": "ML趋势预测因子（MLTrendPredictor），一个简单的深度学习因子。使用轻量多层感知机（MLP，基于pytorch）学习历史价量特征与未来收益的关系，输出每日预测得分作为因子值。每只股票每个交易日构建特征向量：过去20日累计收益率（动量）、过去20日收益率标准差（波动率）、过去20日平均换手率相对60日的比值、当日收盘价相对20日均线的偏离度。训练标签为未来5个交易日收益率。采用walk-forward训练：每一年开始时，只用该年之前的历史数据训练一次模型，然后对该年每个交易日输出预测得分。日频数据，回溯20天，需要pct_chg、turnover_rate、close列。"
+  },
+  {
+    "title": "五种类型模板验证（daily/minute/cross_section/minute_cs/deep_learning 各一）",
+    "text": "本 idea 包含五个因子，覆盖日线(daily)、分钟(minute)、日频截面(cross_section)、分钟截面(minute_cs)、深度学习(deep_learning)五种类型，每类一个：\n\n1. 双均线趋势因子（DoubleMAMomentum，daily，日线）：收盘价短期均线 MA10 与长期均线 MA30 的比值减 1，正值表示处于上升趋势、负值表示下跌趋势，数值越大趋势越强。回溯 30 天，需要 close 列。\n\n2. 日内VWAP动量因子（IntradayVwapMomentum，minute，分钟线）：基于分钟数据计算开盘（09:30-10:00）、午盘（10:30-11:30）、尾盘（13:00-14:00）三个时段的 VWAP 加权收益率，因子 = 0.3*开盘动量 + 0.4*午盘动量 + 0.3*尾盘动量。回溯 1 天，需要 close、volume、vwap 列。\n\n3. 截面盈利质量因子（CrossSectionQuality，cross_section，日频截面）：每日对全市场股票在 ROE、毛利率（gross_margin）、营收同比增速（revenue_yoy）三个维度分别做截面 zscore 标准化后等权相加，衡量个股相对全市场的盈利质量。回溯 1 天，需要 roe、gross_margin、revenue_yoy 列。\n\n4. 日内波动分布因子（IntradayVolRatio，minute_cs，分钟截面）：基于分钟数据计算早盘（09:30-10:30）已实现波动率占全天（09:30-15:00）已实现波动率的比例（使用分钟对数收益率标准差），衡量波动在日内是否集中于早盘，最后对该比例做截面标准化。回溯 5 天，需要 close、return 列。\n\n5. ML动量预测因子（MLMomentumPredictor，deep_learning，深度学习）：轻量多层感知机 MLP（基于 pytorch），walk-forward 按自然年训练：每年只用该年之前的历史数据训练一次，特征为过去20日累计收益率（动量）、过去20日收益率标准差（波动率）、20日均换手率相对60日的比值、收盘价相对20日均线偏离度，标签为未来5日收益率，输出每日预测得分作为因子值。回溯 20 天，需要 close、pct_chg、turnover_rate 列。"
   }
 ]

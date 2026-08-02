@@ -466,7 +466,7 @@ def cmd_wrap_template(args):
     template = getattr(FactorFBWorkspace, TYPE_MAP[type_key])
     user_code = Path(args.code).read_text(encoding="utf-8")
     lookback = args.lookback
-    load_cols = [c.strip() for c in args.cols.split(",")] if args.cols else None
+    load_cols = [c.strip() for c in re.split(r"[,，\s]+", args.cols) if c.strip()] if args.cols else None
 
     full_code = FactorFBWorkspace._build_factor_code(template, user_code, lookback, load_cols)
 
@@ -571,23 +571,36 @@ def cmd_export_factor(args):
 # ---------------------------------------------------------------------------
 # Auto-detection helpers
 # ---------------------------------------------------------------------------
-# Function name → template type
-_FUNC_TYPE_MAP = {
-    "calc_factor_single_stock": "daily_single",
-    "calc_factor_cross_section": "cross_section",
-    "calc_factors_one_day": "minute",
-    "calc_factor_minute_raw": "minute_cross_section",
-    "cross_section_transform": "minute_cross_section",  # secondary
-    "train_model": "deep_learning",
-    "predict": "deep_learning",  # secondary
-}
+# 分钟特征：calc_factor_series 既是日线(向量化)也是分钟(向量化)的函数名，需靠代码内容区分。
+# 分钟数据带日内时间戳，代码通常含以下分钟专属特征；日线单股数据不含这些（用 index.normalize()
+# 把日内时间归一化到日期、或引用分钟专属列 vwap/amount）。不用 groupby(level=0)（日线也可能用）。
+_MINUTE_PATTERNS = [
+    r"\bvwap\b",
+    r"index\s*\.\s*normalize\s*\(",
+]
+
+
+def _looks_like_minute(code: str) -> bool:
+    return any(re.search(p, code) for p in _MINUTE_PATTERNS)
 
 
 def detect_type_from_code(code: str) -> str | None:
     """Detect template type from function definitions in user code."""
-    for func_name, type_key in _FUNC_TYPE_MAP.items():
-        if re.search(r"\bdef\s+" + re.escape(func_name) + r"\s*\(", code):
-            return type_key
+    # 特殊函数优先，避免 calc_factor_series 的 daily/minute 歧义
+    if re.search(r"\bdef\s+calc_factor_cross_section\s*\(", code):
+        return "cross_section"
+    if re.search(r"\bdef\s+calc_factor_minute_raw\s*\(", code) or re.search(r"\bdef\s+cross_section_transform\s*\(", code):
+        return "minute_cross_section"
+    if re.search(r"\bdef\s+calc_factors_one_day\s*\(", code):
+        return "minute"
+    if re.search(r"\bdef\s+train_model\s*\(", code) or re.search(r"\bdef\s+predict\s*\(", code):
+        return "deep_learning"
+    if re.search(r"\bdef\s+calc_factor_series\s*\(", code):
+        if _looks_like_minute(code):
+            return "minute"
+        return "daily_single"
+    if re.search(r"\bdef\s+calc_factor_single_stock\s*\(", code):
+        return "daily_single"
     return None
 
 
@@ -752,7 +765,7 @@ def cmd_test_and_export(args):
     from rdagent.components.coder.factor_coder.factor import FactorFBWorkspace
 
     template = getattr(FactorFBWorkspace, TYPE_MAP[type_key])
-    load_cols = [c.strip() for c in args.cols.split(",")] if args.cols else None
+    load_cols = [c.strip() for c in re.split(r"[,，\s]+", args.cols) if c.strip()] if args.cols else None
     full_code = FactorFBWorkspace._build_factor_code(template, user_code, lookback, load_cols)
 
     # Write wrapped code to temp file
@@ -1533,7 +1546,7 @@ def cmd_retrieve_knowledge(args):
 
 def cmd_find_similar(args):
     """查找同类因子参考"""
-    cols = [c.strip() for c in args.cols.split(",")] if args.cols else None
+    cols = [c.strip() for c in re.split(r"[,，\s]+", args.cols) if c.strip()] if args.cols else None
     result = find_similar_factors(args.type, cols=cols, lookback=args.lookback, top_k=args.top_k)
     if result:
         print(result)

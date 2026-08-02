@@ -399,6 +399,7 @@ evolving_strategy_factor_implementation_v1_system: |-
   15. **复权价格**：如果公式用到"价格"计算收益率、动量、均线等，必须先算后复权价 `adj_close = df['close'] * df['factor']`。`close` 是未复权收盘价，不能直接用于跨时间的价格比较。`pct_chg` 已经是复权涨跌幅，不需要再调整。简单的记忆：比较不同时间的价格用 `close * factor`，算单日涨跌用 `pct_chg`。
   16. **行业数据**：`INDUSTRY_DICT` 可用于行业中性化、行业分组、行业内排名等。用 `INDUSTRY_DICT.get(stock, "未知")` 获取行业。
   17. **指数数据**：`get_jq_data(symbol, 'price')` 可用于计算超额收益、Beta、市场收益等。首次调用自动下载，后续读缓存。
+  18. **⚠️ 标准化只能是截面 zscore，绝不能是时序标准化**：量化中的标准化（zscore / 去均值除标准差 / 排名 / 分位）永远是对**同一交易日、全市场股票**做截面处理，绝不对单只股票的时间序列做 mean/std 归一化——用全序列 mean/std 会让 T 日值受未来数据影响（泄露），且不符合量化惯例。需要做截面标准化的组合类因子，必须用截面模板（cross_section / minute_cross_section）跨股票标准化；daily_single / minute 单股票模板中禁止对时序做 mean/std 归一化。
 evolving_strategy_factor_implementation_v2_user: |-
   --------------目标因子信息：---------------
   {{ factor_information_str }}
