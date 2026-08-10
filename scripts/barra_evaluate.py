@@ -24,8 +24,8 @@ import pandas as pd
 import scipy.stats as stats
 
 PROJECT_ROOT = Path(__file__).parent.parent
-FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data")))
-DEFAULT_BARRA_DIR = Path(os.environ.get("PAPER_FACTOR_BARRA_DIR", str(PROJECT_ROOT / "git_ignore_folder" / "barra_model")))
+FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量")))
+DEFAULT_BARRA_DIR = Path(os.environ.get("PAPER_FACTOR_BARRA_DIR", str(PROJECT_ROOT / "数据仓库" / "barra_model")))
 
 # Trading Model 的 20 个风格因子（不含行业哑变量）
 STYLE_FACTORS = [
@@ -70,9 +70,17 @@ def compute_long_short_returns(factor_df: pd.DataFrame, data_dir: Path) -> pd.Se
     label_df = label_df.set_index(["datetime", "instrument"]).sort_index()
 
     # 将因子矩阵转为长表
-    if factor_df.index.name == "Date" and factor_df.columns.name == "Code":
+    # 宽表检测：列数 > 10 说明是 Date × Stock 矩阵（不是单列因子）
+    if factor_df.shape[1] > 10:
         factor_long = factor_df.stack()
         factor_long.index.names = ["datetime", "instrument"]
+        # 日期统一转为 datetime64[ns]，股票代码统一转为 str（parquet 可能存为整数）
+        idx = factor_long.index
+        factor_long.index = pd.MultiIndex.from_arrays(
+            [pd.to_datetime(idx.get_level_values("datetime")),
+             idx.get_level_values("instrument").astype(str)],
+            names=["datetime", "instrument"],
+        )
     else:
         factor_long = factor_df.iloc[:, 0]
     factor_long.name = "factor"
@@ -178,7 +186,7 @@ def ols_regression(y: np.ndarray, X: np.ndarray, names: list[str]) -> dict:
 
 
 def evaluate_barra(factor_df: pd.DataFrame, data_dir: Path, barra_dir: Path,
-                   model: str = "Trading Model") -> dict:
+                   model: str = "Long-Term Model") -> dict:
     """完整 Barra 暴露分析入口。
 
     Args:
@@ -234,8 +242,8 @@ def main():
     parser.add_argument("factor_parquet", help="因子 parquet 文件路径")
     parser.add_argument("--data-dir", default=str(FULL_DATA_DIR), help="全量数据目录")
     parser.add_argument("--barra-dir", default=str(DEFAULT_BARRA_DIR), help="Barra 数据目录")
-    parser.add_argument("--model", default="Trading Model", choices=["Trading Model", "Long-Term Model"],
-                        help="Barra 模型（默认 Trading Model）")
+    parser.add_argument("--model", default="Long-Term Model", choices=["Trading Model", "Long-Term Model"],
+                        help="Barra 模型（默认 Long-Term Model）")
     args = parser.parse_args()
 
     factor_path = Path(args.factor_parquet)

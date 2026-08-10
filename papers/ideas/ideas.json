@@ -30,5 +30,49 @@
   {
     "title": "分钟因子非向量化路径验证（calc_factors_one_day）",
     "text": "本 idea 用于验证分钟模板的非向量化路径（calc_factors_one_day）。该因子逻辑为单日截面类，只需当天的分钟数据、无跨日聚合，必须用 calc_factors_one_day 实现（不要写 calc_factor_series）。\n\n尾盘半小时动量因子（TailBarMomentum，minute，分钟线）：基于单个交易日的分钟数据，计算尾盘最后30分钟（14:30-15:00）的累计对数收益率，衡量尾盘拉升/砸盘强度。因子 = 当日 15:00 收盘价相对 14:30 价格的累计对数收益率。回溯 1 天，需要 close 列。"
+  },
+  {
+    "title": "隔夜收益反转因子",
+    "text": "每日隔夜收益率 = (open - pre_close) / pre_close。截面排名后取反转为因子值，逻辑：隔夜收益率过高（开盘跳空高开）的股票容易日内回调，反之亦然。类型 daily，lookback 1，cols [open, pre_close]。"
+  },
+  {
+    "title": "开盘30分钟成交占比因子",
+    "text": "开盘后30分钟累计成交额占全天成交额的比例。衡量早盘资金活跃度，占比高说明市场在开盘阶段集中交易。类型 minute，lookback 1，cols [volume, close]。"
+  },
+  {
+    "title": "市值调整的流动性因子",
+    "text": "对换手率做市值调整：用 market_cap 对 turnover_rate 做截面回归，取残差。残差为正说明换手率高于市值应有的水平（异常活跃），为负说明低于应有水平。类型 cross_section，lookback 1，cols [turnover_rate, market_cap]。"
+  },
+  {
+    "title": "分钟收益率偏度因子",
+    "text": "每只股票当日分钟收益率的偏度（skewness），衡量分钟收益率分布的不对称性。正偏度说明有较多大阳线分钟，负偏度说明有较多大阴线分钟。截面标准化后作为因子。类型 minute_cs，lookback 1，cols [close]。"
+  },
+  {
+    "title": "GRU量价趋势预测因子",
+    "text": "用GRU神经网络对过去20个交易日的量价数据建模，预测未来5日收益方向。输入特征：close, volume, pct_chg 的20日序列。输出为未来5日收益的预测值（回归任务）。walk-forward训练，每60个交易日重新训练。类型 deep_learning，lookback 20，cols [close, volume, pct_chg]。"
+  },
+  {
+    "title": null,
+    "text": "过去5日收益率的简单均值，返回 pd.Series (无 name)。类型 daily，lookback 5，cols [close]"
+  },
+  {
+    "title": "test_daily_series",
+    "text": "过去5日收益率的简单均值。类型 daily，lookback 5，cols [close]"
+  },
+  {
+    "title": "test_minute_dict",
+    "text": "开盘后60分钟累计成交量占比。类型 minute，lookback 1，cols [volume, close]。返回格式为 dict"
+  },
+  {
+    "title": "test_cs_series",
+    "text": "换手率的市值调整残差。类型 cross_section，lookback 1，cols [turnover_rate, market_cap]。返回格式为 pd.Series"
+  },
+  {
+    "title": "test_minutecs_float",
+    "text": "当日分钟收盘价的变异系数（标准差/均值）。类型 minute_cs，lookback 1，cols [close]。calc_factor_minute_raw 返回 float"
+  },
+  {
+    "title": "test_dl_gpu",
+    "text": "简单的线性回归预测：过去10日收益率预测次日收益方向。类型 deep_learning，lookback 10，cols close"
   }
 ]

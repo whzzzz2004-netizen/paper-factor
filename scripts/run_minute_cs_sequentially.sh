@@ -1,10 +1,10 @@
 #!/bin/bash
 # Run remaining minute_cs factors SEQUENTIALLY to avoid ProcessPoolExecutor conflicts
-# Usage: ./scripts/run_minute_cs_sequentially.sh [--date YYYYMMDD]
+# Usage: ./scripts/run_minute_cs_sequentially.sh [--date YYYY-MM-DD]
 set -e
 
 DATE="${2:-20260727}"
-BASE="/home/dministrator/paper-factor/git_ignore_folder/factor_outputs/literature_reports/${DATE}"
+BASE="/home/dministrator/paper-factor/数据仓库/因子产出/测试/${DATE}"
 DATA_DIR="/home/dministrator/paper-factor/git_ignore_folder/factor_implementation_source_data"
 
 export FACTOR_DATA_DIR="$DATA_DIR"

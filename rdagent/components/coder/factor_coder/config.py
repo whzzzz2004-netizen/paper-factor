@@ -9,10 +9,10 @@ from rdagent.utils.env import CondaConf, Env, LocalEnv
 class FactorCoSTEERSettings:
     model_config = SettingsConfigDict(env_prefix="FACTOR_CoSTEER_")
 
-    data_folder: str = "git_ignore_folder/factor_implementation_source_data_1000"
+    data_folder: str = "数据仓库/行情数据/日线/测试"
     """Path to the folder containing financial data (default is fundamental data in Qlib)"""
 
-    data_folder_debug: str = "git_ignore_folder/factor_implementation_source_data_1000"
+    data_folder_debug: str = "数据仓库/行情数据/日线/测试"
     """Path to the folder containing partial financial data (for debugging)"""
 
     simple_background: bool = False
@@ -32,9 +32,6 @@ class FactorCoSTEERSettings:
 
     execution_conda_env_name: str = "torch-pip"
     """Dedicated conda env used when execution_backend is conda or auto falls back to conda."""
-
-    docker_image: str = "local_factor_exec:latest"
-    """Docker image used when execution_backend is docker."""
 
     min_abs_ic: float = 0.005
     """Minimum absolute cross-sectional IC required for a factor to be accepted into the pool"""

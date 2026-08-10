@@ -37,7 +37,7 @@ from factor_utils import (
 # ============================================================
 
 # 输出路径
-SAVE_PATH = Path(__file__).parent.parent / "git_ignore_folder" / "factor_outputs" / "daily_factors.parquet"
+SAVE_PATH = Path(__file__).parent.parent / "数据仓库" / "因子产出" / "daily_factors.parquet"
 
 # 并行数
 N_JOBS = 10

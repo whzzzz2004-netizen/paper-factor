@@ -17,9 +17,9 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-FULL_BASE = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
-LIT_BASE = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "literature_reports"
-EXTRACT_BASE = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "extracted_reports"
+FULL_BASE = PROJECT_ROOT / "数据仓库" / "因子产出" / "全量"
+LIT_BASE = PROJECT_ROOT / "数据仓库" / "因子产出" / "测试"
+EXTRACT_BASE = PROJECT_ROOT / "数据仓库" / "因子产出" / "extracted_reports"
 
 DESC_KEYS = (
     "factor_description", "factor_formulation", "variables",
@@ -99,7 +99,7 @@ def backfill_meta(meta: dict, date_str: str, report: str, factor: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--date", default=None, help="只处理指定日期 (YYYYMMDD)")
+    parser.add_argument("--date", default=None, help="只处理指定日期 (YYYY-MM-DD)")
     parser.add_argument("--dry-run", action="store_true", help="只报告不写回")
     args = parser.parse_args()
 

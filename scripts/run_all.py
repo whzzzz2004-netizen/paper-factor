@@ -1,30 +1,29 @@
 #!/usr/bin/env python3
 """
-一键全量流水线：挂载 → 同步数据 → 全量/增量补算因子。
+一键全量流水线：全量/增量补算因子。
 
 流程:
-  1. 挂载远程E盘（如未挂载）
-  2. 同步最新数据（market_daily_daily_new / market_minute_daily_new → per-stock parquet）
-  3. 扫描文献因子_全量/ 下所有因子:
+  1. 扫描全量因子产出目录 下所有因子:
      ├─ 无 .parquet → 全量计算
      ├─ 有 .parquet 但日期落后 → 增量补算（只算新日期，merge 回全量 parquet）
      └─ 已最新 → 跳过
 
 用法:
-  python scripts/run_all.py                        # 本地模式，扫描所有因子
+  python scripts/run_all.py                        # 扫描所有因子
   python scripts/run_all.py 20260726               # 只扫描指定目录
   python scripts/run_all.py --report 研报名        # 只跑指定研报
   python scripts/run_all.py --force                # 强制重跑（无视状态）
   python scripts/run_all.py --workers 3            # 并行数
   python scripts/run_all.py --dry-run              # 只打印计划，不执行
-  python scripts/run_all.py --remote               # 启用远程挂载+数据同步
 """
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -43,115 +42,31 @@ from scripts.factor_utils import (
     cleanup_parquet_backup,
     update_factor_meta,
     evaluate_factor,
+    detect_factor_type,
 )
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
-# ── 路径（默认本地，远程挂载成功后再切换，模块级别不访问 CIFS 避免卡死） ──
-REMOTE_MOUNT = Path("/mnt/remote_e")
-REMOTE_FULL = REMOTE_MOUNT / "paper_factors" / "文献因子_全量"
-LOCAL_FULL = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
-
-# 全量输出 + 数据目录（初始默认本地，确保模块级别不访问 CIFS）
-OUTPUT_BASE = LOCAL_FULL
-FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data")))
-REMOTE_DATA_DIR = REMOTE_MOUNT / "_paper_factor_unified" / "factor_implementation_source_data"
-
-# sync_data.py 路径
-SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "sync_data.py"
-
-# ── 远程挂载 ──
-
-def ensure_mounted() -> bool:
-    """确保远程E盘已挂载，返回是否成功。超时15秒，不卡死。"""
-    global OUTPUT_BASE, FULL_DATA_DIR
-
-    # 用 mountpoint 检查（安全，不卡死）
-    try:
-        r = subprocess.run(["mountpoint", "-q", str(REMOTE_MOUNT)], capture_output=True, timeout=5)
-        if r.returncode == 0:
-            print("  ✅ 远程已挂载")
-            OUTPUT_BASE = REMOTE_FULL
-            if REMOTE_DATA_DIR.exists():
-                FULL_DATA_DIR = REMOTE_DATA_DIR
-            return True
-    except Exception:
-        pass
-
-    # 尝试挂载
-    print("📌 挂载远程E盘...")
-    os.makedirs(str(REMOTE_MOUNT), exist_ok=True)
-    uid = os.getuid()
-    gid = os.getgid()
-    mount_cmd = [
-        "mount", "-t", "cifs",
-        "//192.168.1.13/E", str(REMOTE_MOUNT),
-        "-o", f"user=pc,password=123456,uid={uid},gid={gid},"
-              f"file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"
-    ]
-    if os.geteuid() != 0:
-        mount_cmd = ["sudo", "-n"] + mount_cmd
-
-    try:
-        subprocess.run(mount_cmd, capture_output=True, timeout=15)
-        r = subprocess.run(["mountpoint", "-q", str(REMOTE_MOUNT)], capture_output=True, timeout=5)
-        if r.returncode == 0:
-            print("  ✅ 已挂载")
-            OUTPUT_BASE = REMOTE_FULL
-            if REMOTE_DATA_DIR.exists():
-                FULL_DATA_DIR = REMOTE_DATA_DIR
-            return True
-    except subprocess.TimeoutExpired:
-        print("  ⚠️ 挂载超时（15s）")
-    except Exception as e:
-        print(f"  ⚠️ 挂载失败: {e}")
-
-    print("  ⚠️ 使用本地数据")
-    return False
-
-
-# ── 数据同步 ──
-
-def sync_data() -> bool:
-    """运行 sync_data.py 同步最新数据，实时显示输出"""
-    if not SYNC_SCRIPT.exists():
-        print("  ⚠️ sync_data.py 不存在，跳过数据同步")
-        return False
-    print("📌 同步最新数据...")
-    t0 = time.time()
-    proc = subprocess.Popen(
-        [sys.executable, str(SYNC_SCRIPT)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1,
-    )
-    for line in proc.stdout:
-        line = line.strip()
-        if line:
-            print(f"  {line}")
-    proc.wait(timeout=3600)
-    elapsed = time.time() - t0
-    if proc.returncode != 0:
-        print(f"  ⚠️ 数据同步异常 (exit={proc.returncode}, {elapsed:.0f}s)，继续执行")
-        return False
-    print(f"  ✅ 数据同步完成 ({elapsed:.0f}s)")
-    return True
-    return True
+# ── 路径（仅本地） ──
+OUTPUT_BASE = PROJECT_ROOT / "数据仓库" / "因子产出" / "全量"
+FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量")))
 
 
 # ── 扫描 ──
 
-def find_pending_factors(report_filter: str | None, force: bool) -> list[dict]:
+def find_pending_factors(report_filter: str | None, force: bool, base_dir: Path | None = None) -> list[dict]:
     """
     返回待处理因子列表，每项含 {report, factor, code_path, output_dir, meta_path, parquet_path, status}
     status: "pending" (无 parquet), "stale" (有 parquet 但日期老), "current" (已最新)
     """
-    if not OUTPUT_BASE.exists():
+    base = base_dir or OUTPUT_BASE
+    if not base.exists():
         return []
 
     factors = []
     trade_dates = None  # 延迟加载
 
-    report_dirs = sorted(d for d in OUTPUT_BASE.iterdir() if d.is_dir())
+    report_dirs = sorted(d for d in base.iterdir() if d.is_dir())
     if report_filter:
         report_dirs = [d for d in report_dirs if report_filter in d.name]
 
@@ -306,11 +221,15 @@ def run_incremental_for_factor(item: dict) -> dict:
         print(f"  ❌ 读取现有 parquet 失败: {e}，降级为全量")
         return run_full_pipeline_for_factor(item)
 
-    # 2. 执行子进程
+    # 2. 判断因子类型，确定数据目录
     code_text = code_path.read_text(encoding="utf-8")
+    factor_type = detect_factor_type(code_text)
+    data_dir = (PROJECT_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量") if factor_type == "minute" else FULL_DATA_DIR
+
+    # 3. 执行子进程
     start_date_str = last_date.strftime("%Y-%m-%d")
     result_parquet = run_factor_subprocess(
-        code_text, factor_name, FULL_DATA_DIR,
+        code_text, factor_name, data_dir,
         start_date=start_date_str, n_workers=4, timeout=7200,
     )
     if result_parquet is None:
@@ -361,33 +280,32 @@ def main():
     parser.add_argument("--force", action="store_true", help="强制重跑（无视状态）")
     parser.add_argument("--workers", type=int, default=1, help="并行 worker 数 (默认: 1)")
     parser.add_argument("--dry-run", action="store_true", help="仅列出待跑因子，不执行")
-    parser.add_argument("--remote", action="store_true", help="启用远程挂载（数据始终先同步，无需此参数）")
     args = parser.parse_args()
 
     t_start = time.time()
 
-    # ── Step 1: 挂载（仅 --remote 时） ──
-    if args.remote:
-        ensure_mounted()
+    print("📌 本地模式")
+
+    # ── Step 1: 确定目标目录（指定子目录 或 临时目录 → 完成时重命名） ──
+    if args.subdir:
+        date_str = args.subdir
+        target_base = OUTPUT_BASE / date_str
+        if target_base.exists():
+            scan_base = target_base
+            print(f"📅 扫描子目录: {date_str}")
+        else:
+            scan_base = OUTPUT_BASE
+            print(f"⚠️ 子目录不存在: {target_base}，回退到根目录")
+        tmp_base = None
     else:
-        global OUTPUT_BASE, FULL_DATA_DIR
-        OUTPUT_BASE = LOCAL_FULL
-        print("📌 本地模式，跳过远程挂载")
+        # 自动模式：扫描根目录，写入临时目录，完成时重命名为完成日期
+        scan_base = OUTPUT_BASE
+        tmp_name = f"_tmp_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}"
+        tmp_base = OUTPUT_BASE / tmp_name
+        print(f"📅 临时目录: {tmp_name}")
 
-    # ── Step 2: 同步数据（始终先更新数据，再算因子） ──
-    sync_data()
-
-    # ── Step 3: 确定日期子目录（默认当天） ──
-    date_str = args.subdir or datetime.now().strftime("%Y%m%d")
-    dated_base = OUTPUT_BASE / date_str
-    if dated_base.exists():
-        OUTPUT_BASE = dated_base
-        print(f"📅 扫描子目录: {date_str}")
-    else:
-        print(f"⚠️ 子目录不存在: {dated_base}，回退到根目录")
-
-    # ── Step 4: 扫描因子 ──
-    pending = find_pending_factors(args.report, args.force)
+    # ── Step 2: 扫描因子 ──
+    pending = find_pending_factors(args.report, args.force, base_dir=scan_base)
 
     if not pending:
         print("\n✅ 无待处理因子")
@@ -413,7 +331,24 @@ def main():
                       f"({p['last_date'].strftime('%Y-%m-%d')} → {p['latest_date'].strftime('%Y-%m-%d')})")
         return 0
 
-    # ── Step 4: 执行 ──
+    # 临时目录模式：创建临时目录并重定向输出路径
+    if tmp_base is not None:
+        tmp_base.mkdir(parents=True, exist_ok=True)
+        for item in pending_list:
+            report = item["report"]
+            factor = item["factor"]
+            new_output = tmp_base / report / factor
+            new_output.mkdir(parents=True, exist_ok=True)
+            # 增量因子：复制现有 parquet 到临时目录作为起点
+            if item["status"] == "stale":
+                src = item["parquet_path"]
+                if src.exists():
+                    shutil.copy2(src, new_output / f"{factor}.parquet")
+            item["output_dir"] = new_output
+            item["parquet_path"] = new_output / f"{factor}.parquet"
+            item["meta_path"] = new_output / f"{factor}.meta.json"
+
+    # ── Step 3: 执行 ──
     success_count = 0
     fail_count = 0
     skipped_count = 0
@@ -450,6 +385,23 @@ def main():
                 skipped_count += 1
             else:
                 fail_count += 1
+
+    # ── 重命名临时目录为完成日期 ──
+    if tmp_base is not None:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        final_base = OUTPUT_BASE / date_str
+        if final_base.exists():
+            print(f"📦 合并到已有目录: {date_str}")
+            for item in tmp_base.rglob('*'):
+                if item.is_file():
+                    rel = item.relative_to(tmp_base)
+                    dst = final_base / rel
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(item), str(dst))
+            shutil.rmtree(tmp_base)
+        else:
+            tmp_base.rename(final_base)
+            print(f"📅 重命名为完成日期: {date_str}")
 
     # ── 汇总 ──
     elapsed = time.time() - t_start

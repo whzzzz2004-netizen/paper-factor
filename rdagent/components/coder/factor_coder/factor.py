@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any, Tuple, Union
 
 import pandas as pd
-import docker  # type: ignore[import-untyped]
 from filelock import FileLock
 
 from rdagent.components.coder.CoSTEER.task import CoSTEERTask
@@ -22,7 +21,6 @@ from rdagent.core.exception import CodeFormatError, CustomRuntimeError, NoOutput
 from rdagent.core.experiment import Experiment, FBWorkspace
 from rdagent.core.utils import cache_with_pickle
 from rdagent.oai.llm_utils import APIBackend, md5_hash
-from rdagent.utils.env import DockerConf, DockerEnv
 
 
 class FactorTask(CoSTEERTask):
@@ -102,41 +100,6 @@ special_conditions: {getattr(self, 'special_conditions', '')}"""
         return f"<{self.__class__.__name__}[{self.factor_name}]>"
 
 
-class FactorDockerConf(DockerConf):
-    build_from_dockerfile: bool = True
-    dockerfile_folder_path: Path = Path(__file__).parent / "docker"
-    image: str = FACTOR_COSTEER_SETTINGS.docker_image
-    mount_path: str = "/workspace/factor_workspace"
-    default_entry: str = "python _rdagent_factor_launcher.py"
-    enable_cache: bool = False
-    shm_size: str | None = "16g"
-    mem_limit: str | None = "48g"
-    save_logs_to_file: bool = True
-    terminal_tail_lines: int = 20
-    running_timeout_period: int | None = 600  # 10 minutes, was 3600
-
-
-class FactorDockerEnv(DockerEnv):
-    def __init__(self, conf: DockerConf | None = None):
-        super().__init__(conf or FactorDockerConf())
-
-    def prepare(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
-        force_build = os.environ.get("FACTOR_CoSTEER_FORCE_DOCKER_BUILD", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "y",
-            "on",
-        }
-        if not force_build:
-            try:
-                docker.from_env().images.get(self.conf.image)
-                return
-            except docker.errors.ImageNotFound:
-                pass
-        super().prepare(*args, **kwargs)
-
-
 def _conda_env_exists(env_name: str) -> bool:
     result = subprocess.run(
         f"conda env list | grep -q '^{env_name} '",
@@ -145,15 +108,6 @@ def _conda_env_exists(env_name: str) -> bool:
         stderr=subprocess.DEVNULL,
     )
     return result.returncode == 0
-
-
-def _docker_daemon_available() -> bool:
-    try:
-        client = docker.from_env()
-        client.ping()
-        return True
-    except Exception:
-        return False
 
 
 # ========== 模板间共享代码段 ==========
@@ -184,7 +138,7 @@ class FactorFBWorkspace(FBWorkspace):
     FB_EXECUTION_SUCCEEDED = "Execution succeeded without error."
     FB_OUTPUT_FILE_NOT_FOUND = "\nExpected output file not found."
     FB_OUTPUT_FILE_FOUND = "\nExpected output file found."
-    EXPORTED_PARQUET_DIR = Path.cwd() / "git_ignore_folder" / "factor_outputs"
+    EXPORTED_PARQUET_DIR = Path.cwd() / "数据仓库" / "因子产出"
     EXECUTION_LAUNCHER = "_rdagent_factor_launcher.py"
 
     # 日线框架代码模板
@@ -203,9 +157,20 @@ if not _D or not (_D/"stock_data"/"daily").exists():
             _D = Path(".")
 DATA_DIR = _D
 STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
+# ── 基本面数据（独立目录：行情只含价量，基本面列从基本面数据目录合并） ──
+FUNDAMENTAL_DATA_DIR = DATA_DIR.resolve().parent.parent.parent / "基本面数据" / DATA_DIR.resolve().name
+FUNDAMENTAL_STOCK_DATA_DIR = FUNDAMENTAL_DATA_DIR / "stock_data" / "daily"
+FUNDAMENTAL_COLS = {{'roe', 'roa', 'pe_ttm', 'pb', 'revenue_yoy', 'profit_yoy', 'gross_margin', 'net_margin', 'debt_to_asset', 'ocf_per_share', 'market_cap', 'circulating_market_cap', 'total_shares', 'float_shares', 'adjusted_profit', 'gross_profit', 'total_holders', 'holder_change_pct'}}
+
+def _load_fundamental(stock, columns=None):
+    _p = FUNDAMENTAL_STOCK_DATA_DIR / f"{{stock}}.parquet"
+    if _p.exists():
+        return pd.read_parquet(_p, columns=columns)
+    return None
+# ── ──
 STOCK_LIST = json.load(open(STOCK_DATA_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(STOCK_DATA_DIR / "trade_dates.json"))
-LOOKBACK_DAYS = {lookback_days}  # 由框架注入，0=不切片
+LOOKBACK_DAYS = min(max(0, {lookback_days}), int(os.environ.get("FACTOR_LOOKBACK_CAP", "250")))  # 由框架注入，0=不切片，默认上限250
 # ── 增量更新：设 FACTOR_INCREMENTAL_START_DATE 环境变量则只算该日期之后的数据 ──
 _INC_START = os.environ.get("FACTOR_INCREMENTAL_START_DATE")
 if _INC_START:
@@ -215,9 +180,23 @@ if _INC_START:
 _CODE_DIR = Path(__file__).parent
 
 def load_stock(stock, columns=None):
-    if columns:
+    if columns is None:
+        _df = pd.read_parquet(STOCK_DATA_DIR / f"{{stock}}.parquet")
+        _fund = _load_fundamental(stock)
+        if _fund is not None:
+            _add = _fund.loc[:, [c for c in _fund.columns if c not in _df.columns]]
+            if _add.shape[1] > 0:
+                _df = _df.join(_add)
+        return _df
+    _fcols = [c for c in columns if c in FUNDAMENTAL_COLS]
+    if not _fcols:
         return pd.read_parquet(STOCK_DATA_DIR / f"{{stock}}.parquet", columns=columns)
-    return pd.read_parquet(STOCK_DATA_DIR / f"{{stock}}.parquet")
+    _mcols = [c for c in columns if c not in FUNDAMENTAL_COLS]
+    _df = pd.read_parquet(STOCK_DATA_DIR / f"{{stock}}.parquet", columns=_mcols or None)
+    _fund = _load_fundamental(stock, _fcols)
+    if _fund is not None:
+        _df = _df.join(_fund)
+    return _df
 
 # 行业分类数据（申万一级行业）：INDUSTRY_DICT[股票代码] = 行业名
 _INDUSTRY_FILE = STOCK_DATA_DIR / "industry.json"
@@ -298,12 +277,27 @@ except NameError:
                 r = calc_factor_single_stock(sub, td, stock)
             except Exception:
                 r = None
-            if r:
-                for _k, _v in r.items():
-                    if not (np.isnan(_v) or np.isinf(_v)):
-                        _result.loc[td] = _v
-                        _has_any = True
-                    break
+            if r is not None:
+                if isinstance(r, dict):
+                    for _k, _v in r.items():
+                        if not (np.isnan(_v) or np.isinf(_v)):
+                            _result.loc[td] = _v
+                            _has_any = True
+                        break
+                elif isinstance(r, pd.Series):
+                    for _k, _v in r.items():
+                        if not (np.isnan(_v) or np.isinf(_v)):
+                            _result.loc[td] = _v
+                            _has_any = True
+                        break
+                else:
+                    try:
+                        _fv = float(r)
+                        if np.isfinite(_fv):
+                            _result.loc[td] = _fv
+                            _has_any = True
+                    except (ValueError, TypeError):
+                        pass
         _result.name = "factor"
         return _result if _has_any else pd.Series(dtype=float, name="factor")
     # ── /默认 calc_factor_series ──
@@ -338,6 +332,13 @@ if __name__ == '__main__':
         import re as _re, inspect as _inspect, pyarrow.parquet as _pq
         _SAMPLE_FILE = next(STOCK_DATA_DIR.glob("*.parquet"))
         _AVAILABLE_COLS = set(_pq.read_schema(_SAMPLE_FILE).names) - {'datetime', 'instrument'}
+        # 行情 parquet 只含价量，基本面列从基本面数据目录读取（同样纳入可用列推断）
+        if FUNDAMENTAL_STOCK_DATA_DIR.exists():
+            try:
+                _FUND_SAMPLE = next(FUNDAMENTAL_STOCK_DATA_DIR.glob("*.parquet"))
+                _AVAILABLE_COLS |= (set(_pq.read_schema(_FUND_SAMPLE).names) - {'datetime', 'instrument'})
+            except Exception:
+                pass
         _USER_SOURCE = ""
         try:
             _USER_SOURCE += _inspect.getsource(calc_factor_single_stock)
@@ -378,7 +379,7 @@ if __name__ == '__main__':
         wide = long_df.pivot(index="datetime", columns="instrument", values=factor_name)
         wide = wide.sort_index().sort_index(axis=1)
         wide.index.name = "trade_date"
-        wide.columns.name = "stock_code"
+        wide.columns.name = "symbol"
         wide = wide.replace([np.inf, -np.inf], np.nan)
         wide = wide.reindex(index=pd.DatetimeIndex(TRADE_DATES, name=wide.index.name),
                             columns=pd.Index(STOCK_LIST, name=wide.columns.name))
@@ -425,9 +426,7 @@ if not _D or not (_D/"stock_data"/"minute_by_date").exists():
             _D = Path(".")
 DATA_DIR = _D
 MINUTE_BY_DATE_DIR = DATA_DIR / "stock_data" / "minute_by_date"
-# chunk 目录按 CHUNK_SIZE 分目录缓存，避免不同分片尺寸的因子互相污染（管线=15 vs 部署代码=25）
-_CHUNK_SIZE = int(os.environ.get("FACTOR_CHUNK_SIZE", "25"))
-_CHUNK_DIR = MINUTE_BY_DATE_DIR / f"_minute_chunks_c{_CHUNK_SIZE}"
+_CHUNK_DIR = MINUTE_BY_DATE_DIR / "_minute_chunks"
 STOCK_LIST = json.load(open(MINUTE_BY_DATE_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(MINUTE_BY_DATE_DIR / "trade_dates.json"))
 LOOKBACK_DAYS = min(max(1, {lookback_days}), 120)  # 分钟线至少1天，不超过120天（约6个月）
@@ -440,6 +439,7 @@ if _INC_START:
 _CODE_DIR = Path(__file__).parent
 
 N_WORKERS = int(os.environ.get("FACTOR_N_WORKERS", str(min(4, os.cpu_count() or 4))))
+_CHUNK_SIZE = int(os.environ.get("FACTOR_CHUNK_SIZE", "25"))
 
 # 列过滤（由LLM自动推断）
 {_LOAD_COLS_DEF}
@@ -617,6 +617,19 @@ def _compute_chunk(chunk_stocks, chunk_idx, chunk_file, read_cols):
                                     }})
                             except (ValueError, TypeError):
                                 pass
+            elif isinstance(_dr, dict):
+                for _k, _v in _dr.items():
+                    if pd.notna(_v):
+                        try:
+                            _fv = float(_v) if not isinstance(_v, dict) else float(list(_v.values())[0])
+                            if np.isfinite(_fv):
+                                stock_records.append({{
+                                    "datetime": _dt_str,
+                                    "instrument": stock,
+                                    str(_k): _fv
+                                }})
+                        except (ValueError, TypeError):
+                            pass
             else:
                 # 标量返回
                 if pd.notna(_dr):
@@ -664,19 +677,12 @@ if __name__ == '__main__':
 
     _MANIFEST = _CHUNK_DIR / "_manifest.json"
     _STOCKS_KEY = sorted(STOCK_LIST)
-    _MANIFEST_DATA = json.load(open(_MANIFEST)) if _MANIFEST.exists() else None
-    _chunks_ok = (
-        all(cf.exists() for cf in _CHUNK_FILES)
-        and _MANIFEST_DATA is not None
-        and _MANIFEST_DATA.get("stocks") == _STOCKS_KEY
-        and _MANIFEST_DATA.get("chunk_size") == _CHUNK_SIZE
-    )
-
+    _chunks_ok = all(cf.exists() for cf in _CHUNK_FILES) and _MANIFEST.exists() and json.load(open(_MANIFEST)).get("stocks") == _STOCKS_KEY
     if _chunks_ok:
-        print(f"共享chunk已存在且股票列表/尺寸匹配: {{_CHUNK_DIR}}, 跳过预分片 ({{time.time()-_t_split:.0f}}s)", flush=True)
+        print(f"共享chunk已存在且股票列表匹配: {{_CHUNK_DIR}}, 跳过预分片 ({{time.time()-_t_split:.0f}}s)", flush=True)
     else:
         if all(cf.exists() for cf in _CHUNK_FILES):
-            print(f"⚠️ 股票列表/CHUNK_SIZE 变化或 manifest 缺失，重新预分片 ({{_CHUNK_DIR}})", flush=True)
+            print(f"⚠️ 股票列表变化或 manifest 缺失，重新预分片 ({{_CHUNK_DIR}})", flush=True)
         _writers = [None] * len(_CHUNKS_LIST)
         _stock2ci = {{}}
         for _ci, _cstocks in enumerate(_CHUNKS_LIST):
@@ -775,7 +781,7 @@ if __name__ == '__main__':
     else:
         wide = wide.sort_index().sort_index(axis=1)
         wide.index.name = "trade_date"
-        wide.columns.name = "stock_code"
+        wide.columns.name = "symbol"
         wide = wide.replace([np.inf, -np.inf], np.nan)
         wide = wide.reindex(index=pd.DatetimeIndex(TRADE_DATES, name=wide.index.name),
                             columns=pd.Index(STOCK_LIST, name=wide.columns.name))
@@ -826,9 +832,20 @@ if not _D or not (_D/"stock_data"/"daily").exists():
             _D = Path(".")
 DATA_DIR = _D
 STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
+# ── 基本面数据（独立目录：行情只含价量，基本面列从基本面数据目录合并） ──
+FUNDAMENTAL_DATA_DIR = DATA_DIR.resolve().parent.parent.parent / "基本面数据" / DATA_DIR.resolve().name
+FUNDAMENTAL_STOCK_DATA_DIR = FUNDAMENTAL_DATA_DIR / "stock_data" / "daily"
+FUNDAMENTAL_COLS = {'roe', 'roa', 'pe_ttm', 'pb', 'revenue_yoy', 'profit_yoy', 'gross_margin', 'net_margin', 'debt_to_asset', 'ocf_per_share', 'market_cap', 'circulating_market_cap', 'total_shares', 'float_shares', 'adjusted_profit', 'gross_profit', 'total_holders', 'holder_change_pct'}
+
+def _load_fundamental(stock, columns=None):
+    _p = FUNDAMENTAL_STOCK_DATA_DIR / f"{stock}.parquet"
+    if _p.exists():
+        return pd.read_parquet(_p, columns=columns)
+    return None
+# ── ──
 STOCK_LIST = json.load(open(STOCK_DATA_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(STOCK_DATA_DIR / "trade_dates.json"))
-LOOKBACK_DAYS = {lookback_days}  # 由框架注入，0=不切片
+LOOKBACK_DAYS = min(max(0, {lookback_days}), int(os.environ.get("FACTOR_LOOKBACK_CAP", "250")))  # 由框架注入，0=不切片，默认上限250
 # ── 增量更新：设 FACTOR_INCREMENTAL_START_DATE 环境变量则只算该日期之后的数据 ──
 _INC_START = os.environ.get("FACTOR_INCREMENTAL_START_DATE")
 if _INC_START:
@@ -840,12 +857,29 @@ N_WORKERS = int(os.environ.get("FACTOR_N_WORKERS", "4"))
 
 def load_stock(stock, columns=None):
     import pyarrow.parquet as pq
-    path = STOCK_DATA_DIR / f"{stock}.parquet"
-    if columns:
-        table = pq.read_table(path, columns=columns, memory_map=True)
+    if columns is None:
+        table = pq.read_table(STOCK_DATA_DIR / f"{stock}.parquet", memory_map=True)
+        _df = table.to_pandas()
+        _fund = _load_fundamental(stock)
+        if _fund is not None:
+            _add = _fund.loc[:, [c for c in _fund.columns if c not in _df.columns]]
+            if _add.shape[1] > 0:
+                _df = _df.join(_add)
+        return _df
+    _fcols = [c for c in columns if c in FUNDAMENTAL_COLS]
+    if not _fcols:
+        table = pq.read_table(STOCK_DATA_DIR / f"{stock}.parquet", columns=columns, memory_map=True)
+        return table.to_pandas()
+    _mcols = [c for c in columns if c not in FUNDAMENTAL_COLS]
+    if _mcols:
+        table = pq.read_table(STOCK_DATA_DIR / f"{stock}.parquet", columns=_mcols, memory_map=True)
+        _df = table.to_pandas()
     else:
-        table = pq.read_table(path, memory_map=True)
-    return table.to_pandas()
+        _df = pd.read_parquet(STOCK_DATA_DIR / f"{stock}.parquet")
+    _fund = _load_fundamental(stock, _fcols)
+    if _fund is not None:
+        _df = _df.join(_fund)
+    return _df
 
 _INDUSTRY_FILE = STOCK_DATA_DIR / "industry.json"
 INDUSTRY_DICT = json.load(open(_INDUSTRY_FILE, encoding="utf-8")) if _INDUSTRY_FILE.exists() else {}
@@ -918,14 +952,15 @@ def _init_shared():
     _WTDIDX = pd.DatetimeIndex(TRADE_DATES)
     print(f"  [主进程] 共享缓存就绪，{len(STOCK_LIST)}只股票按需加载", flush=True)
 
-def _init_worker():
+def _init_worker(load_cols=None):
     \"\"\"子进程初始化（spawn 模式下子进程需要重新初始化共享变量）\"\"\"
-    global _WVALID, _WTDIDX, _SD, _WCACHE, _WPOS
+    global _WVALID, _WTDIDX, _SD, _WCACHE, _WPOS, _LOAD_COLS
     _SD = STOCK_DATA_DIR
     _WVALID = STOCK_LIST
     _WTDIDX = pd.DatetimeIndex(TRADE_DATES)
     _WCACHE = {}
     _WPOS = {}
+    _LOAD_COLS = load_cols
 
 def _get_stock(s):
     \"\"\"延迟加载 — 全量位置预计算，跨chunk复用\"\"\"
@@ -933,11 +968,21 @@ def _get_stock(s):
     if s not in _WCACHE:
         try:
             import pyarrow.parquet as pq
-            _t = pq.read_table(_SD / f"{s}.parquet", columns=_LOAD_COLS, memory_map=True)
+            # _LOAD_COLS 由主进程检测后经 initargs 传给子进程；为 None 时才加载全部列
+            _cols = _LOAD_COLS if isinstance(_LOAD_COLS, list) else None
+            _fcols = [c for c in _cols if c in FUNDAMENTAL_COLS] if _cols else None
+            _mcols = [c for c in _cols if c not in FUNDAMENTAL_COLS] if _cols else None
+            _t = pq.read_table(_SD / f"{s}.parquet", columns=_mcols, memory_map=True)
             df = _t.to_pandas()
             # _LOAD_COLS非None时pyarrow按列读取会丢失datetime索引
             if 'datetime' in df.columns:
                 df = df.set_index('datetime')
+            # 合并基本面列：有检测列时只合并因子需要的列；load-all(None)时合并全部作为安全兜底
+            _fund = _load_fundamental(s, _fcols) if (_cols is None or _fcols) else None
+            if _fund is not None:
+                _add = _fund.loc[:, [c for c in _fund.columns if c not in df.columns]]
+                if _add.shape[1] > 0:
+                    df = df.join(_add)
             # 确保索引有序
             if not df.index.is_monotonic_increasing:
                 df = df.sort_index()
@@ -976,6 +1021,10 @@ def _worker_days(day_indices):
             except Exception:
                 r = {}
             for s, fd in r.items():
+                if not isinstance(fd, dict):
+                    # pd.Series 返回 → 用 Series.name 做列名
+                    _name = getattr(r, 'name', None) or "factor"
+                    fd = {_name: fd}
                 if fd and not any(v is None or (isinstance(v, float) and np.isnan(v)) for v in fd.values()):
                     results.append({"datetime": td_str, "instrument": s, **fd})
     return results
@@ -985,6 +1034,13 @@ if __name__ == '__main__':
         import re, inspect, pyarrow.parquet as pq
         _SAMPLE_FILE = next(STOCK_DATA_DIR.glob("*.parquet"))
         _AVAILABLE_COLS = set(pq.read_schema(_SAMPLE_FILE).names) - {'instrument'}
+        # 行情 parquet 只含价量，基本面列从基本面数据目录读取（同样纳入可用列推断）
+        if FUNDAMENTAL_STOCK_DATA_DIR.exists():
+            try:
+                _FUND_SAMPLE = next(FUNDAMENTAL_STOCK_DATA_DIR.glob("*.parquet"))
+                _AVAILABLE_COLS |= (set(pq.read_schema(_FUND_SAMPLE).names) - {'instrument'})
+            except Exception:
+                pass
         _USER_SOURCE = inspect.getsource(calc_factor_cross_section)
         # 提取代码中所有引号字符串，与可用列取交集
         _ALL_QUOTED = set(re.findall(r'''['\"](\w+)['\"]''', _USER_SOURCE))
@@ -1013,7 +1069,7 @@ if __name__ == '__main__':
         # ProcessPoolExecutor：spawn 上下文避免 pyarrow fork 不兼容
         # 创建在 chunk 循环外，worker 跨 chunk 复用，缓存累积
         _ctx = _mp.get_context('spawn')
-        with ProcessPoolExecutor(max_workers=N_WORKERS, initializer=_init_worker, mp_context=_ctx) as _pool:
+        with ProcessPoolExecutor(max_workers=N_WORKERS, initializer=_init_worker, initargs=(_LOAD_COLS,), mp_context=_ctx) as _pool:
             for _ci, _cs in enumerate(_ranges):
                 _ce = min(_cs + _CHUNK, len(TRADE_DATES))
                 _t_chk = time.time()
@@ -1054,7 +1110,7 @@ if __name__ == '__main__':
         wide = long_df.pivot(index="datetime", columns="instrument", values=factor_name)
         wide = wide.sort_index().sort_index(axis=1)
         wide.index.name = "trade_date"
-        wide.columns.name = "stock_code"
+        wide.columns.name = "symbol"
         wide = wide.replace([np.inf, -np.inf], np.nan)
         wide = wide.reindex(index=pd.DatetimeIndex(TRADE_DATES, name=wide.index.name),
                             columns=pd.Index(STOCK_LIST, name=wide.columns.name))
@@ -1185,8 +1241,11 @@ def _compute_day(td):
         try:
             grp = _grp.droplevel('instrument')
             val = calc_factor_minute_raw(grp, stk)
-            if val:
-                raw[stk] = list(val.values())[0]
+            if val is not None:
+                if isinstance(val, dict):
+                    raw[stk] = list(val.values())[0]
+                else:
+                    raw[stk] = val
         except (pd.errors.OutOfBoundsDatetime, OverflowError, ValueError):
             pass
 
@@ -1352,6 +1411,11 @@ for _search_dir in [os.path.join(_sys_prefix, "lib"), os.path.join(os.path.dirna
             pass
 
 import torch
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if DEVICE.type == "cuda":
+    print(f"  GPU可用: {torch.cuda.get_device_name(0)}", flush=True)
+else:
+    print("  CPU模式", flush=True)
 
 _D = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or "")
 if not _D or not (_D/"stock_data"/"daily").exists():
@@ -1362,9 +1426,20 @@ if not _D or not (_D/"stock_data"/"daily").exists():
             _D = Path(".")
 DATA_DIR = _D
 STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
+# ── 基本面数据（独立目录：行情只含价量，基本面列从基本面数据目录合并） ──
+FUNDAMENTAL_DATA_DIR = DATA_DIR.resolve().parent.parent.parent / "基本面数据" / DATA_DIR.resolve().name
+FUNDAMENTAL_STOCK_DATA_DIR = FUNDAMENTAL_DATA_DIR / "stock_data" / "daily"
+FUNDAMENTAL_COLS = {{'roe', 'roa', 'pe_ttm', 'pb', 'revenue_yoy', 'profit_yoy', 'gross_margin', 'net_margin', 'debt_to_asset', 'ocf_per_share', 'market_cap', 'circulating_market_cap', 'total_shares', 'float_shares', 'adjusted_profit', 'gross_profit', 'total_holders', 'holder_change_pct'}}
+
+def _load_fundamental(stock, columns=None):
+    _p = FUNDAMENTAL_STOCK_DATA_DIR / f"{{stock}}.parquet"
+    if _p.exists():
+        return pd.read_parquet(_p, columns=columns)
+    return None
+# ── ──
 STOCK_LIST = json.load(open(STOCK_DATA_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(STOCK_DATA_DIR / "trade_dates.json"))
-LOOKBACK_DAYS = {lookback_days}  # 由框架注入，0=不切片
+LOOKBACK_DAYS = min(max(0, {lookback_days}), int(os.environ.get("FACTOR_LOOKBACK_CAP", "250")))  # 由框架注入，0=不切片，默认上限250
 # ── 增量更新：设 FACTOR_INCREMENTAL_START_DATE 环境变量则只算该日期之后的数据 ──
 _INC_START = os.environ.get("FACTOR_INCREMENTAL_START_DATE")
 if _INC_START:
@@ -1374,9 +1449,23 @@ if _INC_START:
 _CODE_DIR = Path(__file__).parent
 
 def load_stock(stock, columns=None):
-    if columns:
+    if columns is None:
+        _df = pd.read_parquet(STOCK_DATA_DIR / f"{{stock}}.parquet")
+        _fund = _load_fundamental(stock)
+        if _fund is not None:
+            _add = _fund.loc[:, [c for c in _fund.columns if c not in _df.columns]]
+            if _add.shape[1] > 0:
+                _df = _df.join(_add)
+        return _df
+    _fcols = [c for c in columns if c in FUNDAMENTAL_COLS]
+    if not _fcols:
         return pd.read_parquet(STOCK_DATA_DIR / f"{{stock}}.parquet", columns=columns)
-    return pd.read_parquet(STOCK_DATA_DIR / f"{{stock}}.parquet")
+    _mcols = [c for c in columns if c not in FUNDAMENTAL_COLS]
+    _df = pd.read_parquet(STOCK_DATA_DIR / f"{{stock}}.parquet", columns=_mcols or None)
+    _fund = _load_fundamental(stock, _fcols)
+    if _fund is not None:
+        _df = _df.join(_fund)
+    return _df
 
 # 行业分类数据（申万一级行业）：INDUSTRY_DICT[股票代码] = 行业名
 _INDUSTRY_FILE = STOCK_DATA_DIR / "industry.json"
@@ -1444,8 +1533,20 @@ if __name__ == '__main__':
         import re as _re, inspect as _inspect, pyarrow.parquet as _pq
         _SAMPLE_FILE = next(STOCK_DATA_DIR.glob("*.parquet"))
         _AVAILABLE_COLS = set(_pq.read_schema(_SAMPLE_FILE).names) - {'datetime', 'instrument'}
-        _USER_SOURCE = open(__file__, encoding="utf-8").read()
-        # 提取代码中所有引号字符串，与可用列取交集（覆盖辅助函数、模块级代码等所有位置）
+        # 行情 parquet 只含价量，基本面列从基本面数据目录读取（同样纳入可用列推断）
+        if FUNDAMENTAL_STOCK_DATA_DIR.exists():
+            try:
+                _FUND_SAMPLE = next(FUNDAMENTAL_STOCK_DATA_DIR.glob("*.parquet"))
+                _AVAILABLE_COLS |= (set(_pq.read_schema(_FUND_SAMPLE).names) - {'datetime', 'instrument'})
+            except Exception:
+                pass
+        _USER_SOURCE = ""
+        for _fn in ("train_model", "predict", "predict_batch"):
+            try:
+                _USER_SOURCE += _inspect.getsource(globals()[_fn]) + "\\n"
+            except Exception:
+                pass
+        # 只扫描用户函数引用的列，避免模板中 FUNDAMENTAL_COLS 字面量把全部基本面列算进 _LOAD_COLS
         _ALL_QUOTED = set(_re.findall(r'''['"]([A-Za-z_][A-Za-z0-9_]*)['"]''', _USER_SOURCE))
         _DETECTED = sorted(_ALL_QUOTED & _AVAILABLE_COLS)
         _LOAD_COLS = sorted(set((_LOAD_COLS or []) + _DETECTED))  # 注入值 ∪ 扫描值
@@ -1493,6 +1594,12 @@ if __name__ == '__main__':
             if not data_for_train:
                 continue
             model = train_model(data_for_train, _first_td)
+            # 自动移模型到 GPU（如果可用）
+            if model is not None and hasattr(model, 'to'):
+                try:
+                    model = model.to(DEVICE)
+                except Exception:
+                    pass
 
             print(f"  按日期计算 [{_year}]: {len(_date_idxs)} 天", flush=True)
             for _batch_idx, i in enumerate(_date_idxs):
@@ -1518,15 +1625,24 @@ if __name__ == '__main__':
                     continue
 
                 if _has_predict_batch:
-                    # GPU batch inference: returns (factor_name, {stock: value})
-                    fname, results = predict_batch(model, data_for_predict, td)
-                    for stock, val in results.items():
-                        all_records.append({{"datetime": str(td.date()), "instrument": stock, fname: val}})
+                    # returns (factor_name, {stock: value}) or {stock: {factor: value}}
+                    _pb_result = predict_batch(model, data_for_predict, td)
+                    if isinstance(_pb_result, tuple) and len(_pb_result) == 2:
+                        _fname, _results = _pb_result
+                        for stock, val in _results.items():
+                            all_records.append({{"datetime": str(td.date()), "instrument": stock, _fname: val}})
+                    else:
+                        for stock, val in _pb_result.items():
+                            if isinstance(val, dict):
+                                all_records.append({{"datetime": str(td.date()), "instrument": stock, **val}})
+                            else:
+                                # {stock: scalar} → 用 "factor" 占位，下游 auto-detect 会从 DataFrame 列名确定因子名
+                                all_records.append({{"datetime": str(td.date()), "instrument": stock, "factor": val}})
                 else:
-                    # Fallback: per-stock predict
+                    # Fallback: per-stock predict — only accepts dict return
                     for stock, df in data_for_predict.items():
                         r = predict(model, df, td, stock)
-                        if r:
+                        if isinstance(r, dict):
                             all_records.append({{"datetime": str(td.date()), "instrument": stock, **r}})
 
         long_df = pd.DataFrame(all_records)
@@ -1535,7 +1651,7 @@ if __name__ == '__main__':
         wide = long_df.pivot(index="datetime", columns="instrument", values=factor_name)
         wide = wide.sort_index().sort_index(axis=1)
         wide.index.name = "trade_date"
-        wide.columns.name = "stock_code"
+        wide.columns.name = "symbol"
         wide = wide.replace([np.inf, -np.inf], np.nan)
         wide = wide.reindex(index=pd.DatetimeIndex(TRADE_DATES, name=wide.index.name),
                             columns=pd.Index(STOCK_LIST, name=wide.columns.name))
@@ -1689,7 +1805,7 @@ Factor code:
             available = ("open, high, low, close, volume, factor, pct_chg, pre_close, turnover_rate, "
                        "roe, roa, pe_ttm, pb, revenue_yoy, profit_yoy, gross_margin, net_margin, "
                        "debt_to_asset, ocf_per_share, market_cap, circulating_market_cap, total_shares, "
-                       "float_shares, adjusted_profit, gross_profit")
+                       "float_shares, adjusted_profit, gross_profit, total_holders, holder_change_pct")
         user_prompt = FactorFBWorkspace._INFER_COL_PROMPT.replace("{available}", available).replace("{code}", code)
         try:
             response = APIBackend(use_chat_cache=True).build_messages_and_create_chat_completion(
@@ -1763,7 +1879,7 @@ Factor code:
         review_metadata = review_metadata or {}
         if review_metadata.get("source_type") == "literature_report":
             report_title = str(review_metadata.get("source_report_title") or "unknown_report")
-            return self.EXPORTED_PARQUET_DIR / "literature_reports" / self._sanitize_factor_name(report_title)
+            return self.EXPORTED_PARQUET_DIR / "测试" / self._sanitize_factor_name(report_title)
         return self.EXPORTED_PARQUET_DIR
 
     def _clear_rejected_marker(self, factor_name: str, review_metadata: dict[str, Any] | None = None) -> None:
@@ -1971,7 +2087,7 @@ Factor code:
         self._clear_rejected_marker(factor_name, review_metadata)
 
         if self._env_flag("FACTOR_EXPORT_KEEP_SNAPSHOTS"):
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
             snapshot_path = export_dir / f"{timestamp}__{factor_name}.parquet"
             df.to_parquet(snapshot_path, engine="pyarrow")
 
@@ -2055,8 +2171,6 @@ Factor code:
         backend = str(FACTOR_COSTEER_SETTINGS.execution_backend).strip().lower()
         if backend != "auto":
             return backend
-        if _docker_daemon_available():
-            return "docker"
         if _conda_env_exists(FACTOR_COSTEER_SETTINGS.execution_conda_env_name):
             return "conda"
         return "local"
@@ -2100,50 +2214,6 @@ Factor code:
             timeout=FACTOR_COSTEER_SETTINGS.file_based_execution_timeout,
         )
         return completed.returncode == 0, self._sanitize_execution_feedback(completed.stdout or "", execution_code_path)
-
-    def _execute_in_docker(
-        self,
-        execution_code_path: Path,
-        source_data_path: Path,
-    ) -> tuple[bool, str]:
-        docker_env = FactorDockerEnv()
-        docker_env.prepare()
-
-        resolved_data = source_data_path.resolve()
-        extra_volumes = {
-            str(resolved_data): {
-                "bind": "/workspace/factor_data",
-                "mode": "rw",
-            }
-        }
-        # Resolve symlinks that point outside the mounted directory.
-        # Docker does not follow symlinks escaping the mount root, so we
-        # mount the real targets as additional volumes at the same path.
-        if resolved_data.is_dir():
-            for entry in resolved_data.iterdir():
-                if entry.is_symlink():
-                    real_target = entry.resolve()
-                    # Only mount if the real target is outside the data dir
-                    if not str(real_target).startswith(str(resolved_data)):
-                        mount_point = f"/workspace/factor_data/{entry.name}"
-                        extra_volumes[str(real_target)] = {
-                            "bind": mount_point,
-                            "mode": "ro",
-                        }
-
-        result = docker_env.run(
-            local_path=str(self.workspace_path),
-            entry=f"python {execution_code_path.name}",
-            env={
-                "FACTOR_DATA_DIR": "/workspace/factor_data",
-                "RDAGENT_FACTOR_DATA_DIR": "/workspace/factor_data",
-                "HDF5_USE_FILE_LOCKING": "FALSE",
-                "JQ_USER": os.environ.get("JQ_USER", ""),
-                "JQ_PASS": os.environ.get("JQ_PASS", ""),
-            },
-            running_extra_volume=extra_volumes,
-        )
-        return result.exit_code == 0, self._sanitize_execution_feedback(result.full_stdout or "", execution_code_path)
 
     @cache_with_pickle(hash_func)
     def execute(self, data_type: str = "Debug") -> Tuple[str, pd.DataFrame]:
@@ -2196,9 +2266,6 @@ Factor code:
             if self.target_task.version == 1:
                 launcher_data_path = source_data_path.resolve()
                 launcher_code_path = code_path
-                if backend == "docker":
-                    launcher_data_path = Path("/workspace/factor_data")
-                    launcher_code_path = Path("factor.py")
                 execution_code_path = self.workspace_path / self.EXECUTION_LAUNCHER
                 execution_code_path.write_text(
                     self._build_shared_data_launcher(
@@ -2212,12 +2279,7 @@ Factor code:
                 execution_code_path.write_text((Path(__file__).parent / "factor_execution_template.txt").read_text())
 
             try:
-                if backend == "docker":
-                    execution_success, execution_feedback = self._execute_in_docker(
-                        execution_code_path=execution_code_path,
-                        source_data_path=source_data_path,
-                    )
-                elif backend in {"local", "conda"}:
+                if backend in {"local", "conda"}:
                     execution_success, execution_feedback = self._execute_locally(
                         execution_code_path=execution_code_path,
                         source_data_path=source_data_path,

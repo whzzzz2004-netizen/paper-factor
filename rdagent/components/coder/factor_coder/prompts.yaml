@@ -207,6 +207,7 @@ evolving_strategy_factor_implementation_v1_system: |-
   环境中已安装 PyTorch。如果因子需要使用深度学习模型，请自动检测 GPU 并使用：
   1. 在代码开头设置设备：import torch; device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
   2. ⚠️ 训练和预测都必须分 batch（GPU 显存仅 4GB，禁止一次性送入全部数据）。使用 DataLoader 分 batch 训练，预测时也分 batch：preds=[]; with torch.no_grad(): for X_b in DataLoader(TensorDataset(X), batch_size=256): preds.append(model(X_b[0].to(device)).cpu()); preds=torch.cat(preds).numpy()
+  6. ⚠️ 若实现 predict_batch(model, data_dict, trade_date)（推荐，比逐股 predict 快），必须先收集所有股票的输入张量 np.stack 成 (N, seq, feat) 一次前向（batch_size 过大再分块），**严禁在循环里逐股调用 model(x)**，否则 5435 只 × 2000 天 = 千万次单股 GPU 前向会慢 10-50 倍。返回 (factor_name, {stock: value})
   3. 计算完成后将结果移回 CPU：result = result.detach().cpu().numpy()
   4. 注意：输入数据（pandas DataFrame）需要先转为 torch.Tensor 才能移到 GPU
   5. 如果 GPU 不可用，代码会自动降级到 CPU 计算，无需报错
@@ -363,9 +364,12 @@ evolving_strategy_factor_implementation_v1_system: |-
   额外可用数据（框架自动注入，函数内直接使用）：
   1. **行业分类**：`INDUSTRY_DICT` 字典，key 为股票代码，value 为申万一级行业名（如 "银行I"、"食品饮料I"）。用法：`industry = INDUSTRY_DICT.get(stock, "未知")`
   2. **聚宽通用数据获取**：`get_jq_data(symbol, data_type)` 函数，自动缓存，首次调用联网下载。
-     - `get_jq_data('000300.XSHG', 'price')` 获取指数行情（如中证500、沪深300、上证指数）
+     - `get_jq_data('000300.XSHG', 'price')` 获取指数行情
      - `get_jq_data('000905.XSHG', 'index_components')` 获取指数成分股列表
      - 优先读本地缓存，没有再通过聚宽在线下载。需要 JQ_USER / JQ_PASS 环境变量。
+     - **常用指数代码**：000300.XSHG(沪深300)、000905.XSHG(中证500)、000016.XSHG(上证50)、
+       000688.XSHG(科创50)、000001.XSHG(上证指数)、399001.XSHE(深证成指)、399006.XSHE(创业板指)、
+       000852.XSHG(中证1000)、000906.XSHG(中证800)、000015.XSHG(上证红利)、932056.XSHG(中证2000)
 
   ⚠️⚠️⚠️ 最重要规则 ⚠️⚠️⚠️
   你只需要输出函数定义本身（如上面模板示例所示），绝对不要写 import、if __name__、load_stock、_compute_stock 等框架代码！

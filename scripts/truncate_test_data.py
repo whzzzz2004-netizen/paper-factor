@@ -2,7 +2,7 @@
 """
 缩减测试数据到 300 天。
 
-对 git_ignore_folder/factor_implementation_source_data_1000/ 执行：
+对 数据仓库/行情数据/日线/测试/ 执行：
 - 日线 (stock_data/daily): trade_dates.json 截取最后 300 天；每只股票 parquet 按日期过滤
 - 分钟 (stock_data/minute_by_date): trade_dates.json 截取最后 300 天；删除不在 300 天内的 parquet 文件
 
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "git_ignore_folder" / "factor_implementation_source_data_1000"
+TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "数据仓库" / "行情数据" / "日线" / "测试"
 DAILY_DIR = TEST_DATA_DIR / "stock_data" / "daily"
 MINUTE_DIR = TEST_DATA_DIR / "stock_data" / "minute_by_date"
 

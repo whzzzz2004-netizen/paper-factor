@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-因子工具函数：run_all.py 和 daily_update.py 共享的实用函数。
+因子工具函数：run_all.py 使用的实用函数。
 
 提供统一的数据加载、代码注入、子进程执行、合并、评估等操作。
 """
@@ -70,6 +70,7 @@ def run_factor_subprocess(
             env["FACTOR_N_WORKERS"] = str(n_workers)
         else:
             env.setdefault("FACTOR_N_WORKERS", "4")
+        env["FACTOR_LOOKBACK_CAP"] = "99999"
 
         factor_type = detect_factor_type(code_text)
         print(f"  执行中... (type={factor_type})"
@@ -141,7 +142,7 @@ def backup_parquet(parquet_path: Path) -> Path:
     否则因子目录会残留 .parquet.bak.*，看着像重复文件。
     """
     bak_path = parquet_path.with_suffix(
-        f".parquet.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        f".parquet.bak.{datetime.now().strftime('%Y-%m-%d_%H%M%S')}"
     )
     shutil.copy2(parquet_path, bak_path)
     return bak_path
@@ -174,7 +175,6 @@ def update_factor_meta(meta_path: Path, df: pd.DataFrame, extra: dict | None = N
     meta["rows"] = df.shape[0]
     meta["stock_count"] = df.shape[1]
     meta["updated_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    meta["daily_update"] = True
 
     if extra:
         meta.update(extra)

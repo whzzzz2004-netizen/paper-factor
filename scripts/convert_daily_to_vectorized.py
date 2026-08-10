@@ -14,8 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from rdagent.components.coder.factor_coder.factor import FactorFBWorkspace
 
-BASE = Path(__file__).parent.parent / "git_ignore_folder" / "factor_outputs" / "literature_reports" / "20260726"
-FULL_BASE = Path(__file__).parent.parent / "git_ignore_folder" / "factor_outputs" / "文献因子_全量" / "20260726"
+BASE = Path(__file__).parent.parent / "数据仓库" / "因子产出" / "测试" / "20260726"
+FULL_BASE = Path(__file__).parent.parent / "数据仓库" / "因子产出" / "全量" / "20260726"
 
 
 def extract_user_func(code: str, func_name: str) -> str:

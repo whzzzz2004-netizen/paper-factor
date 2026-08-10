@@ -28,7 +28,7 @@ scan-pending → [Phase 1] 提取+定义因子 (每个paper一个sub-agent, 只�
 
 ---
 
-### Step 0: 扫描
+### Step 0: 扫描 + 数据预检
 ```bash
 python scripts/claude_factor_helper.py scan-pending
 ```
@@ -36,9 +36,18 @@ python scripts/claude_factor_helper.py scan-pending
 
 **队列排序规则：** 含 "深度学习/GRU/TCN/LSTM/deep_learning" 的排末尾，其他优先。
 
+**数据完整性预检（跳过会导致后续跑全量而非测试数据）：**
+```bash
+python3 -c "import json; sl=json.load(open('数据仓库/行情数据/日线/测试/stock_data/daily/stock_list.json')); td=json.load(open('数据仓库/行情数据/日线/测试/stock_data/daily/trade_dates.json')); print(f'日线测试: {len(sl)}只×{len(td)}天')"
+python3 -c "import json; sl=json.load(open('数据仓库/行情数据/分钟线/测试/stock_data/stock_list.json')); td=json.load(open('数据仓库/行情数据/分钟线/测试/stock_data/trade_dates.json')); print(f'分钟测试: {len(sl)}只×{len(td)}天')"
+```
+如果日线不是 300只×300天，或分钟不是 300只×300天，说明测试数据有问题，**先修复数据再继续**。
+
 ---
 
 ### Step 1: Phase 1 — 提取 + 定义因子
+
+> **`{DATE}` 格式：YYYY-MM-DD（如 2026-08-09），**所有日期子目录一致。用 `datetime.now().strftime("%Y-%m-%d")` 生成。
 
 对每个待处理项（paper/website/idea），启动一个 sub-agent。**每个 sub-agent 只做两件事：提取原文 → 定义因子。不做编码测试。**
 
@@ -58,12 +67,10 @@ prompt = """
 - 网站索引: {index} (仅website)
 
 ### Step 1: 获取原文
-{{
-  'paper': f'python scripts/claude_factor_helper.py extract-pdf "{path}"',
-  'website': f'python scripts/claude_factor_helper.py extract-website --index {index}',
-  'idea': '直接使用 text 字段'
-}}
-命令输出是 JSON。如果提取失败/空内容，直接跳过：{{"skipped": true}}
+⚠️ 不能用 shell 命令直接传文件名（含中文引号等特殊字符会破坏 shell 解析）。
+改用 Python subprocess（列表参数，无 shell 注入）：
+python3 -c "import glob, subprocess, json; files = glob.glob('{path}'); print(json.dumps(subprocess.run(['python', 'scripts/claude_factor_helper.py', 'extract-pdf'] + files[:1], capture_output=True, text=True).stdout if files else '{}'))"
+如果输出为空或 `{{"skipped": true}}`，跳过。
 
 ### Step 2: 定义因子
 运行 python scripts/claude_factor_helper.py show-columns 查看可用列。
@@ -99,6 +106,11 @@ python scripts/claude_factor_helper.py save-extracted --name "标题" --date {DA
 
 #### 派发逻辑
 ```
+# 先 resolve 所有文件路径（避免文件名含特殊字符导致 shell 解析错误）
+for each paper:
+    run: python3 -c "import glob; print(glob.glob(paper_path)[0] if glob.glob(paper_path) else '')"
+    得到真实路径 → 存入 task.path
+
 tasks = flatten(papers + websites + ideas, DL排最后)
 for _ in range(min(5, len(tasks))):
     dispatch_phase1_worker(task)
@@ -115,6 +127,8 @@ for _ in range(min(5, len(tasks))):
 
 收集 Phase 1 所有成功定义的因子，**为每个因子启动一个 sub-agent**。每个 sub-agent 只做：**写核心函数 → 跑 test-and-export**。
 
+**⚠️ 收集策略：不要只依赖 Phase 1 agent 的返回值。agent 可能超时/失败。此外从 `数据仓库/因子产出/extracted_reports/{DATE}/` 目录读取所有已保存的 `.extracted.json` 文件，合并去重，确保不漏因子。**
+
 最多同时启动 **5 个** sub-agent。主 Claude 控制派发。
 
 > **type→type_key 映射**（Phase 2 prompt 里填 `--type {type_key}` 用）：daily→daily_single, minute→minute, cross_section→cross_section, minute_cs→minute_cross_section, deep_learning→deep_learning。此映射只给主 Claude 填 prompt 用，不要复制进 sub-agent prompt。
@@ -129,7 +143,7 @@ prompt = """
 
 ### 参考同类型因子（节省 token）
 查看已生成的成功因子代码，参考其核心函数结构：
-ls git_ignore_folder/factor_outputs/literature_reports/{DATE}/{report_name}/{name}/{name}.code.py
+ls 数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py
 只看核心函数部分（calc_factor_xxx），不要复制模板代码。
 注意参考同类型因子（daily 参考 daily，minute_cs 参考 minute_cs）。
 
@@ -241,15 +255,10 @@ for _ in range(min(5, len(all_factors))):
 对每个成功的因子：
 ```bash
 python scripts/claude_factor_helper.py deploy-to-full \
-  --code git_ignore_folder/factor_outputs/literature_reports/{DATE}/{report}/{factor}/{factor}.code.py \
+  --code 数据仓库/因子产出/测试/{DATE}/{report}/{factor}/{factor}.code.py \
   --date {DATE}
 ```
-（路径必须是仓库根起算的完整相对路径，helper 用 `Path.resolve()` 从 CWD 解析，短路径 `literature_reports/...` 会报 not found）
-
-同步到远程：
-```bash
-python scripts/claude_factor_helper.py sync-full --all --date {DATE}
-```
+（路径必须是仓库根起算的完整相对路径，helper 用 `Path.resolve()` 从 CWD 解析，短路径 `因子产出/...` 会报 not found）
 
 标记完成：
 ```bash

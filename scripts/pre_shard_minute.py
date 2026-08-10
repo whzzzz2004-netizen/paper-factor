@@ -20,11 +20,11 @@ BASE = Path(__file__).parent.parent / "git_ignore_folder"
 
 DATA_CONFIGS = {
     "test": {
-        "data_dir": BASE / "factor_implementation_source_data_1000",
+        "data_dir": Path(__file__).parent.parent / "数据仓库" / "行情数据" / "分钟线" / "测试",
         "chunk_size": 25,
     },
     "full": {
-        "data_dir": BASE / "factor_implementation_source_data",
+        "data_dir": Path(__file__).parent.parent / "数据仓库" / "行情数据" / "分钟线" / "全量",
         "chunk_size": 25,
     },
 }

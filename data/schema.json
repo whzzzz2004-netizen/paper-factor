@@ -1,15 +1,10 @@
 {
-  "version": "1.2",
-  "data_dir": "git_ignore_folder/factor_implementation_source_data",
-  "remote": {
-    "host": "192.168.1.13",
-    "share": "E",
-    "user": "pc",
-    "daily_dir": "market_daily_daily_new",
-    "minute_dir": "market_minute_daily_new",
-    "daily_full_file": "dailyData.parquet",
-    "industry_file": "jq_swIndu_comp.csv",
-    "jhjj_hsl_file": "jhjjHsl.csv"
+  "version": "1.3",
+  "data_dir": "数据仓库/行情数据/日线/全量",
+  "import": {
+    "dir": "新建文件",
+    "script": "scripts/import_new_data.py",
+    "note": "本地导入：用户把新增数据放到 新建文件/（日线/、基本面/ 或根目录），运行脚本自动检测格式并导入。远程 SMB 同步已删除。"
   },
   "daily": {
     "format": "per_stock_parquet",
@@ -132,10 +127,6 @@
       "jhjj_hsl": {
         "description": "集合竞价换手率",
         "source": "jhjjHsl.csv"
-      },
-      "amount": {
-        "description": "成交金额(元, 成交量×收盘价近似)",
-        "source": "computed"
       },
       "total_holders": {
         "description": "股东总户数",

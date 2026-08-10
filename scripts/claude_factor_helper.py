@@ -195,81 +195,20 @@ from pathlib import Path
 # Constants
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).parent.parent
-LITERATURE_REPORTS_DIR = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "literature_reports"
-
-# ── 远程 E 盘配置 ──
-SMB_HOST = "192.168.1.13"
-SMB_SHARE = "E"
-SMB_USER = "pc"
-SMB_PASS = "123456"
-CIFS_MOUNT = Path("/mnt/remote_e")
-
-
-def _sudo_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
-    if "PYTHON_RUN_AS_ROOT" in os.environ:
-        return subprocess.run(cmd, **kwargs)
-    try:
-        return subprocess.run(["sudo", "-n"] + cmd, **kwargs)
-    except Exception:
-        pass
-    kwargs.pop("input", None)
-    return subprocess.run(
-        ["sudo", "-S"] + cmd,
-        input=f"{SMB_PASS}\n".encode(),
-        **kwargs,
-    )
-
-
-def _ensure_remote_mounted() -> bool:
-    if CIFS_MOUNT.exists() and any(CIFS_MOUNT.iterdir()):
-        return True
-    print("  ⏳ 自动挂载远程 E 盘 ...", flush=True)
-    try:
-        CIFS_MOUNT.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        print(f"  ❌ 无法创建挂载点: {e}", flush=True)
-        return False
-    _sudo_run(["modprobe", "cifs"], capture_output=True, timeout=10)
-    _sudo_run(["apt", "install", "-y", "cifs-utils"], capture_output=True, timeout=120)
-    _base_opts = f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"
-    for _vers in ("3.0", "2.1", "2.0", "1.0"):
-        r = _sudo_run(
-            ["mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT), "-o", f"vers={_vers},{_base_opts}"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode == 0:
-            print(f"  ✅ 已挂载 (vers={_vers})", flush=True)
-            return True
-    print(f"  ⚠️ 挂载失败，回退本地数据", flush=True)
-    return False
-
+LITERATURE_REPORTS_DIR = PROJECT_ROOT / "数据仓库" / "因子产出" / "测试"
 
 def _detect_data_dir() -> Path:
-    """Detect best available data directory (remote preferred, local fallback)."""
+    """Detect best available data directory."""
     candidates = [
         os.environ.get("FACTOR_DATA_DIR", ""),
         os.environ.get("RDAGENT_FACTOR_DATA_DIR", ""),
-        # _1000 测试数据优先（300只股票，速度快）
-        str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data_1000"),
-        # 远程全量数据（CIFS 挂载）
-        "/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data",
-        # 本地全量数据
-        str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"),
-        # Windows 路径
-        "E:\\_paper_factor_unified\\factor_implementation_source_data",
-        "Z:\\_paper_factor_unified\\factor_implementation_source_data",
-        "\\\\192.168.1.13\\E\\_paper_factor_unified\\factor_implementation_source_data",
+        str(PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "测试" / "stock_data" / "daily"),
+        str(PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily"),
     ]
     for p in candidates:
-        if p and (Path(p) / "stock_data" / "daily").exists():
-            return Path(p)
-    # 都不存在 → 尝试自动挂载再查
-    print("  ⏳ 未找到数据目录，尝试自动挂载远程 E 盘...", flush=True)
-    if _ensure_remote_mounted():
-        for p in candidates:
-            if p and (Path(p) / "stock_data" / "daily").exists():
-                return Path(p)
-    return PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data_1000"
+        if p and Path(p).exists():
+            return Path(p).parent.parent  # 返回 stock_data 的父目录
+    return PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "测试"
 
 
 TEST_DATA_DIR = _detect_data_dir()
@@ -629,10 +568,18 @@ def detect_lookback_from_code(code: str, default: int = 250) -> int:
 _NON_NULL_THRESHOLD = 0.01  # 1%
 
 
-def _run_test_in_tmpdir(code_path: Path, timeout: int = 3600) -> dict:
+def _run_test_in_tmpdir(code_path: Path, timeout: int = 3600, type_key: str = "daily_single") -> dict:
     """Run a .code.py in a temp dir and return result dict + temp dir path."""
     env = os.environ.copy()
-    env["FACTOR_DATA_DIR"] = str(TEST_DATA_DIR)
+    # 根据因子类型设置正确的数据目录
+    if type_key in ("minute", "minute_cross_section"):
+        minute_test_dir = PROJECT_ROOT / "数据仓库" / "行情数据" / "分钟线" / "测试"
+        if minute_test_dir.exists():
+            env["FACTOR_DATA_DIR"] = str(minute_test_dir)
+        else:
+            env["FACTOR_DATA_DIR"] = str(TEST_DATA_DIR)
+    else:
+        env["FACTOR_DATA_DIR"] = str(TEST_DATA_DIR)
     env["FACTOR_N_WORKERS"] = "4"
     # PyTorch CPU may reference Intel VTune JIT profiling symbols (iJIT_NotifyEvent etc.)
     # that are missing on some systems; preload a stub to satisfy them.
@@ -751,13 +698,13 @@ def cmd_test_and_export(args):
 
     # Auto-detect lookback：优先显式指定 → 其次 meta-json → 最后代码检测
     lookback = args.lookback
-    if not lookback and args.meta_json:
+    if lookback is None and args.meta_json:
         try:
             meta = json.loads(args.meta_json)
             lookback = meta.get("lookback_days")
         except (json.JSONDecodeError, AttributeError):
             lookback = None
-    if not lookback:
+    if lookback is None:
         lookback = detect_lookback_from_code(user_code)
 
     # Wrap template
@@ -773,7 +720,7 @@ def cmd_test_and_export(args):
     wrapped_tmp.write_text(full_code, encoding="utf-8")
 
     # Run test
-    test_result = _run_test_in_tmpdir(wrapped_tmp, timeout=args.timeout)
+    test_result = _run_test_in_tmpdir(wrapped_tmp, timeout=args.timeout, type_key=type_key)
 
     if not test_result["success"]:
         # Cleanup
@@ -1044,8 +991,8 @@ def cmd_wait_full(args):
 def cmd_deploy_to_full(args):
     """Deploy tested factor to full-scale directory: copy code, patch DATA_DIR, inherit meta.
 
-    Copies .code.py from literature_reports/<report>/<factor>/ to
-    文献因子_全量/<report>/<factor>/, patches DATA_DIR from _1000 → full path,
+    Copies .code.py from 因子产出/测试/<report>/<factor>/ to
+    因子产出/全量/<report>/<factor>/, patches DATA_DIR from _1000 → full path,
     and copies/creates meta.json with pipeline_status='deployed'.
     Does NOT run full computation.
     """
@@ -1065,10 +1012,10 @@ def cmd_deploy_to_full(args):
         return 1
     report_name = report_dir.name
 
-    # Target: 文献因子_全量/[<date>/]<report>/<factor>/  （默认当天日期）
+    # Target: 因子产出/全量/[<date>/]<report>/<factor>/  （默认当天日期）
     sys.path.insert(0, str(PROJECT_ROOT))
     from rdagent.app.qlib_rd_loop.factor_full_pipeline import FULL_OUTPUT_BASE
-    date_str = args.date or __import__("datetime").datetime.now().strftime("%Y%m%d")
+    date_str = args.date or __import__("datetime").datetime.now().strftime("%Y-%m-%d")
     full_base = FULL_OUTPUT_BASE / date_str
     full_factor_dir = full_base / report_name / factor_name
     full_factor_dir.mkdir(parents=True, exist_ok=True)
@@ -1077,7 +1024,7 @@ def cmd_deploy_to_full(args):
     code_text = code_path.read_text(encoding="utf-8")
     patched = code_text.replace("factor_implementation_source_data_1000", "factor_implementation_source_data")
 
-    # 注入多级 DATA_DIR 降级链（环境变量 → /mnt/remote_e → E:\ → .）
+    # 注入多级 DATA_DIR 降级链（环境变量 → 全量 → 测试 → .）
     # 使 .code.py 可在任意环境直接运行，无需设置 FACTOR_DATA_DIR
     _simple_dir = r'DATA_DIR = Path\(os\.environ\.get\("FACTOR_DATA_DIR"\) or os\.environ\.get\("RDAGENT_FACTOR_DATA_DIR"\) or "\."\)'
     if re.search(_simple_dir, patched):
@@ -1085,15 +1032,11 @@ def cmd_deploy_to_full(args):
         _fallback = (
             'DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or "")\n'
             f'if not DATA_DIR or not (DATA_DIR/"stock_data"/"{_subdir}").exists():\n'
-            f'    DATA_DIR = Path("/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data")\n'
+            f'    DATA_DIR = Path("{PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量"}")\n'
             f'    if not (DATA_DIR/"stock_data"/"{_subdir}").exists():\n'
-            f'        DATA_DIR = Path("E:\\\\_paper_factor_unified\\\\factor_implementation_source_data")\n'
+            f'        DATA_DIR = Path("{PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "测试"}")\n'
             f'        if not (DATA_DIR/"stock_data"/"{_subdir}").exists():\n'
-            f'            DATA_DIR = Path("Z:\\\\_paper_factor_unified\\\\factor_implementation_source_data")\n'
-            f'            if not (DATA_DIR/"stock_data"/"{_subdir}").exists():\n'
-            f'                DATA_DIR = Path(r"\\\\\\\\192.168.1.13\\\\E\\\\_paper_factor_unified\\\\factor_implementation_source_data")\n'
-            f'                if not (DATA_DIR/"stock_data"/"{_subdir}").exists():\n'
-            f'                    DATA_DIR = Path(".")\n'
+            f'            DATA_DIR = Path(".")\n'
         )
         patched = re.sub(_simple_dir, _fallback, patched)
 
@@ -1133,92 +1076,8 @@ def cmd_deploy_to_full(args):
 
 
 # ---------------------------------------------------------------------------
-# Subcommand: sync-full
+# (sync-full 已移除)
 # ---------------------------------------------------------------------------
-def cmd_sync_full(args):
-    """Sync deployed factors from 文献因子_全量 to remote.
-
-    Only syncs .code.py, .meta.json, and .parquet files (skips checkpoints, logs, etc.).
-    Supports --report and --factor for single-report sync, or --all for all.
-    Use --date to sync from a date subdirectory (e.g. --date 20260726).
-    """
-    sys.path.insert(0, str(PROJECT_ROOT))
-    from rdagent.app.qlib_rd_loop.factor_full_pipeline import FULL_OUTPUT_BASE
-    from scripts.sync_utils import upload_file, ensure_remote_writable
-
-    if not ensure_remote_writable():
-        print("ERROR: remote is not writable", file=sys.stderr)
-        return 1
-
-    from scripts.sync_utils import REMOTE_BASE_FULL
-
-    # Determine base directories (with or without date subdir)
-    if args.date:
-        full_base = FULL_OUTPUT_BASE / args.date
-        remote_base = f"{REMOTE_BASE_FULL}\\{args.date}"
-    else:
-        full_base = FULL_OUTPUT_BASE
-        remote_base = REMOTE_BASE_FULL
-
-    SYNC_EXTS = {'.code.py', '.meta.json', '.parquet'}
-
-    def _sync_factor_dir(factor_dir, remote_prefix):
-        """Sync only allowed file types from a factor directory."""
-        n = 0
-        for f in factor_dir.iterdir():
-            if f.is_dir():
-                continue
-            # Check if file extension matches any of SYNC_EXTS
-            for ext in SYNC_EXTS:
-                if f.name.endswith(ext):
-                    remote_path = f"{remote_prefix}\\{f.name}"
-                    if upload_file(f, remote_path):
-                        n += 1
-                    break
-        return n
-
-    if args.all:
-        if not full_base.exists():
-            print(f"ERROR: full output base not found: {full_base}", file=sys.stderr)
-            return 1
-        report_dirs = sorted(full_base.iterdir())
-        total_files = 0
-        for report_dir in report_dirs:
-            if not report_dir.is_dir():
-                continue
-            remote_report = f"{remote_base}\\{report_dir.name}"
-            for factor_dir in sorted(report_dir.iterdir()):
-                if not factor_dir.is_dir():
-                    continue
-                remote_factor = f"{remote_report}\\{factor_dir.name}"
-                n = _sync_factor_dir(factor_dir, remote_factor)
-                total_files += n
-        print(f"OK: synced {total_files} files from {len(report_dirs)} reports")
-    elif args.report:
-        report_dir = full_base / args.report
-        if not report_dir.exists():
-            print(f"ERROR: report not found: {report_dir}", file=sys.stderr)
-            return 1
-        if args.factor:
-            factor_dir = report_dir / args.factor
-            if not factor_dir.exists():
-                print(f"ERROR: factor not found: {factor_dir}", file=sys.stderr)
-                return 1
-            remote_path = f"{remote_base}\\{args.report}\\{args.factor}"
-            n = _sync_factor_dir(factor_dir, remote_path)
-            print(f"OK: synced {n} files for {args.report}/{args.factor}")
-        else:
-            remote_path = f"{remote_base}\\{args.report}"
-            total = 0
-            for factor_dir in sorted(report_dir.iterdir()):
-                if not factor_dir.is_dir():
-                    continue
-                remote_factor = f"{remote_path}\\{factor_dir.name}"
-                total += _sync_factor_dir(factor_dir, remote_factor)
-            print(f"OK: synced {total} files for report {args.report}")
-    else:
-        print("ERROR: specify --report or --all", file=sys.stderr)
-        return 1
 
     return 0
 
@@ -1622,7 +1481,7 @@ def main():
     p_export.add_argument("--source-report-title", default=None, help="Source report title")
     p_export.add_argument("--source-report-path", default=None, help="Source report path")
     p_export.add_argument("--source-excerpt", default=None, help="Source excerpt text")
-    p_export.add_argument("--date", default=None, help="Date subdirectory (YYYYMMDD)")
+    p_export.add_argument("--date", default=None, help="Date subdirectory (YYYY-MM-DD)")
 
     # test-and-export
     p_tae = sub.add_parser("test-and-export", help="Wrap + test + export in one shot (auto-detect type/lookback)")
@@ -1639,7 +1498,7 @@ def main():
     p_tae.add_argument("--source-report-path", default=None, help="Source report path (auto-fills source_report_path in meta)")
     p_tae.add_argument("--source-excerpt", default=None, help="Source excerpt text (auto-fills source_excerpt in meta)")
     p_tae.add_argument("--timeout", type=int, default=3600, help="Test timeout in seconds (default: 3600)")
-    p_tae.add_argument("--date", default=None, help="Date subdirectory (YYYYMMDD), e.g. --date 20260726")
+    p_tae.add_argument("--date", default=None, help="Date subdirectory (YYYY-MM-DD), e.g. --date 2026-08-09")
 
     # trigger-full
     p_full = sub.add_parser("trigger-full", help="Trigger full-scale run via FullPipelineExecutor")
@@ -1650,7 +1509,7 @@ def main():
     p_run.add_argument("--code", required=True, help="Factor .code.py file path")
     p_run.add_argument("--factor-name", required=True, help="Factor name")
     p_run.add_argument("--report-name", required=True, help="Report name (used for output directory structure)")
-    p_run.add_argument("--output", default=None, help="Output directory (default: 文献因子_全量/<report>/<factor>/)")
+    p_run.add_argument("--output", default=None, help="Output directory (default: 因子产出/全量/<report>/<factor>/)")
     p_run.add_argument("--type", default=None, help="Factor type (auto-detected if omitted): daily, minute, cross_section, minute_cs, deep_learning")
     p_run.add_argument("--description", default=None, help="Factor description")
     p_run.add_argument("--formulation", default=None, help="Factor formulation")
@@ -1668,7 +1527,7 @@ def main():
     # save-extracted
     p_se = sub.add_parser("save-extracted", help="Save factor definitions JSON to extracted_reports/ (read from stdin)")
     p_se.add_argument("--name", required=True, help="Report title (stem, e.g. '基于GRU的因子选股')")
-    p_se.add_argument("--date", default=None, help="Date subdirectory (YYYYMMDD)")
+    p_se.add_argument("--date", default=None, help="Date subdirectory (YYYY-MM-DD)")
 
     # add-idea
     p_idea = sub.add_parser("add-idea", help="Add a factor idea (title optional; agent auto-generates if omitted)")
@@ -1699,14 +1558,9 @@ def main():
     p_deploy = sub.add_parser("deploy-to-full", help="Deploy tested factor to full-scale directory (copy code + patch DATA_DIR + inherit meta, no computation)")
     p_deploy.add_argument("--code", required=True, help="Factor .code.py file (in literature_reports/<date>/<report>/<factor>/)")
     p_deploy.add_argument("--type", default=None, help="Factor type (daily, minute, cross_section, minute_cs, deep_learning)")
-    p_deploy.add_argument("--date", default=None, help="Date subdirectory (YYYYMMDD), e.g. --date 20260726")
+    p_deploy.add_argument("--date", default=None, help="Date subdirectory (YYYY-MM-DD), e.g. --date 2026-08-09")
 
-    # sync-full
-    p_sync = sub.add_parser("sync-full", help="Sync deployed factors from 文献因子_全量 to remote")
-    p_sync.add_argument("--report", default=None, help="Report name (required unless --all)")
-    p_sync.add_argument("--factor", default=None, help="Factor name (optional, syncs whole report if omitted)")
-    p_sync.add_argument("--all", action="store_true", help="Sync all deployed factors")
-    p_sync.add_argument("--date", default=None, help="Date subdirectory (YYYYMMDD), e.g. --date 20260726")
+    # (sync-full 已移除)
 
     args = parser.parse_args()
 
@@ -1721,7 +1575,6 @@ def main():
         "run-full": cmd_run_full,
         "wait-full": cmd_wait_full,
         "deploy-to-full": cmd_deploy_to_full,
-        "sync-full": cmd_sync_full,
         "scan-pending": cmd_scan_pending,
         "mark-done": cmd_mark_done,
         "save-extracted": cmd_save_extracted,

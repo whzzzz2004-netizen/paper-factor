@@ -14,8 +14,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-TEST_DATA_DIR = PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data_1000"
-LITERATURE_BASE = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "literature_reports" / "20260727"
+TEST_DATA_DIR = PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "测试"
+LITERATURE_BASE = PROJECT_ROOT / "数据仓库" / "因子产出" / "测试" / "20260727"
 
 FACTORS = [
     # (type, report, factor)

@@ -21,37 +21,26 @@ import zipfile
 from abc import abstractmethod
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import (
     Any,
     Callable,
-    Deque,
     Dict,
     Generator,
     Generic,
-    Iterable,
     Mapping,
     Optional,
     TypeVar,
     cast,
 )
 
-import docker  # type: ignore[import-untyped]
-import docker.models  # type: ignore[import-untyped]
-import docker.models.containers  # type: ignore[import-untyped]
-import docker.types  # type: ignore[import-untyped]
 from pydantic import BaseModel, model_validator
 from pydantic_settings import SettingsConfigDict
 from rich import print
 from rich.console import Console
-from rich.live import Live
-from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.rule import Rule
 from rich.table import Table
-from rich.text import Text
-from tqdm import tqdm
 
 from rdagent.core.conf import ExtendedBaseSettings
 from rdagent.core.experiment import RD_AGENT_SETTINGS
@@ -59,58 +48,9 @@ from rdagent.core.utils import cache_with_pickle
 from rdagent.log import rdagent_logger as logger
 from rdagent.oai.llm_utils import md5_hash
 from rdagent.utils import filter_redundant_text
-from rdagent.utils.agent.tpl import T
 from rdagent.utils.fmt import shrink_text
-from rdagent.utils.workflow import wait_retry
 
 CacheKeyFunc = Callable[[str | Path], list[list[str]]]
-
-
-def extract_dir_name_from_path_config(path_str: str) -> str:
-    """
-    Extract the first directory component from a relative path string.
-
-    This is used to get the basename from path configurations like "./workspace_input/"
-    to use in chmod exclusion patterns.
-
-    Args:
-        path_str: A path string, typically from T() template configuration
-
-    Returns:
-        The first directory component, or empty string if not a relative path
-
-    Examples:
-        "./workspace_input/" -> "workspace_input"
-        "./assets/" -> "assets"
-        "/absolute/path" -> ""
-    """
-    p = Path(path_str)
-    if not p.is_absolute() and p.parts:
-        return p.parts[0]
-    return ""
-
-
-def cleanup_container(container: docker.models.containers.Container | None, context: str = "") -> None:  # type: ignore[no-any-unimported]
-    """
-    Shared helper function to clean up a Docker container.
-    Always stops the container before removing it.
-
-    Parameters
-    ----------
-    container : docker container object or None
-        The container to clean up, or None if no container to clean up
-    context : str
-        Additional context for logging (e.g., "health check", "GPU test")
-    """
-    if container is not None:
-        try:
-            # Always stop first - stop() doesn't raise error if already stopped
-            container.stop()
-            container.remove()
-        except Exception as cleanup_error:
-            # Log cleanup error but don't mask the original exception
-            context_str = f" {context}" if context else ""
-            logger.warning(f"Failed to cleanup{context_str} container {container.id}: {cleanup_error}")
 
 
 # Normalize all bind paths in volumes to absolute paths using the workspace (working_dir).
@@ -134,31 +74,6 @@ def normalize_volumes(vols: dict[str, str | dict[str, str]], working_dir: str) -
             # abs_vols = cast(dict[str, str], abs_vols)
             abs_vols[lp] = to_abs(vinfo)
     return abs_vols
-
-
-def pull_image_with_progress(image: str) -> None:
-    client = docker.APIClient(base_url="unix://var/run/docker.sock")
-    pull_logs = client.pull(image, stream=True, decode=True)
-    progress_bars = {}
-
-    for log in pull_logs:
-        if "id" in log and log.get("progressDetail"):
-            layer_id = log["id"]
-            progress_detail = log["progressDetail"]
-            current = progress_detail.get("current", 0)
-            total = progress_detail.get("total", 0)
-
-            if total:
-                if layer_id not in progress_bars:
-                    progress_bars[layer_id] = tqdm(total=total, desc=f"Layer {layer_id}", unit="B", unit_scale=True)
-                progress_bars[layer_id].n = current
-                progress_bars[layer_id].refresh()
-
-        elif "status" in log:
-            print(log["status"])
-
-    for pb in progress_bars.values():
-        pb.close()
 
 
 class EnvConf(ExtendedBaseSettings):
@@ -197,7 +112,6 @@ class EnvConf(ExtendedBaseSettings):
     enable_cache: bool = True
     retry_count: int = 5  # retry count for the docker run
     retry_wait_seconds: int = 10  # retry wait seconds for the docker run
-    exclude_chmod_paths: list[str] = []  # List of directory names to exclude from chmod operation
 
     model_config = SettingsConfigDict(
         # TODO: add prefix ....
@@ -402,19 +316,6 @@ class Env(Generic[ASpecificEnvConf]):
                 "the last command in the pipeline.",
             )
 
-        # Exclude configured directories from chmod operation to prevent modifying
-        # read-only or specially configured directories that may produce warnings.
-        def _get_chmod_cmd(workspace_path: str) -> str:
-            find_cmd = f"find {workspace_path} -mindepth 1 -maxdepth 1"
-
-            # Use configurable exclude paths from DockerConf
-            for name in self.conf.exclude_chmod_paths:
-                if name:  # Skip empty names
-                    find_cmd += f" ! -name {name}"
-
-            chmod_cmd = f"{find_cmd} -exec chmod -R 777 {{}} +"
-            return chmod_cmd
-
         if self.conf.redirect_stdout_to_file:
             log_file_name = md5_hash(entry)[:8] + ".log"
             log_file = Path(local_path) / f"{log_file_name}"
@@ -428,14 +329,6 @@ class Env(Generic[ASpecificEnvConf]):
         entry_add_timeout = (
             f"/bin/sh -c '"  # start of the sh command
             + f"{timeout_cmd}; entry_exit_code=$?; "
-            + (
-                f"{_get_chmod_cmd(self.conf.mount_path)}; "
-                # We don't have to change the permission of the cache and input folder to remove it
-                # + f"if [ -d {self.conf.mount_path}/cache ]; then chmod 777 {self.conf.mount_path}/cache; fi; " +
-                #     f"if [ -d {self.conf.mount_path}/input ]; then chmod 777 {self.conf.mount_path}/input; fi; "
-                if isinstance(self.conf, DockerConf)
-                else ""
-            )
             + "exit $entry_exit_code"
             + "'"  # end of the sh command
         )
@@ -759,72 +652,6 @@ class CondaConf(LocalConf):
         self.bin_path = conda_path_result.stdout.strip().split("=")[1] if conda_path_result.returncode == 0 else ""
 
 
-## Docker Environment -----
-class DockerConf(EnvConf):
-    build_from_dockerfile: bool = False
-    dockerfile_folder_path: Optional[Path] = (
-        None  # the path to the dockerfile optional path provided when build_from_dockerfile is False
-    )
-    image: str  # the image you want to build
-    mount_path: str  # the path in the docker image to mount the folder
-    default_entry: str  # the entry point of the image
-
-    extra_volumes: dict = {}
-    """It accept a dict of volumes, which can be either
-    {<host_path>: <container_path>} or
-    {<host_path>: {"bind": <container_path>, "mode": <mode, ro/rw/default is extra_volume_mode>}}
-    """
-    extra_volume_mode: str = "ro"  # by default. only the mount_path should be writable, others are changed to read-only
-
-    exclude_chmod_paths: list[str] = []
-    """List of directory names to exclude from chmod -R 777 operation.
-    This prevents modifying permissions of read-only or specially configured directories."""
-
-    # Declarative configuration for auto-populating exclude_chmod_paths from share.yaml
-    # Subclasses can override these to specify which config keys to read
-    _scenario_name: str | None = None
-    _exclude_path_keys: list[str] = []
-
-    # Sometime, we need maintain some extra data for the workspace.
-    # And the extra data may be shared and the downloading can be time consuming.
-    # So we just want to download it once.
-    network: str | None = "bridge"  # the network mode for the docker
-    shm_size: str | None = None
-    enable_gpu: bool = True  # because we will automatically disable GPU if not available. So we enable it by default.
-    mem_limit: str | None = "48g"  # Add memory limit attribute
-    cpu_count: int | None = None  # Add CPU limit attribute
-
-    running_timeout_period: int | None = 3600  # 1 hour
-
-    enable_cache: bool = True  # enable the cache mechanism
-
-    retry_count: int = 5  # retry count for the docker run
-    retry_wait_seconds: int = 10  # retry wait seconds for the docker run
-    save_logs_to_file: bool = True
-    terminal_tail_lines: int = 20
-
-    @model_validator(mode="after")
-    def populate_exclude_chmod_paths(self) -> "DockerConf":
-        """
-        Automatically populate exclude_chmod_paths from share.yaml configuration.
-
-        This method reads path configurations from scenarios/<scenario_name>/share.yaml
-        based on _scenario_name and _exclude_path_keys class attributes.
-        """
-        if not self.exclude_chmod_paths and self._scenario_name and self._exclude_path_keys:
-            # Extract directory names from scenario configuration
-            self.exclude_chmod_paths = [
-                name
-                for key in self._exclude_path_keys
-                if (
-                    name := extract_dir_name_from_path_config(
-                        T(f"scenarios.{self._scenario_name}.share:scen.{key}").r()
-                    )
-                )
-            ]
-        return self
-
-
 class QlibCondaConf(CondaConf):
     conda_env_name: str = "rdagent4qlib"
     enable_cache: bool = False
@@ -858,423 +685,3 @@ class QlibCondaEnv(LocalEnv[QlibCondaConf]):
 
         except Exception as e:
             print(f"[red]Failed to prepare conda env: {e}[/red]")
-
-
-class QlibDockerConf(DockerConf):
-    model_config = SettingsConfigDict(
-        env_prefix="QLIB_DOCKER_",
-        env_parse_none_str="None",  # Nthis is the key to accept `RUNNING_TIMEOUT_PERIOD=None`
-    )
-
-    build_from_dockerfile: bool = True
-    dockerfile_folder_path: Path = Path(__file__).parent.parent / "scenarios" / "qlib" / "docker"
-    image: str = "local_qlib:latest"
-    mount_path: str = "/workspace/qlib_workspace/"
-    default_entry: str = "qrun conf.yaml"
-    extra_volumes: dict = {
-        str(Path("~/.qlib/").expanduser().resolve().absolute()): {
-            "bind": "/root/.qlib/",
-            "mode": "rw",
-        }
-    }
-    shm_size: str | None = "16g"
-    enable_gpu: bool = True
-    enable_cache: bool = False
-    save_logs_to_file: bool = True  # Explicitly inherit from DockerConf for compatibility
-
-
-# physionet.org/files/mimic-eicu-fiddle-feature/1.0.0/FIDDLE_mimic3
-class DockerEnv(Env[DockerConf]):
-    # TODO: Save the output into a specific file
-
-    # GPU probe cache — avoids spawning a container for nvidia-smi on every execution
-    _gpu_probe_cache: dict | None = None
-    _gpu_probe_done: bool = False
-
-    # Docker client cache — avoids repeated docker.from_env() connection setup
-    _docker_client: Any = None
-
-    def prepare(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
-        """
-        Download image if it doesn't exist
-        """
-        if DockerEnv._docker_client is None:
-            DockerEnv._docker_client = docker.from_env()
-        client = DockerEnv._docker_client
-        if (
-            self.conf.build_from_dockerfile
-            and self.conf.dockerfile_folder_path is not None
-            and self.conf.dockerfile_folder_path.exists()
-        ):
-            logger.info(f"Building the image from dockerfile: {self.conf.dockerfile_folder_path}")
-            resp_stream = client.api.build(
-                path=str(self.conf.dockerfile_folder_path),
-                tag=self.conf.image,
-                network_mode=self.conf.network,
-            )
-            if isinstance(resp_stream, str):
-                logger.info(resp_stream)
-            with Progress(SpinnerColumn(), TextColumn("{task.description}")) as p:
-                task = p.add_task("[cyan]Building image...")
-                for part in resp_stream:
-                    lines = part.decode("utf-8").split("\r\n")
-                    for line in lines:
-                        if line.strip():
-                            status_dict = json.loads(line)
-                            if "error" in status_dict:
-                                p.update(
-                                    task,
-                                    description=f"[red]error: {status_dict['error']}",
-                                )
-                                raise docker.errors.BuildError(status_dict["error"], "")
-                            if "stream" in status_dict:
-                                p.update(task, description=status_dict["stream"])
-            logger.info(f"Finished building the image from dockerfile: {self.conf.dockerfile_folder_path}")
-        try:
-            client.images.get(self.conf.image)
-        except docker.errors.ImageNotFound:
-            image_pull = client.api.pull(self.conf.image, stream=True, decode=True)
-            current_status = ""
-            layer_set = set()
-            completed_layers = 0
-            with Progress(TextColumn("{task.description}"), TextColumn("{task.fields[progress]}")) as sp:
-                main_task = sp.add_task("[cyan]Pulling image...", progress="")
-                status_task = sp.add_task("[bright_magenta]layer status", progress="")
-                for line in image_pull:
-                    if "error" in line:
-                        sp.update(
-                            status_task,
-                            description=f"[red]error",
-                            progress=line["error"],
-                        )
-                        raise docker.errors.APIError(line["error"])
-
-                    layer_id = line["id"]
-                    status = line["status"]
-                    p_text = line.get("progress", None)
-
-                    if layer_id not in layer_set:
-                        layer_set.add(layer_id)
-
-                    if p_text:
-                        current_status = p_text
-
-                    if status == "Pull complete" or status == "Already exists":
-                        completed_layers += 1
-
-                    sp.update(
-                        main_task,
-                        progress=f"[green]{completed_layers}[white]/{len(layer_set)} layers completed",
-                    )
-                    sp.update(
-                        status_task,
-                        description=f"[bright_magenta]layer {layer_id} [yellow]{status}",
-                        progress=current_status,
-                    )
-        except docker.errors.APIError as e:
-            raise RuntimeError(f"Error while pulling the image: {e}")
-
-    def _gpu_kwargs(self, client: docker.DockerClient) -> dict:  # type: ignore[no-any-unimported]
-        """get gpu kwargs based on its availability.
-
-        Supports GPU selection via CUDA_VISIBLE_DEVICES environment variable.
-        If set, only the specified GPUs will be available in the container.
-        Example: CUDA_VISIBLE_DEVICES=0,1 will only expose GPU 0 and 1.
-
-        Results are cached at the class level to avoid spawning a probe container every time.
-        """
-        if not self.conf.enable_gpu:
-            return {}
-
-        # Return cached result if available
-        if DockerEnv._gpu_probe_done:
-            return DockerEnv._gpu_probe_cache or {}
-
-        # Check if specific GPUs are requested via CUDA_VISIBLE_DEVICES
-        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-        if cuda_visible:
-            # Use device_ids to specify exact GPUs (cannot use count with device_ids)
-            device_ids = [gpu.strip() for gpu in cuda_visible.split(",") if gpu.strip()]
-            gpu_kwargs = {
-                "device_requests": [docker.types.DeviceRequest(device_ids=device_ids, capabilities=[["gpu"]])],
-            }
-            logger.info(f"GPU selection: using specific GPUs {device_ids}")
-        else:
-            # Default: use all available GPUs
-            gpu_kwargs = {
-                "device_requests": [docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])],
-            }
-
-        def get_image(image_name: str) -> None:
-            try:
-                client.images.get(image_name)
-            except docker.errors.ImageNotFound:
-                pull_image_with_progress(image_name)
-
-        @wait_retry(5, 10)
-        def _f() -> dict:
-            container = None
-            try:
-                get_image(self.conf.image)
-                container = client.containers.run(self.conf.image, "nvidia-smi", detach=True, **gpu_kwargs)
-                # Wait for container to complete
-                container.wait()
-                logger.info("GPU Devices are available.")
-            except docker.errors.APIError:
-                return {}
-            finally:
-                cleanup_container(container, context="GPU test")
-            return gpu_kwargs
-
-        result = _f()
-        # Only cache successful GPU probe (non-empty result means GPU is available)
-        if result:
-            DockerEnv._gpu_probe_cache = result
-            DockerEnv._gpu_probe_done = True
-        return result
-
-    def _generate_log_header(self, entry: str | None = None) -> str:
-        """
-        Generate a header for log files with execution info.
-
-        Args:
-            entry: Command entry that was executed
-
-        Returns:
-            Formatted header string
-        """
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        header = "=" * 80 + "\n"
-        header += f"Docker Execution Log\n"
-        header += f"Timestamp: {timestamp}\n"
-        header += f"Image: {self.conf.image}\n"
-        if entry:
-            header += f"Command: {entry}\n"
-        header += "=" * 80 + "\n\n"
-        return header
-
-    def _process_container_logs(self, logs: Iterable[bytes], local_path: str = ".", entry: str | None = None) -> str:
-        """
-        Process Docker container logs with optional tail mode.
-
-        This method can be controlled via configuration:
-        - save_logs_to_file: Save full logs to timestamped files in logs/ subdirectory
-        - terminal_tail_lines: Show only last N lines in terminal (0 = show all)
-
-        Args:
-            logs: Docker container log stream
-            local_path: Path to workspace for saving log files
-            entry: Command entry that was executed (for logging header)
-
-        Returns:
-            Complete log output as string
-        """
-        log_output = ""
-
-        # Determine if we should use tail mode
-        use_tail_mode = self.conf.terminal_tail_lines > 0
-        save_to_file = self.conf.save_logs_to_file
-
-        # Set up log file with timestamp if needed
-        log_file_path = None
-        if save_to_file and local_path:
-            workspace = Path(local_path)
-
-            # Create logs subdirectory
-            logs_dir = workspace / "logs"
-            logs_dir.mkdir(parents=True, exist_ok=True)
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_file_path = logs_dir / f"docker_execution_{timestamp}.log"
-
-            # Write header with execution info
-            header = self._generate_log_header(entry)
-            with open(log_file_path, "w", encoding="utf-8") as f:
-                f.write(header)
-
-            # Also create/update a symlink to the latest log for convenience
-            latest_link = logs_dir / "docker_execution_latest.log"
-
-            print(f"[cyan]Full logs will be saved to: {log_file_path.absolute()}[/cyan]")
-
-        # Process logs with tail mode
-        if use_tail_mode:
-
-            log_buffer: Deque[str] = deque(maxlen=self.conf.terminal_tail_lines)
-
-            def format_tail_display() -> Text:
-                text = Text()
-                text.append(
-                    f"[Showing last {len(log_buffer)}/{self.conf.terminal_tail_lines} lines",
-                    style="dim",
-                )
-                if log_file_path:
-                    text.append(f" | Full log: {log_file_path.name}]\n", style="dim cyan")
-                else:
-                    text.append("]\n", style="dim")
-                text.append("-" * 80 + "\n", style="dim")
-                for line in log_buffer:
-                    text.append(line + "\n")
-                return text
-
-            with Live(format_tail_display(), refresh_per_second=2, console=Console()) as live:
-                for log in logs:
-                    decoded_log = log.strip().decode()
-                    log_output += decoded_log + "\n"
-                    log_buffer.append(decoded_log)
-
-                    if log_file_path:
-                        with open(log_file_path, "a", encoding="utf-8") as f:
-                            f.write(decoded_log + "\n")
-
-                    live.update(format_tail_display())
-        else:
-            # Default behavior: show all logs
-            for log in logs:
-                decoded_log = log.strip().decode()
-                Console().print(decoded_log, markup=False)
-                log_output += decoded_log + "\n"
-
-                if log_file_path:
-                    with open(log_file_path, "a", encoding="utf-8") as f:
-                        f.write(decoded_log + "\n")
-
-        # Show log file location and create latest symlink
-        if log_file_path and log_file_path.exists():
-            print(f"[green]Full execution log saved to: {log_file_path.absolute()}[/green]")
-
-            # Create or update symlink to latest log
-            latest_link = log_file_path.parent / "docker_execution_latest.log"
-            if latest_link.exists() or latest_link.is_symlink():
-                latest_link.unlink()
-            try:
-                latest_link.symlink_to(log_file_path.name)
-                print(f"[dim]Latest log symlink: logs/{latest_link.name} -> {log_file_path.name}[/dim]")
-            except Exception:
-                # Symlinks might not work on all systems (e.g., Windows without admin)
-                pass
-
-        return log_output
-
-    def _run(
-        self,
-        entry: str | None = None,
-        local_path: str = ".",
-        env: dict | None = None,
-        running_extra_volume: Mapping = MappingProxyType({}),
-        **kwargs: Any,
-    ) -> tuple[str, int]:
-        if env is None:
-            env = {}
-        env["PYTHONWARNINGS"] = "ignore"
-        env["TF_CPP_MIN_LOG_LEVEL"] = "2"
-        env["PYTHONUNBUFFERED"] = "1"
-        env["TOKENIZERS_PARALLELISM"] = "false"  # Avoid tokenizer fork warning in multi-process training
-        if DockerEnv._docker_client is None:
-            DockerEnv._docker_client = docker.from_env()
-        client = DockerEnv._docker_client
-
-        volumes = {}
-        if local_path is not None:
-            local_path = os.path.abspath(local_path)
-            volumes[local_path] = {"bind": self.conf.mount_path, "mode": "rw"}
-
-        if self.conf.extra_volumes is not None:
-            for lp, rp in self.conf.extra_volumes.items():
-                volumes[lp] = rp if isinstance(rp, dict) else {"bind": rp, "mode": self.conf.extra_volume_mode}
-            cache_path = "/tmp/sample" if "/sample/" in "".join(self.conf.extra_volumes.keys()) else "/tmp/full"
-            Path(cache_path).mkdir(parents=True, exist_ok=True)
-            volumes[cache_path] = {
-                "bind": "/tmp/cache",
-                "mode": "rw",
-            }
-        for lp, rp in running_extra_volume.items():
-            volumes[lp] = rp if isinstance(rp, dict) else {"bind": rp, "mode": self.conf.extra_volume_mode}
-
-        volumes = normalize_volumes(cast(dict[str, str | dict[str, str]], volumes), self.conf.mount_path)
-
-        log_output = ""
-        container: docker.models.containers.Container | None = None  # type: ignore[no-any-unimported]
-
-        try:
-            container = client.containers.run(
-                image=self.conf.image,
-                command=entry,
-                volumes=volumes,
-                environment=env,
-                detach=True,
-                working_dir=self.conf.mount_path,
-                # auto_remove=True, # remove too fast might cause the logs not to be get
-                network=self.conf.network,
-                shm_size=self.conf.shm_size,
-                mem_limit=self.conf.mem_limit,  # Set memory limit
-                cpu_count=self.conf.cpu_count,  # Set CPU limit
-                **self._gpu_kwargs(client),
-            )
-            assert container is not None  # Ensure container was created successfully
-            logs = container.logs(stream=True)
-            print(Rule("[bold green]Docker Logs Begin[/bold green]", style="dark_orange"))
-            table = Table(title="Run Info", show_header=False)
-            table.add_column("Key", style="bold cyan")
-            table.add_column("Value", style="bold magenta")
-            table.add_row("Image", self.conf.image)
-            table.add_row("Container ID", container.id)
-            table.add_row("Container Name", container.name)
-            table.add_row("Entry", entry)
-            table.add_row("Env", "\n".join(f"{k}:{v}" for k, v in env.items()))
-            table.add_row("Volumes", "\n".join(f"{k}:\n  {v}" for k, v in volumes.items()))
-            print(table)
-
-            # Process logs (supports tail mode if configured)
-            log_output = self._process_container_logs(logs, local_path, entry=entry)
-
-            exit_status = container.wait()["StatusCode"]
-            print(Rule("[bold green]Docker Logs End[/bold green]", style="dark_orange"))
-            return log_output, exit_status
-        except docker.errors.ContainerError as e:
-            raise RuntimeError(f"Error while running the container: {e}")
-        except docker.errors.ImageNotFound:
-            raise RuntimeError("Docker image not found.")
-        except docker.errors.APIError as e:
-            raise RuntimeError(f"Error while running the container: {e}")
-        finally:
-            cleanup_container(container)
-
-    def refresh_env(self) -> None:
-        """Remove the Docker image associated with this environment."""
-        if DockerEnv._docker_client is None:
-            DockerEnv._docker_client = docker.from_env()
-        client = DockerEnv._docker_client
-        try:
-            # Remove the specific image
-            client.images.remove(image=self.conf.image, force=True)
-            logger.info(f"Removed Docker image: {self.conf.image}")
-
-            client.images.prune()
-            client.api.prune_builds()
-            logger.info(f"Successfully removed Docker image: {self.conf.image}")
-        except docker.errors.ImageNotFound:
-            logger.warning(f"Docker image not found, cannot remove: {self.conf.image}")
-        except docker.errors.APIError as e:
-            logger.error(f"Error while removing Docker image: {e}")
-        self.prepare()
-
-
-class QTDockerEnv(DockerEnv):
-    """Qlib Torch Docker"""
-
-    def __init__(self, conf: DockerConf = QlibDockerConf()):
-        super().__init__(conf)
-
-    def prepare(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
-        """
-        Download image & data if it doesn't exist
-        """
-        super().prepare()
-        qlib_data_path = next(iter(self.conf.extra_volumes.keys()))
-        if not (Path(qlib_data_path) / "qlib_data" / "cn_data").exists():
-            logger.info("We are downloading!")
-            cmd = "python -m qlib.run.get_data qlib_data --target_dir ~/.qlib/qlib_data/cn_data --region cn --interval 1d --delete_old False"
-            self.check_output(entry=cmd)
-        else:
-            logger.info("Data already exists. Download skipped.")

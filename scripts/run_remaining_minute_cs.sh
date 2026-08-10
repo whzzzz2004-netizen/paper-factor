@@ -5,7 +5,7 @@
 set -e
 
 DATA_DIR="/home/dministrator/paper-factor/git_ignore_folder/factor_implementation_source_data"
-BASE="/home/dministrator/paper-factor/git_ignore_folder/factor_outputs/literature_reports/20260727"
+BASE="/home/dministrator/paper-factor/数据仓库/因子产出/测试/20260727"
 
 export FACTOR_DATA_DIR="$DATA_DIR"
 export FACTOR_N_WORKERS=2

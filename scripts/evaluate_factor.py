@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).parent.parent
-FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data")))
+FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(Path(__file__).parent.parent / "数据仓库" / "行情数据" / "日线" / "全量")))
 
 
 def load_full_data_label(data_dir: Path) -> pd.DataFrame:

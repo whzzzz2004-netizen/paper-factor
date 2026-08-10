@@ -17,7 +17,7 @@ metadata:
 
 ## 已做修复
 
-1. **CompositeDailyFactor**：`.code.py` 的 `_zscore_series` 改为 expanding 因果版本（数值验证：追加未来观测后历史值 diff=0）。已 deploy 到全量目录 `文献因子_全量/20260730/idea__0/`。**注意**：这仍是时序标准化（因果安全但不符合量化惯例），若按惯例应重写为 cross_section 截面因子——用户暂未要求，待定。
+1. **CompositeDailyFactor**：`.code.py` 的 `_zscore_series` 改为 expanding 因果版本（数值验证：追加未来观测后历史值 diff=0）。已 deploy 到全量目录 `因子产出/全量/20260730/idea__0/`。**注意**：这仍是时序标准化（因果安全但不符合量化惯例），若按惯例应重写为 cross_section 截面因子——用户暂未要求，待定。
 2. **DEEP_LEARNING 模板 off-by-one**：训练切片 `side='right'`（含当年第一个交易日）→ 新增 `_stock_positions_train` 用 `side='left'`，训练严格早于当年第一天。预测切片不变（仍 ≤T）。
 3. **规则新增**（防未来再犯）：
    - `prompts.yaml` `evolving_strategy_factor_implementation_v1_system` 规则18：标准化只能是截面 zscore，绝不能是时序标准化。

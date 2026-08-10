@@ -12,7 +12,7 @@ import shutil
 from pathlib import Path
 
 PROJ = Path(__file__).resolve().parent.parent
-RUN_DIR = PROJ / "git_ignore_folder" / "factor_outputs" / "文献因子_全量" / "20260730"
+RUN_DIR = PROJ / "数据仓库" / "因子产出" / "全量" / "20260730"
 FACTOR_PY = PROJ / "rdagent" / "components" / "coder" / "factor_coder" / "factor.py"
 
 VAL_GUARD = ('if isinstance(_val, pd.Series):  # 重复日期兜底：取最后一行')

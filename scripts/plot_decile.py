@@ -23,7 +23,7 @@ except ImportError:
     from scripts.evaluate_factor import load_full_data_label, compute_decile_returns, to_factor_long_series
 
 PROJECT_ROOT = Path(__file__).parent.parent
-FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data")))
+FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量")))
 
 
 def plot_decile_returns(factor_df: pd.DataFrame, label_df: pd.DataFrame, factor_name: str, output_path: str):

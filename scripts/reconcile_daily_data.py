@@ -22,9 +22,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "git_ignore_folder" / "factor_implementation_source_data"
-DAILY_DIR = DATA_DIR / "stock_data" / "daily"
-BACKUP_DIR = DATA_DIR / "stock_data" / "daily_reconcile_backup"
+DAILY_DIR = Path(__file__).resolve().parent.parent / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily"
+BACKUP_DIR = Path(__file__).resolve().parent.parent / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily_reconcile_backup"
 
 
 def main():

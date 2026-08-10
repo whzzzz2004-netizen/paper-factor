@@ -11,3 +11,13 @@ requests
 filelock
 python-dotenv
 tqdm
+dill
+fuzzywuzzy
+jqdatasdk
+openai
+pydantic-settings
+pyyaml
+psutil
+pymupdf
+python-Levenshtein
+rich

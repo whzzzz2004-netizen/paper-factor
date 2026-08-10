@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-DAILY_DIR = Path(__file__).resolve().parent.parent / "git_ignore_folder" / "factor_implementation_source_data" / "stock_data" / "daily"
+DAILY_DIR = Path(__file__).resolve().parent.parent / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily"
 BACKUP_DIR = DAILY_DIR / "daily_dups_backup"
 
 

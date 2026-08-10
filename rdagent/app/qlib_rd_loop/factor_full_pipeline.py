@@ -23,108 +23,28 @@ from pathlib import Path
 # ── 路径常量（与 scripts/full.py 保持一致） ──
 PROJECT_ROOT = Path(__file__).resolve().parents[3]  # rdagent/app/qlib_rd_loop/ → project root
 
-SMB_HOST = "192.168.1.13"
-SMB_SHARE = "E"
-SMB_USER = "pc"
-SMB_PASS = "123456"
-CIFS_MOUNT = Path("/mnt/remote_e")
-
-
-def _sudo_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
-    """执行 sudo 命令，自动处理 TTY 密码需求（-S piped from stdin）"""
-    if "PYTHON_RUN_AS_ROOT" in os.environ:
-        return subprocess.run(cmd, **kwargs)
-    try:
-        return subprocess.run(["sudo", "-n"] + cmd, **kwargs)
-    except Exception:
-        pass
-    # 有密码 sudo：用 -S 从 stdin pipe 密码
-    kwargs.pop("input", None)  # 不冲突
-    return subprocess.run(
-        ["sudo", "-S"] + cmd,
-        input=f"{SMB_PASS}\n".encode(),
-        **kwargs,
-    )
-
-
-def _ensure_remote_mounted() -> bool:
-    """自动挂载远程 E 盘（modprobe + 多版本协商 + 自动装依赖）"""
-    # 用 mountpoint 检查（安全，不卡死）
-    try:
-        r = subprocess.run(["mountpoint", "-q", str(CIFS_MOUNT)], capture_output=True, timeout=5)
-        if r.returncode == 0:
-            return True
-    except Exception:
-        pass
-    print(f"  ⏳ 自动挂载远程 E 盘 {SMB_HOST}/{SMB_SHARE} → {CIFS_MOUNT} ...", flush=True)
-    try:
-        CIFS_MOUNT.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        print(f"  ❌ 无法创建挂载点 {CIFS_MOUNT}: {e}", flush=True)
-        return False
-
-    # 1. modprobe cifs
-    _sudo_run(["modprobe", "cifs"], capture_output=True, timeout=10)
-
-    # 2. 安装 cifs-utils
-    _sudo_run(["apt", "install", "-y", "cifs-utils"],
-              capture_output=True, timeout=120)
-
-    # 3. 逐版本尝试挂载（vers=3.0 / 2.1 / 2.0 / 1.0）
-    _base_opts = f"user={SMB_USER},password={SMB_PASS},uid={os.getuid()},gid={os.getgid()},file_mode=0644,dir_mode=0755,iocharset=utf8,noperm"
-    for _vers in ("3.0", "2.1", "2.0", "1.0"):
-        _opts = f"vers={_vers},{_base_opts}"
-        r = _sudo_run(
-            ["mount", "-t", "cifs", f"//{SMB_HOST}/{SMB_SHARE}", str(CIFS_MOUNT),
-             "-o", _opts],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode == 0:
-            print(f"  ✅ 已挂载远程 E 盘 (vers={_vers})", flush=True)
-            return True
-        _err = (r.stderr or r.stdout).strip()
-        if _err:
-            print(f"  ⚠️ vers={_vers} 失败: {_err[:200]}", flush=True)
-
-    print(f"  ❌ 所有版本均挂载失败。", flush=True)
-    print(f"  💡 手工挂载命令:", flush=True)
-    print(f"    sudo mkdir -p /mnt/remote_e", flush=True)
-    print(f"    sudo mount -t cifs //{SMB_HOST}/{SMB_SHARE} /mnt/remote_e -o vers=3.0,{_base_opts}", flush=True)
-    return False
-
-
-# 数据目录自动检测（多路径降级 + 自动挂载）
+# 数据目录自动检测（多路径降级）
 def _detect_data_dir() -> Path:
     candidates = [
         os.environ.get("FACTOR_DATA_DIR", ""),
         os.environ.get("RDAGENT_FACTOR_DATA_DIR", ""),
-        str(PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"),
-        "/mnt/remote_e/_paper_factor_unified/factor_implementation_source_data",
-        "E:\\_paper_factor_unified\\factor_implementation_source_data",
-        "Z:\\_paper_factor_unified\\factor_implementation_source_data",
-        "\\\\192.168.1.13\\E\\_paper_factor_unified\\factor_implementation_source_data",
+        str(PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily"),
     ]
     for p in candidates:
-        if p and (Path(p) / "stock_data" / "daily").exists():
-            return Path(p)
-    # 全都没找到 → 尝试自动挂载远程再重试
-    print("  ⏳ 未找到数据目录，尝试自动挂载远程 E 盘...", flush=True)
-    if _ensure_remote_mounted():
-        for p in candidates:
-            if p and (Path(p) / "stock_data" / "daily").exists():
-                return Path(p)
+        if p and Path(p).exists():
+            return Path(p).parent.parent  # 返回 stock_data 的父目录
     return Path(".")
 
 # 输出目录：默认本地，不依赖远程 CIFS 挂载
-FULL_OUTPUT_BASE = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "文献因子_全量"
+FULL_OUTPUT_BASE = PROJECT_ROOT / "数据仓库" / "因子产出" / "全量"
 
 try:
     _detected = _detect_data_dir()
-    FULL_DATA_DIR = _detected if _detected != Path(".") else PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"
+    FULL_DATA_DIR = _detected if _detected != Path(".") else PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量"
 except Exception:
-    FULL_DATA_DIR = PROJECT_ROOT / "git_ignore_folder" / "factor_implementation_source_data"
+    FULL_DATA_DIR = PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量"
 BARRA_DIR = Path(os.environ.get("PAPER_FACTOR_BARRA_DIR",
-                                 str(PROJECT_ROOT / "git_ignore_folder" / "barra_model")))
+                                 str(PROJECT_ROOT / "数据仓库" / "barra_model")))
 
 EXPECTED_ROWS = 2027
 DEFAULT_N_WORKERS = 4  # 日线/截面因子4核
@@ -163,43 +83,6 @@ def cleanup_workers(factor_name: str | None = None):
 
 
 # ── 全量计算 ──
-
-
-def _find_remote_code(factor_name: str, report_name: str) -> Path | None:
-    """从远程 E 盘查找已更新的 .code.py
-
-    数据目录与产出目录在远程盘上是同级关系：
-      {base}/_paper_factor_unified/factor_implementation_source_data/   ← 数据
-      {base}/paper_factors/文献因子_全量/{report}/{factor}/{factor}.code.py  ← 产出
-    """
-    if FULL_DATA_DIR is None or FULL_DATA_DIR == Path("."):
-        return None
-    # 从数据目录推导产出目录基路径
-    remote_base = FULL_DATA_DIR.parent.parent / "paper_factors" / "文献因子_全量"
-    p = remote_base / report_name / factor_name / f"{factor_name}.code.py"
-    if p.exists():
-        return p
-    # 试原始硬编码路径（兼容旧挂载）
-    for prefix in ("/mnt/remote_e", "E:", "Z:"):
-        alt = Path(f"{prefix}/paper_factors/文献因子_全量") / report_name / factor_name / f"{factor_name}.code.py"
-        if alt.exists():
-            return alt
-    # 保底：通过 smbclient 从远程下载
-    try:
-        remote_path = f"paper_factors\\文献因子_全量\\{report_name}\\{factor_name}\\{factor_name}.code.py"
-        r = subprocess.run(
-            ["smbclient", f"//{SMB_HOST}/{SMB_SHARE}", "-U", f"{SMB_USER}%{SMB_PASS}",
-             "-c", f"get {remote_path} /tmp/{factor_name}.code.py"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode == 0:
-            tmp = Path(f"/tmp/{factor_name}.code.py")
-            if tmp.exists():
-                print(f"  📡 通过 smbclient 下载远程 .code.py", flush=True)
-                return tmp
-    except Exception:
-        pass
-    return None
 
 
 def _patch_old_code_data_dir(code_dst: Path):
@@ -277,6 +160,7 @@ def run_other_factor(factor_name: str, factor_dir: Path, code_path: Path) -> boo
                 env["FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
                 env["RDAGENT_FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
             env["FACTOR_N_WORKERS"] = str(DEFAULT_N_WORKERS)
+            env["FACTOR_LOOKBACK_CAP"] = "99999"
             env["PYTHONWARNINGS"] = "ignore"
             env["PYTHONUNBUFFERED"] = "1"
 
@@ -341,17 +225,9 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
     """用本地模板运行分钟因子（直接复用 .code.py，已含 per-stock 模板）"""
     factor_dir.mkdir(parents=True, exist_ok=True)
 
-    # 复制 .code.py（默认用本地文献因子_全量版本；显式启用时才拉取远程已更新版本）
     code_dst = factor_dir / f"{factor_name}.code.py"
-    report_name = factor_dir.parent.name
-    remote_code = None
-    if os.environ.get("FACTOR_USE_REMOTE_CODE") == "1":
-        remote_code = _find_remote_code(factor_name, report_name)
-    src_code = remote_code if remote_code else code_path
-    if src_code.resolve() != code_dst.resolve():
-        shutil.copy(src_code, code_dst)
-    if remote_code:
-        print(f"  📡 使用远程已更新的 .code.py", flush=True)
+    if code_path.resolve() != code_dst.resolve():
+        shutil.copy(code_path, code_dst)
     _patch_old_code_data_dir(code_dst)  # 修补旧模板（DATA_DIR + 输出文件名）
 
     # 修补旧模板的硬编码 CHUNK_SIZE → 环境变量可配置（防OOM）
@@ -382,16 +258,20 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
 
     for attempt in range(2):
         if attempt > 0:
-            print(f"  🔄 重试第 {attempt + 1} 次... (FACTOR_CHUNK_SIZE=15, FACTOR_N_WORKERS=8)", flush=True)
+            print(f"  🔄 重试第 {attempt + 1} 次... (FACTOR_CHUNK_SIZE=15, FACTOR_N_WORKERS=1)", flush=True)
             time.sleep(2)
-            # 重试时缩小 chunk 和并行度减小内存压力
+            # 重试时缩小并行度到单进程（减小内存压力），缩小 chunk 尺寸
             env["FACTOR_CHUNK_SIZE"] = "15"
-            env["FACTOR_N_WORKERS"] = "8"
+            env["FACTOR_N_WORKERS"] = "1"
 
-        if FULL_DATA_DIR != Path("."):
+        minute_data_dir = PROJECT_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量"
+        if minute_data_dir.exists():
+            env["FACTOR_DATA_DIR"] = str(minute_data_dir)
+        elif FULL_DATA_DIR != Path("."):
             env["FACTOR_DATA_DIR"] = str(FULL_DATA_DIR)
         env["PYTHONWARNINGS"] = "ignore"
         env["PYTHONUNBUFFERED"] = "1"
+        env["FACTOR_LOOKBACK_CAP"] = "99999"
 
         t0 = time.time()
         log_path = Path(f"/tmp/{factor_name}.run.log")
@@ -485,7 +365,7 @@ def _load_test_meta(factor_dir: Path, factor_name: str) -> dict:
     若测试 meta 仍缺描述字段，再从 extracted_reports/{DATE}/{report}.extracted.json
     按因子名补全 description/formulation/source_excerpt/cols→variables。
     """
-    lit = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "literature_reports"
+    lit = PROJECT_ROOT / "数据仓库" / "因子产出" / "测试"
     meta = {}
     candidates = [
         lit / factor_dir.parent.parent.name / factor_dir.parent.name
@@ -517,7 +397,7 @@ def _load_test_meta(factor_dir: Path, factor_name: str) -> dict:
             or not meta.get("variables")):
         report_name = factor_dir.parent.name
         date_str = factor_dir.parent.parent.name if factor_dir.parent.parent.name.isdigit() else ""
-        _lit = PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "extracted_reports"
+        _lit = PROJECT_ROOT / "数据仓库" / "因子产出" / "extracted_reports"
         extract_candidates = []
         if date_str:
             extract_candidates.append(_lit / date_str / f"{report_name}.extracted.json")
@@ -638,12 +518,12 @@ def post_process(factor_name: str, factor_dir: Path, factor_type: str,
 
     # Barra 暴露分析
     _barra_result = None
-    barra_factor_returns = BARRA_DIR / "因子收益率表(Trading Model).csv"
+    barra_factor_returns = BARRA_DIR / "因子收益率表(Long-Term Model).csv"
     if barra_factor_returns.exists() and not skip_eval:
         print(f"  Barra 暴露分析...", flush=True)
         try:
             from scripts.barra_evaluate import evaluate_barra
-            barra_result = evaluate_barra(_eval_df, FULL_DATA_DIR, BARRA_DIR, model="Trading Model")
+            barra_result = evaluate_barra(_eval_df, FULL_DATA_DIR, BARRA_DIR, model="Long-Term Model")
             if "error" not in barra_result:
                 alpha = barra_result["exposures"]["alpha"]
                 sig_factors = [
@@ -710,7 +590,7 @@ def post_process(factor_name: str, factor_dir: Path, factor_type: str,
     src_report = factor_dir.parent.parent / "literature_reports" / factor_dir.parent.name / factor_name / f"{factor_name}.report.md"
     # 回退：在测试输出目录查找
     if not src_report.exists():
-        alt = (PROJECT_ROOT / "git_ignore_folder" / "factor_outputs" / "literature_reports"
+        alt = (PROJECT_ROOT / "数据仓库" / "因子产出" / "测试"
                / factor_dir.parent.name / factor_name / f"{factor_name}.report.md")
         if alt.exists():
             src_report = alt
@@ -929,38 +809,6 @@ def regenerate_and_rerun(factor_name: str, factor_dir: Path, factor_type: str,
         return False
 
 
-# ── 远程同步 ──
-
-
-def sync_to_remote(factor_dir: Path) -> bool:
-    """通过 SMB 同步到远程E盘"""
-    sys.path.insert(0, str(PROJECT_ROOT))
-    try:
-        from scripts.sync_utils import upload_file, ensure_remote_writable, REMOTE_BASE_FULL
-    except ModuleNotFoundError:
-        try:
-            from sync_utils import upload_file, ensure_remote_writable, REMOTE_BASE_FULL
-        except ModuleNotFoundError:
-            print(f"  ⚠️ 无法导入 sync_utils，跳过同步", flush=True)
-            return False
-
-    if not ensure_remote_writable():
-        print(f"  ⚠️ 远程不可用，跳过同步", flush=True)
-        return False
-
-    remote_prefix = f"{REMOTE_BASE_FULL}\\{factor_dir.parent.name}\\{factor_dir.name}"
-
-    count = 0
-    for f in factor_dir.iterdir():
-        if f.is_file() and f.suffix in (".parquet", ".py", ".json", ".png", ".md"):
-            remote_path = f"{remote_prefix}\\{f.name}"
-            if upload_file(f, remote_path):
-                count += 1
-
-    print(f"  ✅ 已同步 {count} 个文件到远程: {remote_prefix}", flush=True)
-    return count > 0
-
-
 # ── 独立全量流水线 ──
 
 
@@ -972,7 +820,7 @@ def run_full_pipeline(
     test_meta: dict | None = None,
     source_excerpt: str = "",
 ) -> bool:
-    """独立全量流水线：计算 → 评估 → LLM审查 → 同步。
+    """独立全量流水线：计算 → 评估 → LLM审查。
 
     可用于不依赖测试输出目录结构的场景，只需 .code.py + 元数据即可运行。
 
@@ -1048,13 +896,6 @@ def run_full_pipeline(
             meta_path_full.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
         print(f"  ✅ pipeline_status: completed", flush=True)
 
-        # 9. 同步远程
-        print(f"  同步远程...", flush=True)
-        try:
-            sync_to_remote(output_dir)
-        except Exception as e:
-            print(f"  ⚠️ 同步失败: {e}", flush=True)
-
         print(f"  ✅ [FullPipeline] {factor_name} 全量流水线完成", flush=True)
         return True
 
@@ -1085,8 +926,7 @@ class FullPipelineExecutor:
       2. 计算全量
       3. 后处理评估
       4. LLM 审查 → 如果"错误" → regenerate_and_rerun（最多1次，直接接受）
-      5. 同步远程
-      6. 标记完成
+      5. 标记完成
     """
 
     _instance = None
