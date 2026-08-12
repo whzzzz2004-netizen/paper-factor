@@ -60,29 +60,29 @@ rsync -avhP user@dev-machine:/path/to/paper-factor/数据仓库/ ./数据仓库/
 **如果只做因子开发测试（不跑全量）：**
 只需要 `数据仓库/行情数据/日线/测试/` 和 `数据仓库/非行情数据/测试/` 两个目录（约 25MB），300 只股票 × 300 天。
 
-### 第三步：创建 git_ignore_folder
+### 第三步：数据符号链接（workspace/）
 
-`git_ignore_folder/` 目录不在 git 中，需要手动创建。它包含：
+`workspace/` 里是数据目录的符号链接（已提交到 git，`setup.sh` 也会重建）。它包含：
 
 ```
-git_ignore_folder/
+workspace/
 ├── factor_implementation_source_data/     # → 指向数据仓库的符号链接
 │   └── stock_data/daily/                  # ln -s 数据仓库/行情数据/日线/全量
 ├── factor_implementation_source_data_1000/ # → 指向测试数据
 │   └── stock_data/daily/                  # ln -s 数据仓库/行情数据/日线/测试
-├── factor_outputs/                        # 旧版因子产出（已迁移到数据仓库/）
-├── logs/                                  # 运行日志、pickle 缓存
-├── ideas/                                 # 因子想法暂存
-└── daily_update_status.json               # 增量更新状态
+└── ideas/                                 # 因子想法暂存
 ```
 
-创建方式：
+创建方式（git clone 后已带符号链接；如需重建）：
 
 ```bash
-mkdir -p git_ignore_folder/logs git_ignore_folder/ideas git_ignore_folder/factor_outputs
-ln -sfn ../数据仓库/行情数据/日线/全量 git_ignore_folder/factor_implementation_source_data
-ln -sfn ../数据仓库/行情数据/日线/测试 git_ignore_folder/factor_implementation_source_data_1000
+mkdir -p workspace/logs workspace/ideas
+ln -sfn ../数据仓库/行情数据/日线/全量 workspace/factor_implementation_source_data
+ln -sfn ../数据仓库/行情数据/日线/测试 workspace/factor_implementation_source_data_1000
 ```
+
+运行时生成的 `workspace/RD-Agent_workspace/`（代码执行工作区）与 `workspace/logs/`（日志）
+不进 git，运行时自动创建。
 
 ### 第四步：安装依赖
 
@@ -105,8 +105,8 @@ pip install -r requirements.txt
 # 检查数据完整性
 python -c "from pathlib import Path; d=Path('数据仓库/行情数据/日线/全量/stock_data/daily'); print(f'{len(list(d.glob(\"*.parquet\")))} 只股票')"
 
-# 检查 git_ignore_folder 符号链接
-ls -la git_ignore_folder/factor_implementation_source_data
+# 检查 workspace 符号链接
+ls -la workspace/factor_implementation_source_data
 
 # 跑一个测试因子
 python scripts/run_factor_full.py "数据仓库/因子产出/全量/20260810/GRU量价趋势预测因子/GRUPriceVolumePredictor/GRUPriceVolumePredictor.code.py"

@@ -31,9 +31,9 @@ mkdir -p 数据仓库/因子产出/{测试,全量}
 mkdir -p 数据仓库/barra_model
 mkdir -p 数据仓库/板块数据
 mkdir -p 新建文件
-mkdir -p git_ignore_folder/logs git_ignore_folder/ideas
-ln -sfn ../数据仓库/行情数据/日线/全量 git_ignore_folder/factor_implementation_source_data
-ln -sfn ../数据仓库/行情数据/日线/测试 git_ignore_folder/factor_implementation_source_data_1000
+mkdir -p workspace/logs workspace/ideas
+ln -sfn ../数据仓库/行情数据/日线/全量 workspace/factor_implementation_source_data
+ln -sfn ../数据仓库/行情数据/日线/测试 workspace/factor_implementation_source_data_1000
 
 echo ""
 echo "  ⚠️  需要把数据仓库复制到 $REPO_DIR/数据仓库/"

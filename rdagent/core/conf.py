@@ -63,7 +63,7 @@ class RDAgentSettings(ExtendedBaseSettings):
     project_path: Path = Path.cwd()
 
     # workspace conf
-    workspace_path: Path = Path.cwd() / "git_ignore_folder" / "RD-Agent_workspace"
+    workspace_path: Path = Path.cwd() / "workspace" / "RD-Agent_workspace"
     workspace_ckp_size_limit: int = 0
     workspace_ckp_white_list_names: list[str] | None = None
     """

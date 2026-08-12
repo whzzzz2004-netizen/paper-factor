@@ -26,7 +26,7 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 _ROOT = Path(__file__).parent.parent
 DEFAULT_DATA_DIR = Path(os.environ.get(
     "FACTOR_DATA_DIR",
-    str(_ROOT / "git_ignore_folder" / "factor_implementation_source_data_1000"),
+    str(_ROOT / "workspace" / "factor_implementation_source_data_1000"),
 )) / "stock_data"
 
 
