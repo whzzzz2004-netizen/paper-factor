@@ -812,7 +812,7 @@ def cmd_test_and_export(args):
 # Subcommand: trigger-full
 # ---------------------------------------------------------------------------
 def cmd_trigger_full(args):
-    """Run full-scale factor pipeline synchronously: compute → evaluate → Barra → LLM review → sync.
+    """Run full-scale factor pipeline synchronously: compute → evaluate → Barra → LLM review.
 
     Derives parameters from literature_reports directory structure, then calls run_full_pipeline().
     Blocking — waits until complete before returning.

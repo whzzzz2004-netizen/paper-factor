@@ -28,7 +28,7 @@ def calc_factors_one_day(df, stock):
 <!-- /MINUTE_COLUMNS -->
 
 - 多天数据用 `df.index.date` 分组
-- **无 `pct_chg`、`pre_close`、基本面等日线列**
+- **无 `pct_chg`、`pre_close`、非行情等日线列**
 
 ## 特殊约束
 

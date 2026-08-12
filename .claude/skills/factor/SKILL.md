@@ -20,8 +20,8 @@
 
 ```
 scan-pending → [Phase 1] 提取+定义因子 (每个paper一个sub-agent, 只做extract+define)
-            → [Phase 2] 编码+测试 (每个factor一个sub-agent, 只写核心函数+跑test-and-export)
-            → deploy-to-full + mark-done
+            → [Phase 2] 编码+测试+部署 (每个factor一个sub-agent, 写核心函数+跑test-and-export+deploy-to-full)
+            → mark-done
 ```
 
 **核心原则：每个 sub-agent 的任务极其简单，没有犯错空间。**
@@ -198,7 +198,7 @@ def calc_factor_series(df, stock):
 
 **性能注意（分钟截面）：** 全量 5435 只股票 × 120 天分钟数据，避免 Python 逐元素循环（`for i in range` + `np.argmin`/`np.sum` 等）。优先用 numpy 向量化、O(n) 单调队列或前缀和。
 
-#### 2. 立即跑 test-and-export（写完后立刻执行，不停顿）
+#### 2. 立即跑 test-and-export + deploy-to-full（写完后立刻执行，不停顿）
 类型在 Phase 1 已定义，**显式传 `--type {type_key}`**（确定，不依赖自动检测）。
 ```bash
 python scripts/claude_factor_helper.py test-and-export \
@@ -209,6 +209,13 @@ python scripts/claude_factor_helper.py test-and-export \
   --description "{description}" --formulation "{formulation}" \
   --source-excerpt "{source_excerpt}" \
   --source-report-title "{report_name}" \
+  --date {DATE}
+```
+
+**test-and-export 成功后，立即部署到全量：**
+```bash
+python scripts/claude_factor_helper.py deploy-to-full \
+  --code 数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py \
   --date {DATE}
 ```
 
@@ -248,19 +255,10 @@ for _ in range(min(5, len(all_factors))):
 
 ---
 
-### Step 3: 部署 + 同步 + 标记完成
+### Step 3: 标记完成
 
-**⚠️ 本步骤只做下面三件事，绝不跑全量计算（`run_all.py`/`run_factor_full.py` 等一律不碰）。全量 parquet 由用户自行启动的增量运算负责。** 不要因为全量目录里还没有 .parquet 就"好心"去补算。
+**⚠️ deploy-to-full 已在 Phase 2 中每个因子测试成功后自动执行。本步骤只做标记完成，绝不跑全量计算（`run_all.py`/`run_factor_full.py` 等一律不碰）。** 全量 parquet 由用户通过 `/all` 启动。
 
-对每个成功的因子：
-```bash
-python scripts/claude_factor_helper.py deploy-to-full \
-  --code 数据仓库/因子产出/测试/{DATE}/{report}/{factor}/{factor}.code.py \
-  --date {DATE}
-```
-（路径必须是仓库根起算的完整相对路径，helper 用 `Path.resolve()` 从 CWD 解析，短路径 `因子产出/...` 会报 not found）
-
-标记完成：
 ```bash
 python scripts/claude_factor_helper.py mark-done --name "文件名.pdf"
 # 或 website/idea:

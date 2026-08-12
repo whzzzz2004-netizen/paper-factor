@@ -35,7 +35,7 @@ def _detect_data_dir() -> Path:
             return Path(p).parent.parent  # 返回 stock_data 的父目录
     return Path(".")
 
-# 输出目录：默认本地，不依赖远程 CIFS 挂载
+# 输出目录：默认本地
 FULL_OUTPUT_BASE = PROJECT_ROOT / "数据仓库" / "因子产出" / "全量"
 
 try:

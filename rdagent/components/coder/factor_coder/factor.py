@@ -157,8 +157,8 @@ if not _D or not (_D/"stock_data"/"daily").exists():
             _D = Path(".")
 DATA_DIR = _D
 STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
-# ── 基本面数据（独立目录：行情只含价量，基本面列从基本面数据目录合并） ──
-FUNDAMENTAL_DATA_DIR = DATA_DIR.resolve().parent.parent.parent / "基本面数据" / DATA_DIR.resolve().name
+# ── 非行情数据（独立目录：行情只含价量，非行情列从非行情数据目录合并） ──
+FUNDAMENTAL_DATA_DIR = DATA_DIR.resolve().parent.parent.parent / "非行情数据" / DATA_DIR.resolve().name
 FUNDAMENTAL_STOCK_DATA_DIR = FUNDAMENTAL_DATA_DIR / "stock_data" / "daily"
 FUNDAMENTAL_COLS = {{'roe', 'roa', 'pe_ttm', 'pb', 'revenue_yoy', 'profit_yoy', 'gross_margin', 'net_margin', 'debt_to_asset', 'ocf_per_share', 'market_cap', 'circulating_market_cap', 'total_shares', 'float_shares', 'adjusted_profit', 'gross_profit', 'total_holders', 'holder_change_pct'}}
 
@@ -204,7 +204,7 @@ INDUSTRY_DICT = json.load(open(_INDUSTRY_FILE, encoding="utf-8")) if _INDUSTRY_F
 
 def get_jq_data(symbol, data_type='price', start_date='2018-01-01', end_date='2026-05-15'):
     \"\"\"通用聚宽数据获取函数。优先读本地缓存，没有再通过聚宽在线下载。
-    本地数据中已有的字段（如日频价量、基本面等）直接走本地，不会调用聚宽。
+    本地数据中已有的字段（如日频价量、非行情等）直接走本地，不会调用聚宽。
     用法:
       idx = get_jq_data('000300.XSHG', 'price')  # 指数行情
       stocks = get_jq_data('000905.XSHG', 'index_components')  # 中证500成分股列表
@@ -332,7 +332,7 @@ if __name__ == '__main__':
         import re as _re, inspect as _inspect, pyarrow.parquet as _pq
         _SAMPLE_FILE = next(STOCK_DATA_DIR.glob("*.parquet"))
         _AVAILABLE_COLS = set(_pq.read_schema(_SAMPLE_FILE).names) - {'datetime', 'instrument'}
-        # 行情 parquet 只含价量，基本面列从基本面数据目录读取（同样纳入可用列推断）
+        # 行情 parquet 只含价量，非行情列从非行情数据目录读取（同样纳入可用列推断）
         if FUNDAMENTAL_STOCK_DATA_DIR.exists():
             try:
                 _FUND_SAMPLE = next(FUNDAMENTAL_STOCK_DATA_DIR.glob("*.parquet"))
@@ -832,8 +832,8 @@ if not _D or not (_D/"stock_data"/"daily").exists():
             _D = Path(".")
 DATA_DIR = _D
 STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
-# ── 基本面数据（独立目录：行情只含价量，基本面列从基本面数据目录合并） ──
-FUNDAMENTAL_DATA_DIR = DATA_DIR.resolve().parent.parent.parent / "基本面数据" / DATA_DIR.resolve().name
+# ── 非行情数据（独立目录：行情只含价量，非行情列从非行情数据目录合并） ──
+FUNDAMENTAL_DATA_DIR = DATA_DIR.resolve().parent.parent.parent / "非行情数据" / DATA_DIR.resolve().name
 FUNDAMENTAL_STOCK_DATA_DIR = FUNDAMENTAL_DATA_DIR / "stock_data" / "daily"
 FUNDAMENTAL_COLS = {'roe', 'roa', 'pe_ttm', 'pb', 'revenue_yoy', 'profit_yoy', 'gross_margin', 'net_margin', 'debt_to_asset', 'ocf_per_share', 'market_cap', 'circulating_market_cap', 'total_shares', 'float_shares', 'adjusted_profit', 'gross_profit', 'total_holders', 'holder_change_pct'}
 
@@ -886,7 +886,7 @@ INDUSTRY_DICT = json.load(open(_INDUSTRY_FILE, encoding="utf-8")) if _INDUSTRY_F
 
 def get_jq_data(symbol, data_type='price', start_date='2018-01-01', end_date='2026-05-15'):
     \"\"\"通用聚宽数据获取函数。优先读本地缓存，没有再通过聚宽在线下载。
-    本地数据中已有的字段（如日频价量、基本面等）直接走本地，不会调用聚宽。
+    本地数据中已有的字段（如日频价量、非行情等）直接走本地，不会调用聚宽。
     用法:
       idx = get_jq_data('000300.XSHG', 'price')  # 指数行情
       stocks = get_jq_data('000905.XSHG', 'index_components')  # 中证500成分股列表
@@ -977,7 +977,7 @@ def _get_stock(s):
             # _LOAD_COLS非None时pyarrow按列读取会丢失datetime索引
             if 'datetime' in df.columns:
                 df = df.set_index('datetime')
-            # 合并基本面列：有检测列时只合并因子需要的列；load-all(None)时合并全部作为安全兜底
+            # 合并非行情列：有检测列时只合并因子需要的列；load-all(None)时合并全部作为安全兜底
             _fund = _load_fundamental(s, _fcols) if (_cols is None or _fcols) else None
             if _fund is not None:
                 _add = _fund.loc[:, [c for c in _fund.columns if c not in df.columns]]
@@ -1034,7 +1034,7 @@ if __name__ == '__main__':
         import re, inspect, pyarrow.parquet as pq
         _SAMPLE_FILE = next(STOCK_DATA_DIR.glob("*.parquet"))
         _AVAILABLE_COLS = set(pq.read_schema(_SAMPLE_FILE).names) - {'instrument'}
-        # 行情 parquet 只含价量，基本面列从基本面数据目录读取（同样纳入可用列推断）
+        # 行情 parquet 只含价量，非行情列从非行情数据目录读取（同样纳入可用列推断）
         if FUNDAMENTAL_STOCK_DATA_DIR.exists():
             try:
                 _FUND_SAMPLE = next(FUNDAMENTAL_STOCK_DATA_DIR.glob("*.parquet"))
@@ -1411,6 +1411,7 @@ for _search_dir in [os.path.join(_sys_prefix, "lib"), os.path.join(os.path.dirna
             pass
 
 import torch
+import torch.nn as nn
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 if DEVICE.type == "cuda":
     print(f"  GPU可用: {torch.cuda.get_device_name(0)}", flush=True)
@@ -1426,8 +1427,8 @@ if not _D or not (_D/"stock_data"/"daily").exists():
             _D = Path(".")
 DATA_DIR = _D
 STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
-# ── 基本面数据（独立目录：行情只含价量，基本面列从基本面数据目录合并） ──
-FUNDAMENTAL_DATA_DIR = DATA_DIR.resolve().parent.parent.parent / "基本面数据" / DATA_DIR.resolve().name
+# ── 非行情数据（独立目录：行情只含价量，非行情列从非行情数据目录合并） ──
+FUNDAMENTAL_DATA_DIR = DATA_DIR.resolve().parent.parent.parent / "非行情数据" / DATA_DIR.resolve().name
 FUNDAMENTAL_STOCK_DATA_DIR = FUNDAMENTAL_DATA_DIR / "stock_data" / "daily"
 FUNDAMENTAL_COLS = {{'roe', 'roa', 'pe_ttm', 'pb', 'revenue_yoy', 'profit_yoy', 'gross_margin', 'net_margin', 'debt_to_asset', 'ocf_per_share', 'market_cap', 'circulating_market_cap', 'total_shares', 'float_shares', 'adjusted_profit', 'gross_profit', 'total_holders', 'holder_change_pct'}}
 
@@ -1447,6 +1448,9 @@ if _INC_START:
     TRADE_DATES = TRADE_DATES[_pos:]
 # ── ──
 _CODE_DIR = Path(__file__).parent
+# ── 训练数据限制：加速全量训练（默认500只×500行/只，全量预测不受影响） ──
+_MAX_TRAIN_STOCKS = int(os.environ.get("FACTOR_MAX_TRAIN_STOCKS", "500"))
+_MAX_TRAIN_ROWS = int(os.environ.get("FACTOR_MAX_TRAIN_ROWS", "500"))
 
 def load_stock(stock, columns=None):
     if columns is None:
@@ -1473,7 +1477,7 @@ INDUSTRY_DICT = json.load(open(_INDUSTRY_FILE, encoding="utf-8")) if _INDUSTRY_F
 
 def get_jq_data(symbol, data_type='price', start_date='2018-01-01', end_date='2026-05-15'):
     \"\"\"通用聚宽数据获取函数。优先读本地缓存，没有再通过聚宽在线下载。
-    本地数据中已有的字段（如日频价量、基本面等）直接走本地，不会调用聚宽。
+    本地数据中已有的字段（如日频价量、非行情等）直接走本地，不会调用聚宽。
     用法:
       idx = get_jq_data('000300.XSHG', 'price')  # 指数行情
       stocks = get_jq_data('000905.XSHG', 'index_components')  # 中证500成分股列表
@@ -1533,7 +1537,7 @@ if __name__ == '__main__':
         import re as _re, inspect as _inspect, pyarrow.parquet as _pq
         _SAMPLE_FILE = next(STOCK_DATA_DIR.glob("*.parquet"))
         _AVAILABLE_COLS = set(_pq.read_schema(_SAMPLE_FILE).names) - {'datetime', 'instrument'}
-        # 行情 parquet 只含价量，基本面列从基本面数据目录读取（同样纳入可用列推断）
+        # 行情 parquet 只含价量，非行情列从非行情数据目录读取（同样纳入可用列推断）
         if FUNDAMENTAL_STOCK_DATA_DIR.exists():
             try:
                 _FUND_SAMPLE = next(FUNDAMENTAL_STOCK_DATA_DIR.glob("*.parquet"))
@@ -1546,7 +1550,7 @@ if __name__ == '__main__':
                 _USER_SOURCE += _inspect.getsource(globals()[_fn]) + "\\n"
             except Exception:
                 pass
-        # 只扫描用户函数引用的列，避免模板中 FUNDAMENTAL_COLS 字面量把全部基本面列算进 _LOAD_COLS
+        # 只扫描用户函数引用的列，避免模板中 FUNDAMENTAL_COLS 字面量把全部非行情列算进 _LOAD_COLS
         _ALL_QUOTED = set(_re.findall(r'''['"]([A-Za-z_][A-Za-z0-9_]*)['"]''', _USER_SOURCE))
         _DETECTED = sorted(_ALL_QUOTED & _AVAILABLE_COLS)
         _LOAD_COLS = sorted(set((_LOAD_COLS or []) + _DETECTED))  # 注入值 ∪ 扫描值
@@ -1587,12 +1591,17 @@ if __name__ == '__main__':
             data_for_train = {{}}
             for stock, df in all_data.items():
                 pos = _stock_positions_train[stock][_date_idxs[0]]
-                sub = df.iloc[:pos]
+                sub = df.iloc[max(0, pos - _MAX_TRAIN_ROWS):pos]  # 限制每只股票行数
                 if sub.empty:
                     continue
                 data_for_train[stock] = sub
             if not data_for_train:
                 continue
+            # 限制训练股票数量（全量预测不受影响）
+            if len(data_for_train) > _MAX_TRAIN_STOCKS:
+                _keys = sorted(data_for_train.keys())[:_MAX_TRAIN_STOCKS]
+                data_for_train = {{k: data_for_train[k] for k in _keys}}
+                print(f"  训练采样: {len(_keys)} 只股票 (共 {len(all_data)} 只)", flush=True)
             model = train_model(data_for_train, _first_td)
             # 自动移模型到 GPU（如果可用）
             if model is not None and hasattr(model, 'to'):
@@ -1677,7 +1686,7 @@ if __name__ == '__main__':
     finally:
         pass"""
 
-    # Target function names that constitute the "user code" portion.
+    # Target function/class names that constitute the "user code" portion.
     # Everything else (imports, DATA_DIR, load_stock, _compute_stock, __main__)
     # is framework boilerplate and should be stripped before re-wrapping.
     _TARGET_FUNC_NAMES = {
@@ -1691,10 +1700,12 @@ if __name__ == '__main__':
         "predict_batch",
         "calc_factors_one_day",
     }
+    # DL 模板的模型类定义（如 GRUPredictor、SimpleModel 等）也属于用户代码
+    _TARGET_CLASS_KEYWORDS = {"nn.Module", "Module", "nn.Module"}
 
     @staticmethod
     def _extract_user_functions(code: str) -> str:
-        """Strip framework boilerplate, keep only target function definitions."""
+        """Strip framework boilerplate, keep only target function/class definitions."""
         import ast
 
         try:
@@ -1702,10 +1713,17 @@ if __name__ == '__main__':
         except SyntaxError:
             return code
 
-        target_nodes = [
-            node for node in ast.iter_child_nodes(tree)
-            if isinstance(node, ast.FunctionDef) and node.name in FactorFBWorkspace._TARGET_FUNC_NAMES
-        ]
+        target_nodes = []
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.FunctionDef) and node.name in FactorFBWorkspace._TARGET_FUNC_NAMES:
+                target_nodes.append(node)
+            elif isinstance(node, ast.ClassDef):
+                # 检查是否继承自 nn.Module（DL 模型类）
+                for base in node.bases:
+                    base_name = ast.unparse(base) if hasattr(ast, 'unparse') else (base.attr if isinstance(base, ast.Attribute) else base.id)
+                    if base_name in FactorFBWorkspace._TARGET_CLASS_KEYWORDS or "Module" in base_name:
+                        target_nodes.append(node)
+                        break
         if not target_nodes:
             return code
 

@@ -1,22 +1,4 @@
-.env
-.env.*
-!.env.example
-__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-build/
-dist/
-git_ignore_folder/
-barra_model/
+# 数据仓库（因子仓库）与新建文件（用户数据输入）不上传 GitHub
+# 其余一切（含 .env 配置、代码、论文、日志脚本等）全部上传
 /数据仓库/
 /新建文件/
-/log/
-logs/
-workspace_cache/
-_template_cache/
-release_assets/
-*.tar
-*.tar.gz
-*.zip
-papers/**/*.pdf

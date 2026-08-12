@@ -30,7 +30,6 @@ def predict(model, df, trade_date, stock):
   - EMA20: 20日指数移动均线（20交易日指数移动平均收盘价）
   - EMA5: 5日指数移动均线（5交易日指数移动平均收盘价）
   - adjusted_profit: 扣非净利润（扣除非经常性损益后的净利润，单位：元。按报告期 forward-fill 到每日。）
-  - amount: 成交金额(元, 成交量×收盘价近似)
   - circulating_market_cap: 流通市值（单位：亿元，衡量可交易市值）
   - close: 收盘价（日线收盘价）
   - debt_to_asset: 资产负债率（Debt-to-Asset Ratio, 衡量财务杠杆）
@@ -43,7 +42,13 @@ def predict(model, df, trade_date, stock):
   - jhjj_hsl: 集合竞价换手率（集合竞价时段换手率，单位：%）
   - low: 最低价（日线最低价）
   - market_cap: 总市值（单位：亿元，衡量公司规模）
+  - net_amount_main: 主力净流入金额
   - net_margin: 净利率（Net Profit Margin, 衡量综合盈利效率）
+  - net_pct_l: 大单净流入占比
+  - net_pct_m: 中单净流入占比
+  - net_pct_main: 主力净流入占比
+  - net_pct_s: 小单净流入占比
+  - net_pct_xl: 超大单净流入占比
   - ocf_per_share: 每股经营现金流（Operating Cash Flow per Share, 衡量现金创造能力）
   - open: 开盘价（日线开盘价）
   - pb: 市净率（Price-to-Book, 衡量估值相对于账面价值）
