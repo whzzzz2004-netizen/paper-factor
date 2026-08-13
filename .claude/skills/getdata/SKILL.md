@@ -12,8 +12,8 @@ description: 从本地「新建文件」目录导入新增行情/非行情数据
 
 | 类型 | 子目录 | 格式 |
 |------|--------|------|
-| **日线** | `日线/dailyData.parquet` | 单文件全量日线，含 `symbol` + `date` 列 |
-| **分钟** | `分钟线/YYYYMMDD.parquet` | per-date，MultiIndex[instrument, datetime] |
+| **日线** | `日线/dailyData.parquet` | 单文件全量日线，含 `symbol` + `date` 列，**9 列行情数据**（open, close, high, low, factor, volume, EMA5, EMA10, EMA20） |
+| **分钟** | `分钟线/YYYYMMDD.parquet` | per-date，扁平格式（symbol + trade_date + 7 列数据）或 MultiIndex[instrument, datetime] |
 | **截面因子** | `非行情/因子名.parquet` | index=日期(str, yyyy-mm-dd), columns=股票代码(int), value=float64 |
 | **描述** | `新建文件/基本面因子说明.csv` | CSV 无表头，每行 = 非行情/ 下一个 pqt 文件的描述 |
 
@@ -85,9 +85,10 @@ python3 scripts/import_new_data.py --update-prompts-only
 ```
 新建文件/
   日线/
-    dailyData.parquet  # 全量日线单文件
+    dailyData.parquet  # 全量日线单文件（9 列：open, close, high, low, factor, volume, EMA5, EMA10, EMA20）
   分钟线/
-    20260806.parquet   # per-date 分钟数据
+    20260806.parquet   # per-date 分钟数据（扁平格式：symbol, trade_date, open, high, low, close, volume, return, factor）
+    20260807.parquet   # 也支持 MultiIndex[instrument, datetime] 格式（含 vwap 列）
   非行情/              # 截面因子（CSV 每行对应这里一个 pqt）
     momentum.parquet   # 例如：CSV 里有 momentum.parquet,momentum,动量因子...
   基本面因子说明.csv    # 字段含义清单：每行 = 非行情/ 下一个 pqt 文件
@@ -98,8 +99,8 @@ python3 scripts/import_new_data.py --update-prompts-only
 
 ## 导入规则
 
-- **行情列** → 全量 `数据仓库/行情数据/日线/全量/stock_data/daily/{code}.parquet`
-- **非行情列** → 全量 `数据仓库/非行情数据/全量/stock_data/daily/{code}.parquet`
+- **行情列（9 列）** → 全量 `数据仓库/行情数据/日线/全量/stock_data/daily/{code}.parquet`
+- **非行情列（18+ 列）** → 全量 `数据仓库/非行情数据/全量/stock_data/daily/{code}.parquet`
 - **分钟数据** → 复制到 `minute_by_date/` + 更新 per-stock `minute/{code}.parquet`
 - **截面因子** → 转长格式 → 合并进全量非行情 per-stock parquet（新列）
 - 逐股票合并（concat + 按日期去重，新数据优先，sort）
@@ -124,7 +125,7 @@ python3 scripts/import_new_data.py --update-prompts-only
 | `新建文件/` | 用户放置新增数据的目录 |
 | `新建文件/基本面因子说明.csv` | 用户维护的字段含义清单（每行 = 非行情/ 下一个 pqt 文件） |
 | `data/schema.json` | 字段注册表，定义所有可用列及其来源 |
-| `数据仓库/行情数据/日线/{全量,测试}/` | 行情数据（价量 20 列） |
+| `数据仓库/行情数据/日线/{全量,测试}/` | 行情数据（价量 9 列） |
 | `数据仓库/非行情数据/{全量,测试}/` | 非行情数据（非行情列 + 新增截面因子） |
 | `数据仓库/行情数据/分钟线/{全量,测试}/` | 分钟数据（per-date + per-stock） |
 | `*/factor_field_schema.json` | LLM 数据可用性检查用的字段含义表，新列自动同步 |

@@ -10,3 +10,5 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 pickle_cache/
+# 模板缓存（自动生成，按需重建）
+_template_cache/

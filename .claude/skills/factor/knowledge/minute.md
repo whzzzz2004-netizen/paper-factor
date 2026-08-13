@@ -17,14 +17,15 @@ def calc_factors_one_day(df, stock):
 
 <!-- MINUTE_COLUMNS -->
   - close: 收盘价（日线收盘价）
+  - date: 冗余日期列（flat 格式中与 trade_date 同义，仅用于导入）
   - factor: 复权因子（前复权因子）
   - high: 最高价（日线最高价）
   - low: 最低价（日线最低价）
-  - money: 成交额
   - open: 开盘价（日线开盘价）
-  - return
-  - trade_date
+  - return: 分钟收益率
+  - trade_date: 交易日期（flat 格式原始列）
   - volume: 成交量（单位：股）
+  - vwap: 成交量加权均价
 <!-- /MINUTE_COLUMNS -->
 
 - 多天数据用 `df.index.date` 分组

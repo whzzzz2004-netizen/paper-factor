@@ -227,8 +227,43 @@ TYPE_MAP = {
 # Subcommand: extract-pdf
 # ---------------------------------------------------------------------------
 def cmd_extract_pdf(args):
-    """Extract text from PDFs (pymupdf) or .md files, output JSON."""
+    """Extract text from PDFs (pymupdf) or .md files, output JSON (or write .txt files with --outdir)."""
     import fitz  # pymupdf
+
+    def _extract_text(path: Path) -> str:
+        if path.suffix == ".md":
+            try:
+                return path.read_text(encoding="utf-8")
+            except Exception:
+                return ""
+        try:
+            doc = fitz.open(path)
+            return "\n".join(page.get_text() for page in doc)
+        except Exception:
+            return ""
+
+    # --outdir 模式：把每份原文写到独立 .txt，打印 {源路径: txt路径} 映射。
+    # 主进程预提取后，sub-agent 用 Read 工具直接读 .txt，避免内联 subprocess 一次性管道。
+    if getattr(args, "outdir", None):
+        outdir = Path(args.outdir)
+        outdir.mkdir(parents=True, exist_ok=True)
+        mapping = {}
+        for i, p in enumerate(args.paths):
+            path = Path(p).resolve()
+            if not path.exists():
+                continue
+            if path.is_dir():
+                text = "\n\n".join(
+                    _extract_text(pdf_path) for pdf_path in sorted(path.rglob("*.pdf"))
+                )
+            else:
+                text = _extract_text(path)
+            stem = re.sub(r"[^\w.-]+", "_", path.stem)[:80] or f"src_{i}"
+            txt_path = outdir / f"{i:02d}_{stem}.txt"
+            txt_path.write_text(text, encoding="utf-8")
+            mapping[str(path)] = str(txt_path)
+        print(json.dumps(mapping, ensure_ascii=False))
+        return
 
     result = {}
     for p in args.paths:
@@ -236,26 +271,11 @@ def cmd_extract_pdf(args):
         if not path.exists():
             result[str(path)] = ""
             continue
-        if path.suffix == ".md":
-            try:
-                result[str(path)] = path.read_text(encoding="utf-8")
-            except Exception:
-                result[str(path)] = ""
-        elif path.is_dir():
+        if path.is_dir():
             for pdf_path in sorted(path.rglob("*.pdf")):
-                try:
-                    doc = fitz.open(pdf_path)
-                    text = "\n".join(page.get_text() for page in doc)
-                    result[str(pdf_path)] = text
-                except Exception:
-                    result[str(pdf_path)] = ""
+                result[str(pdf_path)] = _extract_text(pdf_path)
         else:
-            try:
-                doc = fitz.open(path)
-                text = "\n".join(page.get_text() for page in doc)
-                result[str(path)] = text
-            except Exception:
-                result[str(path)] = ""
+            result[str(path)] = _extract_text(path)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
@@ -1452,6 +1472,8 @@ def main():
     # extract-pdf
     p_pdf = sub.add_parser("extract-pdf", help="Extract text from PDFs/.md files to JSON")
     p_pdf.add_argument("paths", nargs="+", help="PDF/MD file or directory paths")
+    p_pdf.add_argument("--outdir", default=None,
+                       help="写每个来源的原文到独立 .txt（主进程预提取用），打印 {源路径: txt路径} 映射")
 
     # extract-website
     p_web = sub.add_parser("extract-website", help="Fetch URL and extract factors via LLM")

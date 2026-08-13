@@ -1,10 +1,10 @@
 {
-  "version": "1.3",
+  "version": "1.4",
   "data_dir": "数据仓库/行情数据/日线/全量",
   "import": {
     "dir": "新建文件",
     "script": "scripts/import_new_data.py",
-    "note": "本地导入：用户把新增数据放到 新建文件/（日线/、非行情/ 或根目录），运行脚本自动检测格式并导入。"
+    "note": "本地导入：用户把新增数据放到 新建文件/（日线/、分钟线/、非行情/ 或根目录），运行脚本自动检测格式并导入。"
   },
   "daily": {
     "format": "per_stock_parquet",
@@ -36,17 +36,17 @@
         "description": "成交量",
         "source": "remote_daily"
       },
-      "pct_chg": {
-        "description": "涨跌幅(%)",
-        "source": "dailyData.parquet"
+      "EMA5": {
+        "description": "5日指数移动平均",
+        "source": "remote_daily"
       },
-      "pre_close": {
-        "description": "昨收价",
-        "source": "dailyData.parquet"
+      "EMA10": {
+        "description": "10日指数移动平均",
+        "source": "remote_daily"
       },
-      "turnover_rate": {
-        "description": "换手率",
-        "source": "dailyData.parquet"
+      "EMA20": {
+        "description": "20日指数移动平均",
+        "source": "remote_daily"
       },
       "roe": {
         "description": "净资产收益率",
@@ -108,48 +108,8 @@
         "description": "调整后净利润",
         "source": "dailyData.parquet"
       },
-      "EMA5": {
-        "description": "5日指数移动平均",
-        "source": "remote_daily"
-      },
-      "EMA10": {
-        "description": "10日指数移动平均",
-        "source": "remote_daily"
-      },
-      "EMA20": {
-        "description": "20日指数移动平均",
-        "source": "remote_daily"
-      },
       "gross_profit": {
         "description": "毛利润",
-        "source": "dailyData.parquet"
-      },
-      "jhjj_hsl": {
-        "description": "集合竞价换手率",
-        "source": "jhjjHsl.csv"
-      },
-      "net_pct_main": {
-        "description": "主力净流入占比",
-        "source": "dailyData.parquet"
-      },
-      "net_pct_xl": {
-        "description": "超大单净流入占比",
-        "source": "dailyData.parquet"
-      },
-      "net_pct_l": {
-        "description": "大单净流入占比",
-        "source": "dailyData.parquet"
-      },
-      "net_pct_m": {
-        "description": "中单净流入占比",
-        "source": "dailyData.parquet"
-      },
-      "net_pct_s": {
-        "description": "小单净流入占比",
-        "source": "dailyData.parquet"
-      },
-      "net_amount_main": {
-        "description": "主力净流入金额",
         "source": "dailyData.parquet"
       },
       "total_holders": {
@@ -159,6 +119,61 @@
       "holder_change_pct": {
         "description": "股东户数较上期变化百分比",
         "source": "shareholder_count.csv"
+      },
+      "pct_chg": {
+        "description": "涨跌幅(%)",
+        "source": "dailyData.parquet",
+        "deprecated": true
+      },
+      "pre_close": {
+        "description": "昨收价",
+        "source": "dailyData.parquet",
+        "deprecated": true
+      },
+      "turnover_rate": {
+        "description": "换手率",
+        "source": "dailyData.parquet",
+        "deprecated": true
+      },
+      "jhjj_hsl": {
+        "description": "集合竞价换手率",
+        "source": "jhjjHsl.csv",
+        "deprecated": true
+      },
+      "net_pct_main": {
+        "description": "主力净流入占比",
+        "source": "dailyData.parquet",
+        "deprecated": true
+      },
+      "net_pct_xl": {
+        "description": "超大单净流入占比",
+        "source": "dailyData.parquet",
+        "deprecated": true
+      },
+      "net_pct_l": {
+        "description": "大单净流入占比",
+        "source": "dailyData.parquet",
+        "deprecated": true
+      },
+      "net_pct_m": {
+        "description": "中单净流入占比",
+        "source": "dailyData.parquet",
+        "deprecated": true
+      },
+      "net_pct_s": {
+        "description": "小单净流入占比",
+        "source": "dailyData.parquet",
+        "deprecated": true
+      },
+      "net_amount_main": {
+        "description": "主力净流入金额",
+        "source": "dailyData.parquet",
+        "deprecated": true
+      },
+      "amount": {
+        "description": "成交额",
+        "source": "dailyData.parquet",
+        "deprecated": true
       }
     }
   },
@@ -187,20 +202,24 @@
         "description": "成交量",
         "source": "remote_minute"
       },
-      "money": {
-        "description": "成交额",
-        "source": "remote_minute"
-      },
       "factor": {
         "description": "复权因子",
         "source": "remote_minute"
       },
       "return": {
-        "description": "return",
+        "description": "分钟收益率",
+        "source": "remote_minute"
+      },
+      "vwap": {
+        "description": "成交量加权均价",
         "source": "remote_minute"
       },
       "trade_date": {
-        "description": "trade_date",
+        "description": "交易日期（flat 格式原始列）",
+        "source": "remote_minute"
+      },
+      "date": {
+        "description": "冗余日期列（flat 格式中与 trade_date 同义，仅用于导入）",
         "source": "remote_minute"
       }
     }

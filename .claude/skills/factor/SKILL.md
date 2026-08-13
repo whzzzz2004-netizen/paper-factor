@@ -62,15 +62,17 @@ prompt = """
 
 ### 输入
 - 类型: {type}
-- PDF路径: {path}  (仅paper)
+- 文本路径: {txt_path}  (仅paper，已预提取为 .txt)
 - 文本: {text}  (仅idea)
 - 网站索引: {index} (仅website)
 
 ### Step 1: 获取原文
-⚠️ 不能用 shell 命令直接传文件名（含中文引号等特殊字符会破坏 shell 解析）。
-改用 Python subprocess（列表参数，无 shell 注入）：
-python3 -c "import glob, subprocess, json; files = glob.glob('{path}'); print(json.dumps(subprocess.run(['python', 'scripts/claude_factor_helper.py', 'extract-pdf'] + files[:1], capture_output=True, text=True).stdout if files else '{}'))"
-如果输出为空或 `{{"skipped": true}}`，跳过。
+- paper：用 Read 工具直接读取 {txt_path}（主进程已用 extract-pdf --outdir 预提取，无需自己跑命令）
+- website：运行 `python scripts/claude_factor_helper.py extract-website --index {index}`，解析输出 JSON 的 `content` 字段作为正文
+- idea：直接用 {text}
+
+如果文本为空，跳过（返回 skipped）。
+
 
 ### Step 2: 定义因子
 运行 python scripts/claude_factor_helper.py show-columns 查看可用列。
@@ -106,10 +108,17 @@ python scripts/claude_factor_helper.py save-extracted --name "标题" --date {DA
 
 #### 派发逻辑
 ```
-# 先 resolve 所有文件路径（避免文件名含特殊字符导致 shell 解析错误）
+# 1. 先 resolve 所有文件路径（避免文件名含特殊字符导致 shell 解析错误）
 for each paper:
     run: python3 -c "import glob; print(glob.glob(paper_path)[0] if glob.glob(paper_path) else '')"
     得到真实路径 → 存入 task.path
+
+# 2. 主进程一次性预提取所有 PDF → /tmp/factor_pdf/（一次性，无子代理内联 subprocess）
+run: rm -rf /tmp/factor_pdf
+run: python scripts/claude_factor_helper.py extract-pdf {全部真实paper路径，空格分隔} --outdir /tmp/factor_pdf
+     → 输出 {"<源路径>": "/tmp/factor_pdf/00_xxx.txt", ...} 映射
+     → 把每个 paper 的 txt 路径存入 task.txt_path；无映射的 paper 跳过
+     （paper 路径含特殊字符时，直接传目录 papers/inbox 代替，映射仍按文件输出）
 
 tasks = flatten(papers + websites + ideas, DL排最后)
 for _ in range(min(5, len(tasks))):
@@ -198,6 +207,14 @@ def calc_factor_series(df, stock):
 
 **性能注意（分钟截面）：** 全量 5435 只股票 × 120 天分钟数据，避免 Python 逐元素循环（`for i in range` + `np.argmin`/`np.sum` 等）。优先用 numpy 向量化、O(n) 单调队列或前缀和。
 
+**minute_cs 专属约束（写错必崩，测试 6~8 分钟/个，务必一次写对）：**
+1. **`cross_section_transform` 必须返回 dict，绝不能返回 pd.Series**。模板会对返回值调用 `.values()`/`.items()`（方法调用），pd.Series 的 `.values` 是 ndarray 属性、不可调用 → `TypeError: 'numpy.ndarray' object is not callable`。两种合法返回：
+   - `{股票代码: 标量}`（如 `{"000001": 0.3}`）
+   - `{股票代码: {"因子名": 值}}`（如 `{"000001": {"AnomalyTimeRatio": 0.3}}`）
+2. **`calc_factor_minute_raw` 只算单日截面需要的每日原始值**（如当日异动分钟占比、当日相关系数），**禁止在 raw 里做跨日纵向标准化**（模板每次只给一天的截面做变换，纵向 mean/std 在 raw 内做既泄露又超重）。标准化统一放 `cross_section_transform` 里做**当日全市场截面 zscore/排名**。
+3. **minute 数据是 MultiIndex[instrument, datetime]**：`df.groupby(level='datetime')` 分组、`df['return'].values` 向量化。禁止对 8 万行分钟逐行 `for`。
+4. 测试 300 只跑通后才 deploy-to-full；若 test-and-export 超时（>300s），优先检查是不是 raw 里混入了逐分钟 Python 循环。
+
 #### 2. 立即跑 test-and-export + deploy-to-full（写完后立刻执行，不停顿）
 类型在 Phase 1 已定义，**显式传 `--type {type_key}`**（确定，不依赖自动检测）。
 ```bash
@@ -273,7 +290,7 @@ python scripts/claude_factor_helper.py mark-done --name <slug>
 - daily → `def calc_factor_series(df, stock) -> pd.Series`（向量化，优先）。可选 `def calc_factor_single_stock(df, trade_date, stock)`（逐日 fallback）
 - minute → `def calc_factors_one_day(df, stock):`
 - cross_section → `def calc_factor_cross_section(all_data, trade_date):`
-- minute_cs → `def calc_factor_minute_raw(df, stock):` + `def cross_section_transform(all_values):`
+- minute_cs → `def calc_factor_minute_raw(df, stock):` + `def cross_section_transform(all_values):`（**cross_section_transform 必须返回 dict `{股票代码: 值}` 或 `{股票代码: {"因子名": 值}}`，绝不返回 pd.Series**）
 - deep_learning → `def train_model(all_data, trade_date):` + `def predict_batch(model, data_dict, trade_date):`（LOOKBACK_DAYS 只决定预测窗口大小；训练用截止日全部历史（walk-forward），模型内部自行决定用多少历史）
 
 ## 编码硬约束

@@ -1,78 +1,14 @@
 [
   {
-    "title": "综合日线因子",
-    "text": "综合日线因子（CompositeDailyFactor），从动量、波动率、换手率和盈利能力四个维度综合评分。使用最近20个交易日的累计收益率作为动量信号，20日收益率标准差作为波动率（取倒数，低波动加分），20日平均换手率相对于过去60日的变化率作为换手率信号，最新ROE作为盈利信号。四个维度分别做zscore标准化后等权相加。日频数据，回溯20天，需要pct_chg、turnover_rate、roe、close列。"
-  },
-  {
-    "title": "日内动量因子",
-    "text": "日内动量因子（IntradayMomentumFactor），基于分钟线数据计算开盘30分钟动量、午盘动量和尾盘动量的加权组合。具体：09:30-10:00的vwap加权收益率作为开盘动量，10:30-11:30的vwap加权收益率作为午盘动量，13:00-14:00的vwap加权收益率作为尾盘动量。最终因子 = 0.3*开盘动量 + 0.4*午盘动量 + 0.3*尾盘动量。分钟频数据，回溯1天，需要close、vwap、volume、return列。"
-  },
-  {
-    "title": "截面质量因子",
-    "text": "截面质量因子（CrossSectionQualityFactor），在每天截面比较各股票的盈利能力（ROE）、毛利率（gross_margin）、营收增速（revenue_yoy）和偿债能力（负债率的倒数debt_to_asset取负号）。四个维度分别做截面zscore标准化后等权相加。日频截面数据，需要roe、gross_margin、revenue_yoy、debt_to_asset、market_cap列。"
-  },
-  {
-    "title": "日内波动择时因子",
-    "text": "日内波动择时因子（IntradayVolatilityTiming），基于分钟数据计算早盘（09:30-10:30）的已实现波动率占全天（09:30-15:00）已实现波动率的比例。使用5分钟收益率计算已实现波动率（标准差），早盘波动率 / 全天波动率。如果该比例大于0.5，说明波动主要集中在早盘，尾盘可能趋于平稳。截面标准化后作为因子值。分钟频数据，回溯5天，需要close、return、volume列。"
-  },
-  {
-    "title": "ML趋势预测因子",
-    "text": "ML趋势预测因子（MLTrendPredictor），一个简单的深度学习因子。使用轻量多层感知机（MLP，基于pytorch）学习历史价量特征与未来收益的关系，输出每日预测得分作为因子值。每只股票每个交易日构建特征向量：过去20日累计收益率（动量）、过去20日收益率标准差（波动率）、过去20日平均换手率相对60日的比值、当日收盘价相对20日均线的偏离度。训练标签为未来5个交易日收益率。采用walk-forward训练：每一年开始时，只用该年之前的历史数据训练一次模型，然后对该年每个交易日输出预测得分。日频数据，回溯20天，需要pct_chg、turnover_rate、close列。"
-  },
-  {
-    "title": "五种类型模板验证（daily/minute/cross_section/minute_cs/deep_learning 各一）",
-    "text": "本 idea 包含五个因子，覆盖日线(daily)、分钟(minute)、日频截面(cross_section)、分钟截面(minute_cs)、深度学习(deep_learning)五种类型，每类一个：\n\n1. 双均线趋势因子（DoubleMAMomentum，daily，日线）：收盘价短期均线 MA10 与长期均线 MA30 的比值减 1，正值表示处于上升趋势、负值表示下跌趋势，数值越大趋势越强。回溯 30 天，需要 close 列。\n\n2. 日内VWAP动量因子（IntradayVwapMomentum，minute，分钟线）：基于分钟数据计算开盘（09:30-10:00）、午盘（10:30-11:30）、尾盘（13:00-14:00）三个时段的 VWAP 加权收益率，因子 = 0.3*开盘动量 + 0.4*午盘动量 + 0.3*尾盘动量。回溯 1 天，需要 close、volume、vwap 列。\n\n3. 截面盈利质量因子（CrossSectionQuality，cross_section，日频截面）：每日对全市场股票在 ROE、毛利率（gross_margin）、营收同比增速（revenue_yoy）三个维度分别做截面 zscore 标准化后等权相加，衡量个股相对全市场的盈利质量。回溯 1 天，需要 roe、gross_margin、revenue_yoy 列。\n\n4. 日内波动分布因子（IntradayVolRatio，minute_cs，分钟截面）：基于分钟数据计算早盘（09:30-10:30）已实现波动率占全天（09:30-15:00）已实现波动率的比例（使用分钟对数收益率标准差），衡量波动在日内是否集中于早盘，最后对该比例做截面标准化。回溯 5 天，需要 close、return 列。\n\n5. ML动量预测因子（MLMomentumPredictor，deep_learning，深度学习）：轻量多层感知机 MLP（基于 pytorch），walk-forward 按自然年训练：每年只用该年之前的历史数据训练一次，特征为过去20日累计收益率（动量）、过去20日收益率标准差（波动率）、20日均换手率相对60日的比值、收盘价相对20日均线偏离度，标签为未来5日收益率，输出每日预测得分作为因子值。回溯 20 天，需要 close、pct_chg、turnover_rate 列。"
-  },
-  {
-    "title": "分钟因子向量化路径验证（calc_factor_series）",
-    "text": "本 idea 用于验证分钟模板的向量化路径（calc_factor_series）。该因子逻辑可拆成\"先算每日值，再跨日 rolling\"，必须用 calc_factor_series 向量化实现（一次接收整只股票数据，返回以日期为索引的 pd.Series），不要只写 calc_factors_one_day。\n\n早盘成交集中度20日累加因子（EarlySessionVolumeRatio20，minute，分钟线）：每日计算早盘首小时（09:30-10:30）成交量占全天（09:30-15:00）成交量的比例，因子 = 过去20个交易日的该比例累加，衡量近期资金在早盘活跃度的累积水平。回溯 20 天，需要 volume 列。"
-  },
-  {
-    "title": "分钟因子非向量化路径验证（calc_factors_one_day）",
-    "text": "本 idea 用于验证分钟模板的非向量化路径（calc_factors_one_day）。该因子逻辑为单日截面类，只需当天的分钟数据、无跨日聚合，必须用 calc_factors_one_day 实现（不要写 calc_factor_series）。\n\n尾盘半小时动量因子（TailBarMomentum，minute，分钟线）：基于单个交易日的分钟数据，计算尾盘最后30分钟（14:30-15:00）的累计对数收益率，衡量尾盘拉升/砸盘强度。因子 = 当日 15:00 收盘价相对 14:30 价格的累计对数收益率。回溯 1 天，需要 close 列。"
-  },
-  {
-    "title": "隔夜收益反转因子",
-    "text": "每日隔夜收益率 = (open - pre_close) / pre_close。截面排名后取反转为因子值，逻辑：隔夜收益率过高（开盘跳空高开）的股票容易日内回调，反之亦然。类型 daily，lookback 1，cols [open, pre_close]。"
-  },
-  {
-    "title": "开盘30分钟成交占比因子",
-    "text": "开盘后30分钟累计成交额占全天成交额的比例。衡量早盘资金活跃度，占比高说明市场在开盘阶段集中交易。类型 minute，lookback 1，cols [volume, close]。"
-  },
-  {
-    "title": "市值调整的流动性因子",
-    "text": "对换手率做市值调整：用 market_cap 对 turnover_rate 做截面回归，取残差。残差为正说明换手率高于市值应有的水平（异常活跃），为负说明低于应有水平。类型 cross_section，lookback 1，cols [turnover_rate, market_cap]。"
-  },
-  {
-    "title": "分钟收益率偏度因子",
-    "text": "每只股票当日分钟收益率的偏度（skewness），衡量分钟收益率分布的不对称性。正偏度说明有较多大阳线分钟，负偏度说明有较多大阴线分钟。截面标准化后作为因子。类型 minute_cs，lookback 1，cols [close]。"
-  },
-  {
-    "title": "GRU量价趋势预测因子",
-    "text": "用GRU神经网络对过去20个交易日的量价数据建模，预测未来5日收益方向。输入特征：close, volume, pct_chg 的20日序列。输出为未来5日收益的预测值（回归任务）。walk-forward训练，每60个交易日重新训练。类型 deep_learning，lookback 20，cols [close, volume, pct_chg]。"
+    "title": null,
+    "text": "MinuteReturnHomogeneity: 分钟收益同向性因子。当日每根分钟K线收益方向与日收益率方向一致的分钟数占比，衡量日内趋势的连贯性。同向占比高表示日内走势流畅（趋势强），占比低表示反复震荡。使用分钟 return 数据，每只股票每日计算一个原始值，再做截面 zscore 标准化。"
   },
   {
     "title": null,
-    "text": "过去5日收益率的简单均值，返回 pd.Series (无 name)。类型 daily，lookback 5，cols [close]"
+    "text": "MinuteVolumeConcentration: 分钟成交量集中度因子（赫芬达尔指数）。将当日每分钟成交量占全天成交量之比的平方和作为集中度指标，值越高表示成交量集中在少数几分钟（大单集中成交），值越低表示成交量均匀分布。使用分钟 volume 数据，每只股票每日计算一个原始值，再做截面 zscore 标准化。"
   },
   {
-    "title": "test_daily_series",
-    "text": "过去5日收益率的简单均值。类型 daily，lookback 5，cols [close]"
-  },
-  {
-    "title": "test_minute_dict",
-    "text": "开盘后60分钟累计成交量占比。类型 minute，lookback 1，cols [volume, close]。返回格式为 dict"
-  },
-  {
-    "title": "test_cs_series",
-    "text": "换手率的市值调整残差。类型 cross_section，lookback 1，cols [turnover_rate, market_cap]。返回格式为 pd.Series"
-  },
-  {
-    "title": "test_minutecs_float",
-    "text": "当日分钟收盘价的变异系数（标准差/均值）。类型 minute_cs，lookback 1，cols [close]。calc_factor_minute_raw 返回 float"
-  },
-  {
-    "title": "test_dl_gpu",
-    "text": "简单的线性回归预测：过去10日收益率预测次日收益方向。类型 deep_learning，lookback 10，cols close"
+    "title": null,
+    "text": "MinuteReturnSerialCorrelation: 分钟收益一阶自相关因子。当日分钟收益率序列的一阶自相关系数（lag-1 autocorrelation），衡量分钟收益的持续性/反转。正自相关表示分钟趋势延续（动量），负自相关表示分钟频繁反转（均值回归）。使用分钟 return 数据，每只股票每日计算一个原始值，再做截面 zscore 标准化。"
   }
 ]
