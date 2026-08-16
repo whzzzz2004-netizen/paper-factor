@@ -7,6 +7,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -59,6 +60,15 @@ def run_factor_subprocess(
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         tmp_code = tmpdir / f"{factor_name}.py"
+
+        # 增量更新优化：分钟因子用独立 chunk 目录，避免重算全部 2000+ 天数据
+        if start_date:
+            code_text = re.sub(
+                r'''_CHUNK_DIR\s*=\s*MINUTE_BY_DATE_DIR\s*/\s*"_minute_chunks"''',
+                '''_CHUNK_DIR = MINUTE_BY_DATE_DIR / ("_minute_chunks_incr" if os.environ.get("FACTOR_INCREMENTAL_START_DATE") else "_minute_chunks")''',
+                code_text,
+            )
+
         tmp_code.write_text(code_text, encoding="utf-8")
 
         env = {k: str(v) for k, v in os.environ.items()}

@@ -25,7 +25,6 @@ def calc_factors_one_day(df, stock):
   - return: 分钟收益率
   - trade_date: 交易日期（flat 格式原始列）
   - volume: 成交量（单位：股）
-  - vwap: 成交量加权均价
 <!-- /MINUTE_COLUMNS -->
 
 - 多天数据用 `df.index.date` 分组

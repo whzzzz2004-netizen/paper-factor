@@ -1172,24 +1172,31 @@ def cmd_scan_pending(args):
             ideas = json.loads(ideas_json.read_text())
             for i, idea in enumerate(ideas):
                 slug = f"idea__{i}"
+                idea_text = (idea.get("text") or idea.get("idea", ""))
+                # 从 idea 文本中提取名称（冒号前部分）
+                idea_name = idea_text.split(":")[0].split("：")[0].strip() if idea_text else slug
                 # Check if in processed_reports.json (mark-done skip)
-                if slug in processed_set:
-                    result["fully_processed_ideas"].append(idea.get("title", slug)[:60])
+                # mark-done 存的是 idea 名称（如"MinuteReturnHomogeneity"），非 slug
+                if slug in processed_set or idea_name in processed_set:
+                    result["fully_processed_ideas"].append(idea_name[:60])
                     continue
+                # 尝试用 idea 名称和 slug 两种路径查找报告目录
                 report_dir = LITERATURE_REPORTS_DIR / slug
-                if report_dir.exists():
+                report_dir_by_name = LITERATURE_REPORTS_DIR / idea_name if idea_name else None
+                if report_dir.exists() or (report_dir_by_name and report_dir_by_name.exists()):
+                    _rd = report_dir if report_dir.exists() else report_dir_by_name
                     # 检查子目录是否有 .code.py
-                    _has_code = any(f.endswith(".code.py") for f in os.listdir(report_dir))
+                    _has_code = any(f.endswith(".code.py") for f in os.listdir(_rd))
                     if not _has_code:
-                        for _sub in report_dir.iterdir():
+                        for _sub in _rd.iterdir():
                             if _sub.is_dir() and any(f.endswith(".code.py") for f in os.listdir(_sub)):
                                 _has_code = True
                                 break
                     if _has_code:
-                        result["fully_processed_ideas"].append(idea.get("title", slug)[:60])
+                        result["fully_processed_ideas"].append(idea_name[:60])
                         continue
                 else:
-                    result["ideas"].append({"index": i, "slug": slug, "title": idea.get("title"), "text": (idea.get("text") or idea.get("idea", ""))[:200], "status": "pending"})
+                    result["ideas"].append({"index": i, "slug": slug, "title": idea.get("title"), "text": idea_text[:200], "status": "pending"})
         except Exception:
             pass
 
@@ -1257,8 +1264,10 @@ def _check_report_status(pdf_path, processed_set, extracted_dir, lit_dir) -> tup
         return s
 
     pdf_name_norm = _norm(pdf_name)
+    pdf_stem_norm = _norm(report_title)
     for processed_name in processed_set:
-        if _norm(processed_name) == pdf_name_norm:
+        pn = _norm(processed_name)
+        if pn == pdf_name_norm or pn == pdf_stem_norm:
             return "done", {}
 
     # Check extracted report cache

@@ -677,12 +677,12 @@ if __name__ == '__main__':
 
     _MANIFEST = _CHUNK_DIR / "_manifest.json"
     _STOCKS_KEY = sorted(STOCK_LIST)
-    _chunks_ok = all(cf.exists() for cf in _CHUNK_FILES) and _MANIFEST.exists() and json.load(open(_MANIFEST)).get("stocks") == _STOCKS_KEY
+    _chunks_ok = all(cf.exists() for cf in _CHUNK_FILES) and _MANIFEST.exists() and json.load(open(_MANIFEST)).get("stocks") == _STOCKS_KEY and json.load(open(_MANIFEST)).get("chunk_size") == _CHUNK_SIZE
     if _chunks_ok:
         print(f"共享chunk已存在且股票列表匹配: {{_CHUNK_DIR}}, 跳过预分片 ({{time.time()-_t_split:.0f}}s)", flush=True)
     else:
         if all(cf.exists() for cf in _CHUNK_FILES):
-            print(f"⚠️ 股票列表变化或 manifest 缺失，重新预分片 ({{_CHUNK_DIR}})", flush=True)
+            print(f"⚠️ 股票列表变化或 chunk_size 不匹配，重新预分片 ({{_CHUNK_DIR}})", flush=True)
         _writers = [None] * len(_CHUNKS_LIST)
         _stock2ci = {{}}
         for _ci, _cstocks in enumerate(_CHUNKS_LIST):

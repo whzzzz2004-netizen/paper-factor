@@ -174,6 +174,26 @@
         "description": "成交额",
         "source": "dailyData.parquet",
         "deprecated": true
+      },
+      "growth": {
+        "description": "growth",
+        "source": "新建文件导入"
+      },
+      "momentum": {
+        "description": "momentum",
+        "source": "新建文件导入"
+      },
+      "quality": {
+        "description": "quality",
+        "source": "新建文件导入"
+      },
+      "value": {
+        "description": "value",
+        "source": "新建文件导入"
+      },
+      "volatility": {
+        "description": "volatility",
+        "source": "新建文件导入"
       }
     }
   },
@@ -208,10 +228,6 @@
       },
       "return": {
         "description": "分钟收益率",
-        "source": "remote_minute"
-      },
-      "vwap": {
-        "description": "成交量加权均价",
         "source": "remote_minute"
       },
       "trade_date": {

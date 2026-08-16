@@ -88,7 +88,7 @@ python3 scripts/import_new_data.py --update-prompts-only
     dailyData.parquet  # 全量日线单文件（9 列：open, close, high, low, factor, volume, EMA5, EMA10, EMA20）
   分钟线/
     20260806.parquet   # per-date 分钟数据（扁平格式：symbol, trade_date, open, high, low, close, volume, return, factor）
-    20260807.parquet   # 也支持 MultiIndex[instrument, datetime] 格式（含 vwap 列）
+    20260807.parquet   # 同上（仅扁平格式，无 vwap）
   非行情/              # 截面因子（CSV 每行对应这里一个 pqt）
     momentum.parquet   # 例如：CSV 里有 momentum.parquet,momentum,动量因子...
   基本面因子说明.csv    # 字段含义清单：每行 = 非行情/ 下一个 pqt 文件

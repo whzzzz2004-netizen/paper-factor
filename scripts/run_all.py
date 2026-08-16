@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-一键全量流水线：全量/增量补算因子。
+一键全量流水线：全量/增量补算因子（串行）。
 
 流程:
   1. 扫描全量因子产出目录 下所有因子:
@@ -9,22 +9,19 @@
      └─ 已最新 → 跳过
 
 用法:
-  python scripts/run_all.py                        # 扫描所有因子
-  python scripts/run_all.py 20260726               # 只扫描指定目录
+  python scripts/run_all.py                        # 扫描最近日期目录
+  python scripts/run_all.py 2026-08-15             # 指定日期目录
   python scripts/run_all.py --report 研报名        # 只跑指定研报
   python scripts/run_all.py --force                # 强制重跑（无视状态）
-  python scripts/run_all.py --workers 3            # 并行数
   python scripts/run_all.py --dry-run              # 只打印计划，不执行
 """
 
 import argparse
 import os
 import shutil
-import subprocess
 import sys
 import time
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
@@ -162,7 +159,7 @@ def find_pending_factors(report_filter: str | None, force: bool, base_dir: Path 
     return factors
 
 
-# ── 执行 ──
+# ── 执行（仅串行） ──
 
 def run_full_pipeline_for_factor(item: dict) -> dict:
     """跑单个因子的全量流水线（调用 factor_full_pipeline）"""
@@ -224,7 +221,7 @@ def run_incremental_for_factor(item: dict) -> dict:
     # 2. 判断因子类型，确定数据目录
     code_text = code_path.read_text(encoding="utf-8")
     factor_type = detect_factor_type(code_text)
-    data_dir = (PROJECT_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量") if factor_type == "minute" else FULL_DATA_DIR
+    data_dir = (PROJECT_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量") if factor_type in ("minute", "minute_cross_section") else FULL_DATA_DIR
 
     # 3. 执行子进程
     start_date_str = last_date.strftime("%Y-%m-%d")
@@ -271,22 +268,21 @@ def run_incremental_for_factor(item: dict) -> dict:
     return result
 
 
-# ── 主流程 ──
+# ── 主流程（仅串行） ──
 
 def main():
-    parser = argparse.ArgumentParser(description="一键全量流水线：全量/增量补算因子（默认本地模式）")
-    parser.add_argument("subdir", nargs="?", default=None, help="日期子目录 (如 20260726)，默认当天")
+    parser = argparse.ArgumentParser(description="一键全量流水线：全量/增量补算因子（串行，默认最近日期目录）")
+    parser.add_argument("subdir", nargs="?", default=None, help="日期子目录 (如 2026-08-15)，默认最近日期")
     parser.add_argument("--report", help="指定研报名 (模糊匹配)", default=None)
     parser.add_argument("--force", action="store_true", help="强制重跑（无视状态）")
-    parser.add_argument("--workers", type=int, default=1, help="并行 worker 数 (默认: 1)")
     parser.add_argument("--dry-run", action="store_true", help="仅列出待跑因子，不执行")
     args = parser.parse_args()
 
     t_start = time.time()
 
-    print("📌 本地模式")
+    print("📌 本地模式（串行）")
 
-    # ── Step 1: 确定目标目录（指定子目录 或 临时目录 → 完成时重命名） ──
+    # ── Step 1: 确定目标目录 ──
     if args.subdir:
         date_str = args.subdir
         target_base = OUTPUT_BASE / date_str
@@ -294,15 +290,27 @@ def main():
             scan_base = target_base
             print(f"📅 扫描子目录: {date_str}")
         else:
-            scan_base = OUTPUT_BASE
-            print(f"⚠️ 子目录不存在: {target_base}，回退到根目录")
+            print(f"❌ 子目录不存在: {target_base}")
+            return 1
         tmp_base = None
     else:
-        # 自动模式：扫描根目录，写入临时目录，完成时重命名为完成日期
-        scan_base = OUTPUT_BASE
-        tmp_name = f"_tmp_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}"
-        tmp_base = OUTPUT_BASE / tmp_name
-        print(f"📅 临时目录: {tmp_name}")
+        # 未指定日期 → 找最近的日期目录
+        date_dirs = []
+        for d in OUTPUT_BASE.iterdir():
+            if d.is_dir():
+                try:
+                    dt = datetime.strptime(d.name, '%Y-%m-%d')
+                    date_dirs.append((dt, d))
+                except ValueError:
+                    continue
+        if not date_dirs:
+            print("❌ 未找到日期目录")
+            return 1
+        date_dirs.sort(key=lambda x: x[0], reverse=True)
+        scan_base = date_dirs[0][1]
+        date_str = scan_base.name
+        tmp_base = None
+        print(f"📅 扫描最近日期目录: {date_str}")
 
     # ── Step 2: 扫描因子 ──
     pending = find_pending_factors(args.report, args.force, base_dir=scan_base)
@@ -331,77 +339,22 @@ def main():
                       f"({p['last_date'].strftime('%Y-%m-%d')} → {p['latest_date'].strftime('%Y-%m-%d')})")
         return 0
 
-    # 临时目录模式：创建临时目录并重定向输出路径
-    if tmp_base is not None:
-        tmp_base.mkdir(parents=True, exist_ok=True)
-        for item in pending_list:
-            report = item["report"]
-            factor = item["factor"]
-            new_output = tmp_base / report / factor
-            new_output.mkdir(parents=True, exist_ok=True)
-            # 增量因子：复制现有 parquet 到临时目录作为起点
-            if item["status"] == "stale":
-                src = item["parquet_path"]
-                if src.exists():
-                    shutil.copy2(src, new_output / f"{factor}.parquet")
-            item["output_dir"] = new_output
-            item["parquet_path"] = new_output / f"{factor}.parquet"
-            item["meta_path"] = new_output / f"{factor}.meta.json"
-
-    # ── Step 3: 执行 ──
+    # ── Step 3: 串行执行 ──
     success_count = 0
     fail_count = 0
     skipped_count = 0
 
-    if args.workers > 1 and len(pending_list) > 1:
-        # 并行模式
-        with ThreadPoolExecutor(max_workers=args.workers) as pool:
-            fut_map = {}
-            for item in pending_list:
-                if item["status"] == "pending":
-                    fut = pool.submit(run_full_pipeline_for_factor, item)
-                else:
-                    fut = pool.submit(run_incremental_for_factor, item)
-                fut_map[fut] = item
-
-            for fut in as_completed(fut_map):
-                r = fut.result()
-                if r["status"] == "success":
-                    success_count += 1
-                elif r["status"] == "skipped":
-                    skipped_count += 1
-                else:
-                    fail_count += 1
-    else:
-        # 串行模式
-        for item in pending_list:
-            if item["status"] == "pending":
-                r = run_full_pipeline_for_factor(item)
-            else:
-                r = run_incremental_for_factor(item)
-            if r["status"] == "success":
-                success_count += 1
-            elif r["status"] == "skipped":
-                skipped_count += 1
-            else:
-                fail_count += 1
-
-    # ── 重命名临时目录为完成日期 ──
-    if tmp_base is not None:
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        final_base = OUTPUT_BASE / date_str
-        if final_base.exists():
-            print(f"📦 合并到已有目录: {date_str}")
-            for item in tmp_base.rglob('*'):
-                if item.is_file():
-                    rel = item.relative_to(tmp_base)
-                    dst = final_base / rel
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(item), str(dst))
-            shutil.rmtree(tmp_base)
+    for item in pending_list:
+        if item["status"] == "pending":
+            r = run_full_pipeline_for_factor(item)
         else:
-            tmp_base.rename(final_base)
-            print(f"📅 重命名为完成日期: {date_str}")
+            r = run_incremental_for_factor(item)
+        if r["status"] == "success":
+            success_count += 1
+        elif r["status"] == "skipped":
+            skipped_count += 1
+        else:
+            fail_count += 1
 
     # ── 汇总 ──
     elapsed = time.time() - t_start

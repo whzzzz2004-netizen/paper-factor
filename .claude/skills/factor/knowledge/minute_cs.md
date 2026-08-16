@@ -39,7 +39,6 @@ def cross_section_transform(all_values):
   - return: 分钟收益率
   - trade_date: 交易日期（flat 格式原始列）
   - volume: 成交量（单位：股）
-  - vwap: 成交量加权均价
 <!-- /MINUTE_COLUMNS -->
 
 ## 特殊约束

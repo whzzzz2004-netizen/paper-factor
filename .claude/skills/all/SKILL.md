@@ -36,7 +36,7 @@ python3 scripts/run_all.py --dry-run
 ## 执行
 
 ```bash
-python3 scripts/run_all.py
+python3 scripts/run_all.py {args}
 ```
 
 如需指定参数，直接传入：

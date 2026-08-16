@@ -21,6 +21,7 @@
 import argparse
 import json
 import os
+import time
 import re
 import shutil
 import sys
@@ -293,7 +294,8 @@ def _detect_file_type(path: Path, hint: Optional[str], columns: list) -> str:
             date_only_datetime = (len(date_like) == 1 and date_like[0] == "datetime") or len(date_like) == 0
             if date_only_datetime:
                 non_std = [c for c in columns if c not in SYMBOL_COL_CANDIDATES
-                           and c not in DATE_COL_CANDIDATES]
+                           and c not in DATE_COL_CANDIDATES
+                           and c not in PANDAS_INTERNAL_COLS]
                 numeric_cols = [c for c in non_std if re.match(r"^\d+$", str(c))]
                 if numeric_cols and len(numeric_cols) == len(non_std):
                     return "cross_sectional_factor"
@@ -573,6 +575,24 @@ def _import_daily_data_stream(info: FileInfo, new_target: dict, all_dates: set, 
     else:
         pdf.index.name = "datetime"
 
+    # 增量截断：只处理新日期（在提取 codes 之前，避免索引不一致）
+    existing_files = list(FULL_MARKET_DAILY.glob("*.parquet"))
+    if existing_files:
+        try:
+            first = pd.read_parquet(existing_files[0], columns=[])
+            if len(first) > 0:
+                latest = first.index[-1]
+                pdf_before = len(pdf)
+                pdf = pdf[pdf.index > latest]
+                skipped = pdf_before - len(pdf)
+                if skipped > 0:
+                    print(f"  dailyData: {len(pdf)+skipped} 行, 增量截断 {skipped} 行 → {len(pdf)} 行新数据", flush=True)
+                if len(pdf) == 0:
+                    print(f"  ⏭️ 无新数据，跳过", flush=True)
+                    return 0, 0
+        except Exception:
+            pass
+
     # 提取股票代码（在 drop symbol 之前）
     symbol_col = next((c for c in SYMBOL_COL_CANDIDATES if c in pdf.columns), None)
     if symbol_col:
@@ -626,14 +646,21 @@ def _import_minute_file(info: FileInfo, full_dates: set, full_stocks: set) -> tu
 
     df = info.df.copy()
 
-    # 扁平格式 → MultiIndex 转换
+    # 扁平格式 → MultiIndex 转换（优化：向量化代替 .apply）
     if "symbol" in df.columns:
-        df["instrument"] = df["symbol"].apply(_normalize_code)
+        # symbol → instrument（向量化）
+        if df["symbol"].dtype.kind in "iu":  # 已经是整数
+            df["instrument"] = df["symbol"].astype(str)
+        else:
+            df["instrument"] = df["symbol"].apply(_normalize_code)
         redundant = [c for c in ["symbol", "date"] if c in df.columns]
         df = df.drop(columns=redundant)
-        # 解析 trade_date → datetime
+        # 解析 trade_date → datetime（向量化）
         if "trade_date" in df.columns:
-            df["datetime"] = _parse_dates(df["trade_date"])
+            if df["trade_date"].dtype.kind == "M":  # 已经是 datetime
+                df["datetime"] = df["trade_date"]
+            else:
+                df["datetime"] = _parse_dates(df["trade_date"])
             df = df.drop(columns=["trade_date"])
         # 只保留 MINUTE_EXPECTED_COLS 中存在的列
         keep = [c for c in MINUTE_EXPECTED_COLS if c in df.columns]
@@ -661,11 +688,14 @@ def _import_minute_file(info: FileInfo, full_dates: set, full_stocks: set) -> tu
 
 
 def _update_minute_meta(full_dates: set, full_stocks: set):
-    """更新分钟数据 trade_dates.json 和 stock_list.json。"""
+    """更新分钟数据 trade_dates.json 和 stock_list.json（含 minute_by_date 子目录）。"""
     old_dates = set(_load_json_list(FULL_MINUTE_TRADE_DATES))
     if sorted(full_dates) != sorted(old_dates):
         _write_json_list(FULL_MINUTE_TRADE_DATES, sorted(full_dates))
         print(f"  📅 分钟 trade_dates.json: {len(old_dates)} → {len(full_dates)} 天", flush=True)
+        # 同步更新 minute_by_date 子目录的 trade_dates.json
+        bd_td = FULL_MINUTE_BY_DATE / "trade_dates.json"
+        _write_json_list(bd_td, sorted(full_dates))
 
     old_stocks = set(_load_json_list(FULL_MINUTE_STOCK_LIST))
     if sorted(full_stocks) != sorted(old_stocks):
@@ -687,18 +717,52 @@ def _import_cross_sectional_factors_batch(infos: list, descs: dict) -> list:
         return []
 
     print(f"\n=== 批量导入 {len(infos)} 个截面因子 ===", flush=True)
+
+    # 增量截断：找到已有数据的最新日期，只处理新日期
+    existing_files = list(FULL_FUND_DAILY.glob("*.parquet"))
+    latest_date = None
+    if existing_files:
+        try:
+            # 读第一只股票获取已有日期范围
+            first = pd.read_parquet(existing_files[0])
+            if len(first) > 0:
+                latest_date = first.index[-1]
+                print(f"  已有数据最新日期: {latest_date.date()}, 只处理新日期", flush=True)
+        except Exception:
+            pass
+
     all_factors = []
     for info in infos:
         fn = info.factor_name
         desc = descs.get(fn, "基本面因子说明.csv 未提供说明")
-        long_df = info.df.stack().to_frame(name=fn)
+
+        # 截断到新日期
+        df = info.df
+        if latest_date is not None:
+            df = df[df.index > latest_date]
+            if len(df) == 0:
+                print(f"  [{fn}]: 无新数据，跳过", flush=True)
+                continue
+
+        long_df = df.stack().to_frame(name=fn)
         long_df.index.names = ["datetime", "stock"]
         all_factors.append(long_df)
-        print(f"  [{fn}]: {desc} — {len(info.df.columns)} 只 × {len(info.df.index)} 天", flush=True)
+        print(f"  [{fn}]: {desc} — {len(info.df.columns)} 只 × {len(df.index)} 天（新增）", flush=True)
+
+    if not all_factors:
+        print("  所有截面因子均无新数据，跳过", flush=True)
+        return []
 
     # 所有因子按 (date, stock) 对齐合并
     combined = pd.concat(all_factors, axis=1)
     del all_factors  # 释放中间内存
+
+    # 确保 datetime 索引是 Timestamp 类型（截面因子 parquet 的索引可能是字符串）
+    if combined.index.get_level_values("datetime").dtype == object:
+        level_idx = combined.index.names.index("datetime")
+        unique_dates = combined.index.levels[level_idx]
+        new_dates = pd.to_datetime(unique_dates)
+        combined.index = combined.index.set_levels(new_dates, level="datetime")
 
     # 按股票分组，并行 merge
     items = []
@@ -925,8 +989,14 @@ def do_import(dry_run: bool = False):
     minute_stocks = set(_load_json_list(FULL_MINUTE_STOCK_LIST))
     has_minute_data = False
 
-    # 收集截面因子，稍后批量处理
+    # 收集截面因子和分钟文件，稍后批量处理
     factor_infos = []
+    minute_infos = []
+
+    # 日线 mtime 检查
+    DAILY_MTIME_FILE = PROJECT_ROOT / WH / ".last_daily_mtime"
+    daily_mtime = None
+    daily_data_path = None
 
     for info in inspections:
         rel = info.path.relative_to(PROJECT_ROOT)
@@ -940,11 +1010,9 @@ def do_import(dry_run: bool = False):
             _import_barra_model(info)
             continue
 
-        # ── 分钟 per-date ──
+        # ── 分钟 per-date：收集，稍后批量并行处理 ──
         if info.file_type == "minute_by_date":
-            nd, ns = _import_minute_file(info, minute_dates, minute_stocks)
-            has_minute_data = True
-            n_stock_updated += ns
+            minute_infos.append(info)
             continue
 
         # ── 截面因子：收集，稍后批量处理 ──
@@ -952,15 +1020,14 @@ def do_import(dry_run: bool = False):
             factor_infos.append(info)
             continue
 
-        # ── 标准 / dailyData 日线数据 ──
-        for c in info.new_cols:
-            new_target[c] = info.new_target
-        cols_encountered.update(info.market_cols + info.fund_cols + info.new_cols)
-
+        # ── dailyData 日线数据（跳过未变更文件）──
         if info.file_type == "daily_data":
-            # dailyData.parquet 太大（380MB+），逐股票流式读取防 OOM
-            nd, ns = _import_daily_data_stream(info, new_target, all_dates, all_stocks)
-            n_stock_updated += ns
+            current_mtime = info.path.stat().st_mtime
+            if DAILY_MTIME_FILE.exists() and float(DAILY_MTIME_FILE.read_text()) == current_mtime:
+                print("  ⏭️ 跳过（文件未变更）", flush=True)
+                continue
+            daily_data_path = info
+            daily_mtime = current_mtime
             continue
 
         mcols = info.market_cols + [c for c in info.new_cols if info.new_target == "market"]
@@ -989,6 +1056,26 @@ def do_import(dry_run: bool = False):
         n_merge = n_m + n_f
         print(f"  合并 {len(info.stocks)} 只股票 / {n_merge} 次写入（并行）", flush=True)
         n_stock_updated += len(info.stocks)
+
+    # ── 批量并行处理分钟文件 ──
+    if minute_infos:
+        print(f"\n=== 批量导入 {len(minute_infos)} 个分钟文件（并行） ===", flush=True)
+        t0 = time.time()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            fs = {pool.submit(_import_minute_file, info, minute_dates, minute_stocks): info for info in minute_infos}
+            for f in as_completed(fs):
+                nd, ns = f.result()
+                has_minute_data = True
+                n_stock_updated += ns
+        print(f"  分钟批量完成: {len(minute_infos)} 个文件, {time.time()-t0:.0f}s", flush=True)
+
+    # ── dailyData 日线数据（如果文件有变更）──
+    if daily_data_path:
+        t0 = time.time()
+        nd, ns = _import_daily_data_stream(daily_data_path, new_target, all_dates, all_stocks)
+        n_stock_updated += ns
+        DAILY_MTIME_FILE.write_text(str(daily_mtime))
+        print(f"  dailyData 完成: {time.time()-t0:.0f}s", flush=True)
 
     # ── 批量处理所有截面因子（一次性合并，避免逐因子读写） ──
     if factor_infos:
