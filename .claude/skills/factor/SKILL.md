@@ -15,6 +15,8 @@
 4. **禁止合成因子**
 5. **唯一跳过场景**：所需数据完全不可用（如专有数据库API）。择时/选基/宏观/债券不跳过
 6. `source_excerpt` 从原文直接复制
+7. **需要市场数据的 per-stock 分钟因子用 minute 类型，不用 minute_cs**：如果因子需求是逐股票计算但需要全市场收益率（如跳跃Beta、连续Beta），用 `minute` 模板 + 模块级加载 `market_minute_return.parquet`。`minute_cs` 只用于真正需要截面变换的因子（如当日全市场排名/标准化）。
+8. **minute 模板内 `df.index` 是 DatetimeIndex（非 MultiIndex）**：`calc_factors_one_day(df, stock)` 收到的 `df.index` 是模板转换后的 `DatetimeIndex`，不要调用 `get_level_values("datetime")`。直接用 `df.index` 即可。
 
 ## 两阶段工作流
 
@@ -42,6 +44,16 @@ python3 -c "import json; sl=json.load(open('数据仓库/行情数据/日线/测
 python3 -c "import json; sl=json.load(open('数据仓库/行情数据/分钟线/测试/stock_data/stock_list.json')); td=json.load(open('数据仓库/行情数据/分钟线/测试/stock_data/trade_dates.json')); print(f'分钟测试: {len(sl)}只×{len(td)}天')"
 ```
 如果日线不是 300只×300天，或分钟不是 300只×300天，说明测试数据有问题，**先修复数据再继续**。
+
+**如果待处理因子需要全市场分钟收益率（如跳跃Beta、连续Beta），先确保市场代理已预计算：**
+```bash
+# 检查文件是否存在
+ls 数据仓库/行情数据/分钟线/测试/stock_data/minute_by_date/market_minute_return.parquet
+ls 数据仓库/行情数据/分钟线/全量/stock_data/minute_by_date/market_minute_return.parquet
+# 如果不存在，运行预计算脚本
+python scripts/precompute_market_proxy.py --data-dir "数据仓库/行情数据/分钟线/测试"
+python scripts/precompute_market_proxy.py --data-dir "数据仓库/行情数据/分钟线/全量"
+```
 
 ---
 
@@ -82,6 +94,11 @@ prompt = """
 - description: 中文
 - formulation: 完整数学表达式
 - type: daily/minute/cross_section/minute_cs/deep_learning
+  **类型选择规则**：
+  - 需要全市场截面标准化/排名的 → `cross_section` 或 `minute_cs`
+  - 逐股票计算、需要全市场收益率作为输入参数的（如跳跃Beta、市场Beta）→ `minute`（不是 `minute_cs`！`minute_cs` 用于真正需要截面变换的因子）
+  - 需要多个股票数据作为输入（如行业平均、市值分组）→ `cross_section`
+  - 其他 per-stock 计算 → `daily` 或 `minute` 根据数据频率
 - lookback: 天数 (1月≈20, 1季≈60, 6月≈120, 1年≈250)。注意：minute/minute_cs 类型最大 120（约 6 个月），即使论文用 1 年也要截断
 - cols: 列名列表
 - source_excerpt: 原文复制
@@ -205,6 +222,23 @@ def calc_factor_series(df, stock):
 
 **判断原则：** 如果因子逻辑可以拆成"先算每日值，再跨日 rolling" → 用 `calc_factor_series`。如果因子逻辑依赖滑动窗口内的全量数据计算 → 用 `calc_factors_one_day`。不确定时两种都写，模板自动优先走向量化。
 
+**市场代理模式（需要全市场分钟收益率的 per-stock 因子）：**
+如果因子需要全市场收益率作为输入（如跳跃Beta、连续Beta），在模块级加载预计算的市场代理：
+```python
+# 模块级：和 STOCK_LIST、INDUSTRY_DICT 一样
+MARKET_RETURN = pd.read_parquet(
+    MINUTE_BY_DATE_DIR / "market_minute_return.parquet"
+)
+MARKET_RETURN = MARKET_RETURN.groupby(level=0).first()  # 去重
+
+def calc_factors_one_day(df, stock):
+    # df.index 是 DatetimeIndex（模板已转换），直接用
+    dt_idx = df.index
+    market_ret = MARKET_RETURN.reindex(dt_idx)["market_return"].values
+    # ... 后续计算
+```
+注意：`calc_factors_one_day` 收到的 `df.index` 是 `DatetimeIndex`，不是 `MultiIndex`。**不要调用 `get_level_values("datetime")`**，直接用 `df.index` 即可。
+
 **性能注意（分钟截面）：** 全量 5435 只股票 × 120 天分钟数据，避免 Python 逐元素循环（`for i in range` + `np.argmin`/`np.sum` 等）。优先用 numpy 向量化、O(n) 单调队列或前缀和。
 
 **minute_cs 专属约束（写错必崩，测试 6~8 分钟/个，务必一次写对）：**
@@ -283,6 +317,16 @@ python scripts/claude_factor_helper.py mark-done --name <slug>
 ```
 
 **Step 3 完成后即结束，不执行任何额外计算步骤。**
+
+### 并行全量计算（自动重扫）
+
+如果想在 `/factor` 生成因子的同时让另一个 dialog 自动跑全量：
+
+```bash
+/all 2026-08-16
+```
+
+`/all` 处理完所有待处理因子后会自动重扫目录，如果 `/factor` 在此期间 deploy 了新因子，继续处理；队列清空后自动退出。两边互不打断。
 
 ---
 

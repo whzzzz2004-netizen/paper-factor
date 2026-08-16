@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """
-一键全量流水线：全量/增量补算因子（串行）。
+一键全量流水线：全量/增量补算因子（串行，自动重扫直到队列清空）。
 
 流程:
   1. 扫描全量因子产出目录 下所有因子:
      ├─ 无 .parquet → 全量计算
      ├─ 有 .parquet 但日期落后 → 增量补算（只算新日期，merge 回全量 parquet）
      └─ 已最新 → 跳过
+  2. 处理完所有待处理因子后，自动重扫目录
+  3. 如果 /factor 在此期间 deploy 了新因子，继续处理
+  4. 队列清空后自动退出
+
+和 /factor 并行使用：
+  ┌─ dialog 1: 反复跑 /factor 生成因子
+  └─ dialog 2: /all 2026-08-16  → 自动全量，队列清空后退出
 
 用法:
   python scripts/run_all.py                        # 扫描最近日期目录
@@ -268,10 +275,10 @@ def run_incremental_for_factor(item: dict) -> dict:
     return result
 
 
-# ── 主流程（仅串行） ──
+# ── 主流程（串行，自动重扫直到队列清空） ──
 
 def main():
-    parser = argparse.ArgumentParser(description="一键全量流水线：全量/增量补算因子（串行，默认最近日期目录）")
+    parser = argparse.ArgumentParser(description="一键全量流水线：全量/增量补算因子（串行，自动重扫直到队列清空）")
     parser.add_argument("subdir", nargs="?", default=None, help="日期子目录 (如 2026-08-15)，默认最近日期")
     parser.add_argument("--report", help="指定研报名 (模糊匹配)", default=None)
     parser.add_argument("--force", action="store_true", help="强制重跑（无视状态）")
@@ -280,7 +287,7 @@ def main():
 
     t_start = time.time()
 
-    print("📌 本地模式（串行）")
+    print("📌 本地模式（串行，自动重扫）")
 
     # ── Step 1: 确定目标目录 ──
     if args.subdir:
@@ -292,7 +299,6 @@ def main():
         else:
             print(f"❌ 子目录不存在: {target_base}")
             return 1
-        tmp_base = None
     else:
         # 未指定日期 → 找最近的日期目录
         date_dirs = []
@@ -309,60 +315,73 @@ def main():
         date_dirs.sort(key=lambda x: x[0], reverse=True)
         scan_base = date_dirs[0][1]
         date_str = scan_base.name
-        tmp_base = None
         print(f"📅 扫描最近日期目录: {date_str}")
 
-    # ── Step 2: 扫描因子 ──
-    pending = find_pending_factors(args.report, args.force, base_dir=scan_base)
+    # ── Step 2-3: 循环：扫描 → 处理 → 重扫，直到队列清空 ──
+    round_num = 0
+    total_success = 0
+    total_fail = 0
+    total_skip = 0
 
-    if not pending:
-        print("\n✅ 无待处理因子")
-        return 0
+    while True:
+        round_num += 1
+        if round_num > 1:
+            print(f"\n{'='*60}")
+            print(f"🔄 第 {round_num} 轮重扫：检查是否有新因子…")
+            print(f"{'='*60}")
 
-    # 分类统计
-    pending_list = [p for p in pending if p["status"] in ("pending", "stale")]
-    current_list = [p for p in pending if p["status"] == "current"]
-    pending_count = sum(1 for p in pending if p["status"] == "pending")
-    stale_count = sum(1 for p in pending if p["status"] == "stale")
+        pending = find_pending_factors(args.report, args.force, base_dir=scan_base)
+        pending_list = [p for p in pending if p["status"] in ("pending", "stale")]
 
-    print(f"\n📊 共 {len(pending_list)} 个待处理因子（{pending_count} 全量 + {stale_count} 增量）")
-    if current_list:
-        print(f"   ✅ 已最新跳过: {len(current_list)} 个")
-
-    if args.dry_run:
-        print("\n待处理列表:")
-        for p in pending_list:
-            if p["status"] == "pending":
-                print(f"  [全量] {p['report']}/{p['factor']}")
+        if not pending_list:
+            if round_num == 1:
+                print("\n✅ 无待处理因子")
             else:
-                print(f"  [增量] {p['report']}/{p['factor']} "
-                      f"({p['last_date'].strftime('%Y-%m-%d')} → {p['latest_date'].strftime('%Y-%m-%d')})")
-        return 0
+                print("\n✅ 队列已清空，无新因子")
+            break
 
-    # ── Step 3: 串行执行 ──
-    success_count = 0
-    fail_count = 0
-    skipped_count = 0
+        pending_count = sum(1 for p in pending_list if p["status"] == "pending")
+        stale_count = sum(1 for p in pending_list if p["status"] == "stale")
+        current_list = [p for p in pending if p["status"] == "current"]
 
-    for item in pending_list:
-        if item["status"] == "pending":
-            r = run_full_pipeline_for_factor(item)
-        else:
-            r = run_incremental_for_factor(item)
-        if r["status"] == "success":
-            success_count += 1
-        elif r["status"] == "skipped":
-            skipped_count += 1
-        else:
-            fail_count += 1
+        print(f"\n📊 本轮 {len(pending_list)} 个待处理（{pending_count} 全量 + {stale_count} 增量）")
+        if current_list:
+            print(f"   ✅ 已最新跳过: {len(current_list)} 个")
+
+        if args.dry_run:
+            print("\n待处理列表:")
+            for p in pending_list:
+                tag = "全量" if p["status"] == "pending" else "增量"
+                detail = f"({p['last_date'].strftime('%Y-%m-%d')} → {p['latest_date'].strftime('%Y-%m-%d')})" if p["status"] == "stale" else ""
+                print(f"  [{tag}] {p['report']}/{p['factor']} {detail}")
+            return 0
+
+        # 串行执行本轮因子
+        for item in pending_list:
+            if item["status"] == "pending":
+                r = run_full_pipeline_for_factor(item)
+            else:
+                r = run_incremental_for_factor(item)
+            if r["status"] == "success":
+                total_success += 1
+            elif r["status"] == "skipped":
+                total_skip += 1
+            else:
+                total_fail += 1
+
+        # 本轮完成 → 自动重扫（看 /factor 是否 deploy 了新因子）
+        elapsed = time.time() - t_start
+        print(f"\n{'='*60}")
+        print(f"🏁 第 {round_num} 轮完成 (累计耗时 {elapsed/60:.1f}min)，即将重扫检查新因子…")
+        print(f"{'='*60}")
 
     # ── 汇总 ──
     elapsed = time.time() - t_start
     print(f"\n{'='*60}")
-    print(f"🏁 完成: {success_count} 成功, {fail_count} 失败, {skipped_count} 跳过 (耗时 {elapsed/60:.1f}min)")
+    print(f"🏁 全部完成: {total_success} 成功, {total_fail} 失败, {total_skip} 跳过 (耗时 {elapsed/60:.1f}min)")
     print(f"{'='*60}")
 
-    return 0 if fail_count == 0 else 1
+    return 0 if total_fail == 0 else 1
 
 
 if __name__ == "__main__":

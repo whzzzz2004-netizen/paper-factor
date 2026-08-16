@@ -177,7 +177,7 @@ def run_other_factor(factor_name: str, factor_dir: Path, code_path: Path) -> boo
                 last_pos = 0
                 while proc.poll() is None:
                     time.sleep(0.5)
-                    with open(log_path) as rf:
+                    with open(log_path, encoding="utf-8", errors="replace") as rf:
                         rf.seek(last_pos)
                         for line in rf:
                             print(line, end="", flush=True)
@@ -186,7 +186,7 @@ def run_other_factor(factor_name: str, factor_dir: Path, code_path: Path) -> boo
                                 last_lines.pop(0)
                         last_pos = rf.tell()
             try:
-                with open(log_path) as rf:
+                with open(log_path, encoding="utf-8", errors="replace") as rf:
                     rf.seek(last_pos)
                     for line in rf:
                         print(line, end="", flush=True)
@@ -286,7 +286,7 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
             last_pos = 0
             while proc.poll() is None:
                 time.sleep(0.5)
-                with open(log_path) as rf:
+                with open(log_path, encoding="utf-8", errors="replace") as rf:
                     rf.seek(last_pos)
                     for line in rf:
                         print(line, end="", flush=True)
@@ -296,7 +296,7 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
                     last_pos = rf.tell()
         # 读退出前的剩余输出（cleanup 之前，避免 pkill 干扰）
         try:
-            with open(log_path) as rf:
+            with open(log_path, encoding="utf-8", errors="replace") as rf:
                 rf.seek(last_pos)
                 for line in rf:
                     print(line, end="", flush=True)

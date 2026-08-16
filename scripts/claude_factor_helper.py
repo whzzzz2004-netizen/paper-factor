@@ -600,7 +600,7 @@ def _run_test_in_tmpdir(code_path: Path, timeout: int = 3600, type_key: str = "d
             env["FACTOR_DATA_DIR"] = str(TEST_DATA_DIR)
     else:
         env["FACTOR_DATA_DIR"] = str(TEST_DATA_DIR)
-    env["FACTOR_N_WORKERS"] = "4"
+    env["FACTOR_N_WORKERS"] = os.environ.get("FACTOR_N_WORKERS", "2")
     # PyTorch CPU may reference Intel VTune JIT profiling symbols (iJIT_NotifyEvent etc.)
     # that are missing on some systems; preload a stub to satisfy them.
     _itt_stub = Path(__file__).parent.parent / "lib" / "libittnotify_stub.so"
