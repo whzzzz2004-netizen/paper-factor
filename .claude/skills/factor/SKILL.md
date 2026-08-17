@@ -138,13 +138,32 @@ run: python scripts/claude_factor_helper.py extract-pdf {全部真实paper路径
      （paper 路径含特殊字符时，直接传目录 papers/inbox 代替，映射仍按文件输出）
 
 tasks = flatten(papers + websites + ideas, DL排最后)
-for _ in range(min(5, len(tasks))):
-    dispatch_phase1_worker(task)
+next_idx = 0
+active = {}  # {agent_id: task_info}
+results = []
 
-每当一个 worker 返回:
-    results.append(worker.result)
-    if 还有剩余任务: dispatch_phase1_worker(下一个任务)
-    elif len(results) == len(tasks): 进入 Phase 2
+# 启动前 min(5, len(tasks)) 个
+for _ in range(min(5, len(tasks))):
+    agent_id = dispatch_phase1_worker(tasks[next_idx])
+    active[agent_id] = tasks[next_idx]
+    next_idx += 1
+
+# 每当一个 worker 返回 → 立即派发下一个
+while active:
+    # 对每个 active agent 用 TaskOutput block=false 检查完成状态
+    for agent_id in list(active.keys()):
+        output = TaskOutput(task_id=agent_id, block=false, timeout=0)
+        if output.status == "completed":
+            results.append({agent_id: output.result})
+            del active[agent_id]
+            if next_idx < len(tasks):
+                new_id = dispatch_phase1_worker(tasks[next_idx])
+                active[new_id] = tasks[next_idx]
+                next_idx += 1
+    if active:
+        import time; time.sleep(5)  # 等 5 秒再检查
+
+# 全部完成 → 进入 Phase 2
 ```
 
 ---
@@ -292,16 +311,26 @@ python scripts/claude_factor_helper.py deploy-to-full \
 ```
 all_factors = flatten(所有Phase1结果的factors)
 next_idx = 0
+active = {}  # {agent_id: factor_info}
+results = []
 
 for _ in range(min(5, len(all_factors))):
-    dispatch_phase2_worker(all_factors[next_idx]); next_idx += 1
+    agent_id = dispatch_phase2_worker(all_factors[next_idx]); next_idx += 1
+    active[agent_id] = all_factors[next_idx-1]
 
-每当一个 worker 返回:
-    results.append(worker.result)
-    if next_idx < len(all_factors):
-        dispatch_phase2_worker(all_factors[next_idx]); next_idx += 1
-    elif len(results) == len(all_factors):
-        进入 Step 3
+while active:
+    for agent_id in list(active.keys()):
+        output = TaskOutput(task_id=agent_id, block=false, timeout=0)
+        if output.status == "completed":
+            results.append({agent_id: output.result})
+            del active[agent_id]
+            if next_idx < len(all_factors):
+                new_id = dispatch_phase2_worker(all_factors[next_idx])
+                active[new_id] = all_factors[next_idx]; next_idx += 1
+    if active:
+        import time; time.sleep(5)
+
+# 全部完成 → 进入 Step 3
 ```
 
 ---
