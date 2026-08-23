@@ -23,7 +23,8 @@ import numpy as np
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).parent.parent
-FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(Path(__file__).parent.parent / "数据仓库" / "行情数据" / "日线" / "全量")))
+DATA_ROOT = Path("/mnt/d/paper-factor-data")
+FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量")))
 
 
 def load_full_data_label(data_dir: Path) -> pd.DataFrame:
@@ -37,25 +38,25 @@ def load_full_data_label(data_dir: Path) -> pd.DataFrame:
         df = pd.read_parquet(stock_data_dir / f"{stock}.parquet", columns=["close"])
         ret = df["close"].pct_change(fill_method=None).shift(-1)
         sub = pd.DataFrame({
-            "datetime": df.index,
+            "trade_date": df.index,
             "instrument": stock,
             "ret_next": ret.values
         }).dropna()
         rows.append(sub)
     combined = pd.concat(rows, ignore_index=True)
-    combined["datetime"] = pd.to_datetime(combined["datetime"])
-    return combined.set_index(["datetime", "instrument"]).sort_index()
+    combined["trade_date"] = pd.to_datetime(combined["trade_date"])
+    return combined.set_index(["trade_date", "instrument"]).sort_index()
 
 
 def compute_decile_returns(merged: pd.DataFrame) -> dict:
     """计算十分组收益"""
-    dates = merged.index.get_level_values("datetime").unique().sort_values()
+    dates = merged.index.get_level_values("trade_date").unique().sort_values()
     decile_returns = {f"D{i}": [] for i in range(1, 11)}
     ls_returns = []
 
     for dt in dates:
         try:
-            slab = merged.xs(dt, level="datetime")
+            slab = merged.xs(dt, level="trade_date")
         except (KeyError, ValueError):
             continue
         if isinstance(slab, pd.Series) or len(slab) < 10:
@@ -115,13 +116,13 @@ def to_factor_long_series(factor_df: pd.DataFrame) -> pd.Series:
         instruments = factor_long.index.get_level_values(1).astype(str)
         factor_series = factor_long.copy()
         factor_series.index = pd.MultiIndex.from_arrays(
-            [dates, instruments], names=["datetime", "instrument"]
+            [dates, instruments], names=["trade_date", "instrument"]
         )
         # 防御：同一 (datetime, instrument) 只保留一条
         factor_series = factor_series[~factor_series.index.duplicated(keep="first")]
     elif factor_df.index.name == "Date" and factor_df.columns.name == "Code":
         factor_long = factor_df.stack()
-        factor_long.index.names = ["datetime", "instrument"]
+        factor_long.index.names = ["trade_date", "instrument"]
         factor_series = factor_long
     else:
         factor_series = factor_df.iloc[:, 0]
@@ -143,12 +144,12 @@ def evaluate_factor(factor_df: pd.DataFrame, data_dir: Path, label_df: pd.DataFr
         return {"error": "no_overlapping_data"}
 
     # 每天截面 IC
-    dates = merged.index.get_level_values("datetime").unique().sort_values()
+    dates = merged.index.get_level_values("trade_date").unique().sort_values()
     daily_ic_p, daily_ic_r = [], []
 
     for dt in dates:
         try:
-            slab = merged.xs(dt, level="datetime")
+            slab = merged.xs(dt, level="trade_date")
         except (KeyError, ValueError):
             continue
         if isinstance(slab, pd.Series) or len(slab) < 3:

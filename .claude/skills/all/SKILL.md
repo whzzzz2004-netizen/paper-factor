@@ -29,7 +29,7 @@ python3 scripts/run_all.py --dry-run
 
 ## 说明
 
-- 扫描 `数据仓库/因子产出/全量/{DATE}/` 下所有因子，逐个运行 `run_factor_full.py`
+- 扫描 `/mnt/d/paper-factor-data/数据仓库/因子产出/全量/{DATE}/` 下所有因子，逐个运行 `run_factor_full.py`
 - 含评估（IC/IR）、十分组收益图、Barra 风险分析、LLM 审查
 - 自动检测新交易日做增量更新
 - `FACTOR_LOOKBACK_CAP=99999` 已内置，约等于无上限

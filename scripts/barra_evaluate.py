@@ -24,8 +24,9 @@ import pandas as pd
 import scipy.stats as stats
 
 PROJECT_ROOT = Path(__file__).parent.parent
-FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量")))
-DEFAULT_BARRA_DIR = Path(os.environ.get("PAPER_FACTOR_BARRA_DIR", str(PROJECT_ROOT / "数据仓库" / "barra_model")))
+DATA_ROOT = Path("/mnt/d/paper-factor-data")
+FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量")))
+DEFAULT_BARRA_DIR = Path(os.environ.get("PAPER_FACTOR_BARRA_DIR", str(DATA_ROOT / "数据仓库" / "barra_model")))
 
 # Trading Model 的 20 个风格因子（不含行业哑变量）
 STYLE_FACTORS = [
@@ -58,7 +59,7 @@ def compute_long_short_returns(factor_df: pd.DataFrame, data_dir: Path) -> pd.Se
             continue
         ret = df["close"].pct_change(fill_method=None).shift(-1)
         sub = pd.DataFrame({
-            "datetime": df.index,
+            "trade_date": df.index,
             "instrument": stock,
             "ret_next": ret.values,
         }).dropna()
@@ -66,20 +67,20 @@ def compute_long_short_returns(factor_df: pd.DataFrame, data_dir: Path) -> pd.Se
     if not label_rows:
         return pd.Series(dtype=float)
     label_df = pd.concat(label_rows, ignore_index=True)
-    label_df["datetime"] = pd.to_datetime(label_df["datetime"])
-    label_df = label_df.set_index(["datetime", "instrument"]).sort_index()
+    label_df["trade_date"] = pd.to_datetime(label_df["trade_date"])
+    label_df = label_df.set_index(["trade_date", "instrument"]).sort_index()
 
     # 将因子矩阵转为长表
     # 宽表检测：列数 > 10 说明是 Date × Stock 矩阵（不是单列因子）
     if factor_df.shape[1] > 10:
         factor_long = factor_df.stack()
-        factor_long.index.names = ["datetime", "instrument"]
+        factor_long.index.names = ["trade_date", "instrument"]
         # 日期统一转为 datetime64[ns]，股票代码统一转为 str（parquet 可能存为整数）
         idx = factor_long.index
         factor_long.index = pd.MultiIndex.from_arrays(
-            [pd.to_datetime(idx.get_level_values("datetime")),
+            [pd.to_datetime(idx.get_level_values("trade_date")),
              idx.get_level_values("instrument").astype(str)],
-            names=["datetime", "instrument"],
+            names=["trade_date", "instrument"],
         )
     else:
         factor_long = factor_df.iloc[:, 0]
@@ -91,13 +92,13 @@ def compute_long_short_returns(factor_df: pd.DataFrame, data_dir: Path) -> pd.Se
         return pd.Series(dtype=float)
 
     # 每天分 10 组，算 D1 - D10 的多空收益
-    dates = merged.index.get_level_values("datetime").unique().sort_values()
+    dates = merged.index.get_level_values("trade_date").unique().sort_values()
     ls_returns = []
     ls_dates = []
 
     for dt in dates:
         try:
-            slab = merged.xs(dt, level="datetime")
+            slab = merged.xs(dt, level="trade_date")
         except (KeyError, ValueError):
             continue
         if isinstance(slab, pd.Series) or len(slab) < 10:

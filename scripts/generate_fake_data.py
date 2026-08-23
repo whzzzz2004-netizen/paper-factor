@@ -18,7 +18,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-WH = PROJECT_ROOT / "数据仓库"
+DATA_ROOT = Path("/mnt/d/paper-factor-data")
+WH = DATA_ROOT / "数据仓库"
 
 # 日线元数据（已导入）
 DAILY_TRADE_DATES = WH / "行情数据" / "日线" / "全量" / "stock_data" / "daily" / "trade_dates.json"
@@ -26,10 +27,10 @@ DAILY_STOCK_LIST = WH / "行情数据" / "日线" / "全量" / "stock_data" / "d
 
 # 分钟目录（已有文件）
 MINUTE_BY_DATE = WH / "行情数据" / "分钟线" / "全量" / "stock_data" / "minute_by_date"
-MINUTE_OUT = PROJECT_ROOT / "新建文件" / "分钟线"
+MINUTE_OUT = DATA_ROOT / "新建文件" / "分钟线"
 
 # 非行情输出
-FUND_OUT = PROJECT_ROOT / "新建文件" / "非行情"
+FUND_OUT = DATA_ROOT / "新建文件" / "非行情"
 
 FUNDAMENTAL_COLS = [
     "roe", "roa", "pe_ttm", "pb", "revenue_yoy", "profit_yoy", "gross_margin",
@@ -71,7 +72,7 @@ def _gen_minute_file(date_str: str, stocks: list) -> Path:
     low_p = np.min(prices, axis=0)
 
     # 膨胀到长格式 (每只股票242行)
-    stock_ids = np.repeat(stocks, n_minutes)
+    stock_ids = np.char.zfill(np.repeat(stocks, n_minutes).astype(str), 6)
     minutes = np.tile(np.arange(n_minutes), n_stocks)
 
     # 每只股票的价格序列
@@ -135,11 +136,11 @@ def generate_fundamental_data(dates: list, stocks: list):
     n_dates = len(dates)
     n_stocks = len(stocks)
 
-    # 生成基本面因子说明.csv
+    # 生成新因子描述.csv
     lines = ["因子名,因子描述"]
     for col in FUNDAMENTAL_COLS:
         lines.append(f"{col},{col}因子描述 — 合成数据")
-    (FUND_OUT / "基本面因子说明.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (FUND_OUT / "新因子描述.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     t0 = time.time()
     for i, col in enumerate(FUNDAMENTAL_COLS):

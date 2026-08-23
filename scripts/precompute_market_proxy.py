@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 预计算市场代理：全市场等权平均分钟收益率。
@@ -6,14 +7,15 @@
 保存为 market_minute_return.parquet（与 minute_by_date 同目录）。
 
 用法:
-    python scripts/precompute_market_proxy.py --data-dir "数据仓库/行情数据/分钟线/测试"
-    python scripts/precompute_market_proxy.py --data-dir "数据仓库/行情数据/分钟线/全量"
+    python scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试"
+    python scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量"
 """
 
 import argparse
 import pandas as pd
 import numpy as np
 from pathlib import Path
+DATA_ROOT = Path("/mnt/d/paper-factor-data")
 import time
 import warnings
 warnings.filterwarnings("ignore")

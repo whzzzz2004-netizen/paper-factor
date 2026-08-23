@@ -52,13 +52,13 @@ cd paper-factor
 从已有环境用 rsync 复制：
 
 ```
-rsync -avhP user@dev-machine:/path/to/paper-factor/数据仓库/ ./数据仓库/
+rsync -avhP user@dev-machine:/path/to/paper-factor//mnt/d/paper-factor-data/数据仓库/ .//mnt/d/paper-factor-data/数据仓库/
 ```
 
-或者用硬盘拷贝整个 `数据仓库/` 目录到项目根目录。
+或者用硬盘拷贝整个 `/mnt/d/paper-factor-data/数据仓库/` 目录到项目根目录。
 
 **如果只做因子开发测试（不跑全量）：**
-只需要 `数据仓库/行情数据/日线/测试/` 和 `数据仓库/非行情数据/测试/` 两个目录（约 25MB），300 只股票 × 300 天。
+只需要 `/mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试/` 和 `/mnt/d/paper-factor-data/数据仓库/非行情数据/测试/` 两个目录（约 25MB），300 只股票 × 300 天。
 
 ### 第三步：数据符号链接（workspace/）
 
@@ -67,9 +67,9 @@ rsync -avhP user@dev-machine:/path/to/paper-factor/数据仓库/ ./数据仓库/
 ```
 workspace/
 ├── factor_implementation_source_data/     # → 指向数据仓库的符号链接
-│   └── stock_data/daily/                  # ln -s 数据仓库/行情数据/日线/全量
+│   └── stock_data/daily/                  # ln -s /mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量
 ├── factor_implementation_source_data_1000/ # → 指向测试数据
-│   └── stock_data/daily/                  # ln -s 数据仓库/行情数据/日线/测试
+│   └── stock_data/daily/                  # ln -s /mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试
 └── ideas/                                 # 因子想法暂存
 ```
 
@@ -77,8 +77,8 @@ workspace/
 
 ```bash
 mkdir -p workspace/logs workspace/ideas
-ln -sfn ../数据仓库/行情数据/日线/全量 workspace/factor_implementation_source_data
-ln -sfn ../数据仓库/行情数据/日线/测试 workspace/factor_implementation_source_data_1000
+ln -sfn ..//mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量 workspace/factor_implementation_source_data
+ln -sfn ..//mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试 workspace/factor_implementation_source_data_1000
 ```
 
 运行时生成的 `workspace/RD-Agent_workspace/`（代码执行工作区）与 `workspace/logs/`（日志）
@@ -95,7 +95,7 @@ pip install -r requirements.txt
 复制 `.env.example` 为 `.env`，填入：
 
 - **JQDATA_USERNAME / JQDATA_PASSWORD**：聚宽账号，分钟因子计算需要
-- **FACTOR_DATA_DIR**：数据目录，默认指向本地 `数据仓库/行情数据/日线/全量`
+- **FACTOR_DATA_DIR**：数据目录，默认指向本地 `/mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量`
 - **OPENAI_API_KEY / OPENAI_API_BASE**：LLM API，因子提取/审查用
 - **CHAT_MODEL**：使用的模型
 
@@ -103,13 +103,13 @@ pip install -r requirements.txt
 
 ```bash
 # 检查数据完整性
-python -c "from pathlib import Path; d=Path('数据仓库/行情数据/日线/全量/stock_data/daily'); print(f'{len(list(d.glob(\"*.parquet\")))} 只股票')"
+python -c "from pathlib import Path; d=Path('/mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量/stock_data/daily'); print(f'{len(list(d.glob(\"*.parquet\")))} 只股票')"
 
 # 检查 workspace 符号链接
 ls -la workspace/factor_implementation_source_data
 
 # 跑一个测试因子
-python scripts/run_factor_full.py "数据仓库/因子产出/全量/20260810/GRU量价趋势预测因子/GRUPriceVolumePredictor/GRUPriceVolumePredictor.code.py"
+python scripts/run_factor_full.py "/mnt/d/paper-factor-data/数据仓库/因子产出/全量/20260810/GRU量价趋势预测因子/GRUPriceVolumePredictor/GRUPriceVolumePredictor.code.py"
 ```
 
 ---
@@ -117,7 +117,7 @@ python scripts/run_factor_full.py "数据仓库/因子产出/全量/20260810/GRU
 ## 数据目录结构
 
 ```
-数据仓库/                          # 所有数据（本地，不入git，约61GB）
+/mnt/d/paper-factor-data/数据仓库/                          # 所有数据（本地，不入git，约61GB）
 ├── 行情数据/
 │   ├── 日线/
 │   │   ├── 全量/stock_data/daily/{code}.parquet   # 5435只 × 全历史
@@ -144,7 +144,7 @@ python scripts/run_factor_full.py "数据仓库/因子产出/全量/20260810/GRU
 ```
 1. FACTOR_DATA_DIR 环境变量（最优先）
 2. RDAGENT_FACTOR_DATA_DIR 环境变量
-3. 数据仓库/行情数据/日线/全量/（相对路径）
+3. /mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量/（相对路径）
 ```
 
 ---
@@ -153,7 +153,7 @@ python scripts/run_factor_full.py "数据仓库/因子产出/全量/20260810/GRU
 
 ### 数据导入（/getdata）
 
-把新增数据文件放到 `新建文件/` 目录，然后：
+把新增数据文件放到 `/mnt/d/paper-factor-data/新建文件/` 目录，然后：
 
 ```bash
 python scripts/import_new_data.py --check    # 预览
@@ -162,7 +162,7 @@ python scripts/import_new_data.py --dry-run  # 预览不执行
 ```
 
 自动分类行情/非行情/分钟数据，新列注册到 `data/schema.json`。
-新增截面因子时，需先在 `新建文件/基本面因子说明.csv` 中描述因子含义（CSV 无表头，`因子名,描述文本`）。
+新增截面因子时，需先在 `/mnt/d/paper-factor-data/新建文件/新因子描述.csv` 中描述因子含义（CSV 无表头，`因子名,描述文本`）。
 
 ### 因子提取 + 测试（/factor 技能）
 
@@ -171,13 +171,13 @@ python scripts/import_new_data.py --dry-run  # 预览不执行
 **Phase 1：提取** — 并行读取研报 → 定义因子（name, type, lookback, formulation）
 **Phase 2：编码+部署** — 每个因子写核心函数 → `test-and-export`（300只测试数据验证）→ 测试通过后立即 `deploy-to-full` 到全量目录
 
-输出到 `数据仓库/因子产出/测试/{DATE}/` 和 `数据仓库/因子产出/全量/{DATE}/`
+输出到 `/mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/` 和 `/mnt/d/paper-factor-data/数据仓库/因子产出/全量/{DATE}/`
 
 ### 全量计算
 
 ```bash
 python scripts/claude_factor_helper.py deploy-to-full \
-  --code 数据仓库/因子产出/测试/{DATE}/{report}/{factor}/{factor}.code.py \
+  --code /mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{report}/{factor}/{factor}.code.py \
   --date {DATE}
 ```
 
@@ -187,7 +187,7 @@ python scripts/claude_factor_helper.py deploy-to-full \
 
 ```bash
 python scripts/run_factor_full.py \
-  数据仓库/因子产出/全量/{DATE}/{report}/{factor}/{factor}.code.py
+  /mnt/d/paper-factor-data/数据仓库/因子产出/全量/{DATE}/{report}/{factor}/{factor}.code.py
 ```
 
 含评估 + 十分组图 + Barra + LLM审查。
@@ -263,7 +263,7 @@ python scripts/import_new_data.py                   # 执行导入
 
 ```
 /factor     — 因子提取全流程（扫描→提取→编码→测试→部署→标记完成）
-/getdata    — 从 新建文件/ 导入新增数据
+/getdata    — 从 /mnt/d/paper-factor-data/新建文件/ 导入新增数据
 /all        — 全量/增量运行所有因子
 /clean      — 删除所有因子产出 + Python 缓存
 ```

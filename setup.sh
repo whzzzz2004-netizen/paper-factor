@@ -24,21 +24,21 @@ fi
 
 # ---------- 2. 创建数据目录 ----------
 echo "[2/5] 创建数据目录结构..."
-mkdir -p 数据仓库/行情数据/日线/{测试,全量}/stock_data/daily
-mkdir -p 数据仓库/行情数据/分钟线/{测试,全量}/stock_data/{minute,minute_by_date}
-mkdir -p 数据仓库/非行情数据/{测试,全量}/stock_data/daily
-mkdir -p 数据仓库/因子产出/{测试,全量}
-mkdir -p 数据仓库/barra_model
-mkdir -p 数据仓库/板块数据
+mkdir -p /mnt/d/paper-factor-data/数据仓库/行情数据/日线/{测试,全量}/stock_data/daily
+mkdir -p /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/{测试,全量}/stock_data/{minute,minute_by_date}
+mkdir -p /mnt/d/paper-factor-data/数据仓库/非行情数据/{测试,全量}/stock_data/daily
+mkdir -p /mnt/d/paper-factor-data/数据仓库/因子产出/{测试,全量}
+mkdir -p /mnt/d/paper-factor-data/数据仓库/barra_model
+mkdir -p /mnt/d/paper-factor-data/数据仓库/板块数据
 mkdir -p 新建文件
 mkdir -p workspace/logs workspace/ideas
-ln -sfn ../数据仓库/行情数据/日线/全量 workspace/factor_implementation_source_data
-ln -sfn ../数据仓库/行情数据/日线/测试 workspace/factor_implementation_source_data_1000
+ln -sfn ..//mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量 workspace/factor_implementation_source_data
+ln -sfn ..//mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试 workspace/factor_implementation_source_data_1000
 
 echo ""
-echo "  ⚠️  需要把数据仓库复制到 $REPO_DIR/数据仓库/"
+echo "  ⚠️  需要把数据仓库复制到 $REPO_DIR//mnt/d/paper-factor-data/数据仓库/"
 echo "      从硬盘/开发机 rsync 即可:"
-echo "      rsync -avhP user@dev:$REPO_DIR/数据仓库/ ./数据仓库/"
+echo "      rsync -avhP user@dev:$REPO_DIR//mnt/d/paper-factor-data/数据仓库/ .//mnt/d/paper-factor-data/数据仓库/"
 
 # ---------- 3. 环境配置 ----------
 echo "[3/5] 配置 conda 环境..."
@@ -62,8 +62,8 @@ if [ ! -f .env ]; then
     cat > .env <<'ENVEOF'
 JQDATA_USERNAME=your_username
 JQDATA_PASSWORD=your_password
-FACTOR_DATA_DIR=$PWD/数据仓库/行情数据/日线/全量
-RDAGENT_FACTOR_DATA_DIR=$PWD/数据仓库/行情数据/日线/全量
+FACTOR_DATA_DIR=$PWD//mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量
+RDAGENT_FACTOR_DATA_DIR=$PWD//mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量
 ENVEOF
     echo "  ✅ .env 已创建（请填写 JQData 账号）"
 else
@@ -72,7 +72,7 @@ fi
 
 # ---------- 5. 验证 ----------
 echo "[5/5] 验证..."
-STOCK_COUNT=$(ls 数据仓库/行情数据/日线/全量/stock_data/daily/*.parquet 2>/dev/null | wc -l)
+STOCK_COUNT=$(ls /mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量/stock_data/daily/*.parquet 2>/dev/null | wc -l)
 if [ "$STOCK_COUNT" -gt 1000 ]; then
     echo "  ✅ 数据仓库正常: $STOCK_COUNT 只股票"
 else

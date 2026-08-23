@@ -1,16 +1,18 @@
+
 #!/usr/bin/env python3
 """生成 50 天增量数据测导入速度。"""
 import json, shutil, time
 from pathlib import Path
+DATA_ROOT = Path("/mnt/d/paper-factor-data")
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-WH = Path("数据仓库")
+WH = DATA_ROOT / "数据仓库"
 MINUTE_BY_DATE = WH / "行情数据" / "分钟线" / "全量" / "stock_data" / "minute_by_date"
-MINUTE_OUT = Path("新建文件/分钟线")
-FUND_OUT = Path("新建文件/非行情")
+MINUTE_OUT = DATA_ROOT / "新建文件/分钟线"
+FUND_OUT = DATA_ROOT / "新建文件/非行情"
 DAILY_TRADE_DATES = WH / "行情数据" / "日线" / "全量" / "stock_data" / "daily" / "trade_dates.json"
 DAILY_STOCK_LIST = WH / "行情数据" / "日线" / "全量" / "stock_data" / "daily" / "stock_list.json"
 FUNDAMENTAL_COLS = [
@@ -46,7 +48,7 @@ for i, ds in enumerate(new_dates):
     prices = base * np.exp(np.cumsum(rets, axis=0))
     n_total = n * n_min
 
-    instrument = np.repeat(stocks_int, n_min).astype(str)
+    instrument = np.char.zfill(np.repeat(stocks_int, n_min).astype(str), 6)
     dt = pd.Timestamp(ds)
     datetime = np.empty(n_total, dtype="datetime64[us]")
     datetime[:] = dt.to_datetime64()

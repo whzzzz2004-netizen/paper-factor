@@ -1,3 +1,4 @@
+
 """
 分钟线因子计算模板。
 
@@ -22,6 +23,7 @@ import pandas as pd
 import numpy as np
 import sys
 from pathlib import Path
+DATA_ROOT = Path("/mnt/d/paper-factor-data")
 
 sys.path.insert(0, str(Path(__file__).parent))
 from factor_utils import (
@@ -36,7 +38,7 @@ from factor_utils import (
 # ============================================================
 
 # 输出路径
-SAVE_PATH = Path(__file__).parent.parent / "数据仓库" / "因子产出" / "minute_factors.parquet"
+SAVE_PATH = DATA_ROOT / "数据仓库" / "因子产出" / "minute_factors.parquet"
 
 # 并行数
 N_JOBS = 10

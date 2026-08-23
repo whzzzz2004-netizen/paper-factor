@@ -54,6 +54,8 @@ def calc_factor_cross_section(all_data, trade_date):
   - value: value因子描述（value因子描述）
   - volatility: volatility因子描述（volatility因子描述）
   - volume: 成交量（单位：股）
+  - 价值因子1: 价值类因子1
+  - 价值因子2: 价值类因子2
 <!-- /DAILY_COLUMNS -->
 
 ## 额外工具

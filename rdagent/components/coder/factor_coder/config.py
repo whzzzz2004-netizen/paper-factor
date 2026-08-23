@@ -1,6 +1,7 @@
 import os
 from typing import Optional
 
+
 from pydantic_settings import SettingsConfigDict
 
 from rdagent.utils.env import CondaConf, Env, LocalEnv
@@ -9,10 +10,10 @@ from rdagent.utils.env import CondaConf, Env, LocalEnv
 class FactorCoSTEERSettings:
     model_config = SettingsConfigDict(env_prefix="FACTOR_CoSTEER_")
 
-    data_folder: str = "数据仓库/行情数据/日线/测试"
+    data_folder: str = "/mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试"
     """Path to the folder containing financial data (default is fundamental data in Qlib)"""
 
-    data_folder_debug: str = "数据仓库/行情数据/日线/测试"
+    data_folder_debug: str = "/mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试"
     """Path to the folder containing partial financial data (for debugging)"""
 
     simple_background: bool = False

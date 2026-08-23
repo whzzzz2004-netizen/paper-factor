@@ -2,7 +2,7 @@
 
 ## 用法
 
-- `/factor` — 扫描所有未处理内容，处理所有待处理项
+- `/factor` — 扫描 `papers/inbox/` 和 `papers/ideas/ideas.json`，处理所有未处理项
 - `/factor papers/inbox/某篇.pdf` — 处理单个 PDF
 - `/factor 一段因子描述` — 处理纯文本
 
@@ -15,51 +15,67 @@
 4. **禁止合成因子**
 5. **唯一跳过场景**：所需数据完全不可用（如专有数据库API）。择时/选基/宏观/债券不跳过
 6. `source_excerpt` 从原文直接复制
-7. **需要市场数据的 per-stock 分钟因子用 minute 类型，不用 minute_cs**：如果因子需求是逐股票计算但需要全市场收益率（如跳跃Beta、连续Beta），用 `minute` 模板 + 模块级加载 `market_minute_return.parquet`。`minute_cs` 只用于真正需要截面变换的因子（如当日全市场排名/标准化）。
-8. **minute 模板内 `df.index` 是 DatetimeIndex（非 MultiIndex）**：`calc_factors_one_day(df, stock)` 收到的 `df.index` 是模板转换后的 `DatetimeIndex`，不要调用 `get_level_values("datetime")`。直接用 `df.index` 即可。
+7. **DATE 永远是当天日期**：`datetime.now().strftime("%Y-%m-%d")`。所有 save-extracted / test-and-export / deploy-to-full 的 `--date` 都传当天日期，不用研报的原始日期。
+8. **不标记完成**：不跑 `mark-done`，不跟踪处理状态。每次运行直接扫 `papers/inbox/` 里的所有文件，全量处理。
+9. **所有分钟因子必须用 `minute` 类型模板，严禁用 `minute_cs`**：
+   - `minute_cs` 太慢（测试 6~8 分钟/个，全量可能数小时），且截面标准化对单因子无意义
+   - 如果因子需要全市场数据（市场收益率、总成交量等），先用 `ls` 检查 `minute_by_date/` 下是否有预计算文件，没有就让 LLM **在代码中自己计算**（模块级预加载，一次性计算）
+   - 如果因子逻辑本质依赖全市场截面（如排名、市值分组等），**用简单近似代替**（如用个股自身过去 N 天分位数代替截面排名）
+10. **minute 模板内 `df.index` 是 DatetimeIndex（非 MultiIndex）**：`calc_factors_one_day(df, stock)` 收到的 `df.index` 是模板转换后的 `DatetimeIndex`，不要调用 `get_level_values("datetime")`。直接用 `df.index` 即可。
+11. **lookback 只取决于核心计算需要多少天**：
+   - 论文末尾的"截面标准化 + 取std20/取波动率"是高频因子低频化的**后处理步骤**，不作为日频因子的 lookback 依据
+   - 如果某步需要跨日平滑/差分/滚动（如过去20天弹性系数移动平均）→ 设对应 lookback
+   - 如果核心计算只用到当天数据 → lookback=1
+12. **禁用 `minute_cs` 类型**：Phase 1 定义因子时 type 选项只有 `daily/minute/cross_section/deep_learning`，不再有 `minute_cs`。Phase 2 编码统一走 minute 模板。
 
 ## 两阶段工作流
 
 ```
-scan-pending → [Phase 1] 提取+定义因子 (每个paper一个sub-agent, 只做extract+define)
-            → [Phase 2] 编码+测试+部署 (每个factor一个sub-agent, 写核心函数+跑test-and-export+deploy-to-full)
-            → mark-done
+扫描 inbox → [Phase 1] 提取+定义因子 (每个paper一个sub-agent, 只做extract+define)
+         → [Phase 2] 编码+测试+部署 (每个factor一个sub-agent, 写核心函数+跑test-and-export+deploy-to-full)
 ```
 
 **核心原则：每个 sub-agent 的任务极其简单，没有犯错空间。**
 
 ---
 
-### Step 0: 扫描 + 数据预检
+### Step 0: 扫描 inbox + 数据预检
+
+直接扫 `papers/inbox/` 目录列出所有 PDF 文件，以及 `papers/ideas/ideas.json` 中的所有 ideas。不跑 `scan-pending`，不检查完成状态。
+
 ```bash
-python scripts/claude_factor_helper.py scan-pending
+ls papers/inbox/*.pdf 2>/dev/null
+python3 -c "import json; d=json.load(open('papers/ideas/ideas.json')); print([x.get('text','') or x.get('description','') for x in d])"
 ```
-输出 JSON，含 `papers[]`、`websites[]`、`ideas[]` 三个列表。
 
 **队列排序规则：** 含 "深度学习/GRU/TCN/LSTM/deep_learning" 的排末尾，其他优先。
 
+**`{DATE}` 永远是当天日期**：`datetime.now().strftime("%Y-%m-%d")`。所有子命令的 `--date` 参数都传这个值，不传研报原始日期。
+
 **数据完整性预检（跳过会导致后续跑全量而非测试数据）：**
 ```bash
-python3 -c "import json; sl=json.load(open('数据仓库/行情数据/日线/测试/stock_data/daily/stock_list.json')); td=json.load(open('数据仓库/行情数据/日线/测试/stock_data/daily/trade_dates.json')); print(f'日线测试: {len(sl)}只×{len(td)}天')"
-python3 -c "import json; sl=json.load(open('数据仓库/行情数据/分钟线/测试/stock_data/stock_list.json')); td=json.load(open('数据仓库/行情数据/分钟线/测试/stock_data/trade_dates.json')); print(f'分钟测试: {len(sl)}只×{len(td)}天')"
+python3 -c "import json; sl=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试/stock_data/daily/stock_list.json')); td=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试/stock_data/daily/trade_dates.json')); print(f'日线测试: {len(sl)}只×{len(td)}天')"
+python3 -c "import json; sl=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试/stock_data/stock_list.json')); td=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试/stock_data/trade_dates.json')); print(f'分钟测试: {len(sl)}只×{len(td)}天')"
 ```
 如果日线不是 300只×300天，或分钟不是 300只×300天，说明测试数据有问题，**先修复数据再继续**。
 
-**如果待处理因子需要全市场分钟收益率（如跳跃Beta、连续Beta），先确保市场代理已预计算：**
+**如果需要全市场数据（如全市场分钟收益率），预计算市场代理文件：**
+检查两个目录：
 ```bash
-# 检查文件是否存在
-ls 数据仓库/行情数据/分钟线/测试/stock_data/minute_by_date/market_minute_return.parquet
-ls 数据仓库/行情数据/分钟线/全量/stock_data/minute_by_date/market_minute_return.parquet
-# 如果不存在，运行预计算脚本
-python scripts/precompute_market_proxy.py --data-dir "数据仓库/行情数据/分钟线/测试"
-python scripts/precompute_market_proxy.py --data-dir "数据仓库/行情数据/分钟线/全量"
+ls /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试/stock_data/minute_by_date/market_minute_return.parquet
+ls /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量/stock_data/minute_by_date/market_minute_return.parquet
+```
+如果有缺失，跑预计算脚本（测试 + 全量都要跑）：
+```bash
+python scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试"
+python scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量"
 ```
 
 ---
 
 ### Step 1: Phase 1 — 提取 + 定义因子
 
-> **`{DATE}` 格式：YYYY-MM-DD（如 2026-08-09），**所有日期子目录一致。用 `datetime.now().strftime("%Y-%m-%d")` 生成。
+> **`{DATE}` 永远是当天日期**：`datetime.now().strftime("%Y-%m-%d")`。所有 `--date` 参数都传这个值，不传研报原始日期。
 
 对每个待处理项（paper/website/idea），启动一个 sub-agent。**每个 sub-agent 只做两件事：提取原文 → 定义因子。不做编码测试。**
 
@@ -93,13 +109,14 @@ prompt = """
 - name: 英文驼峰
 - description: 中文
 - formulation: 完整数学表达式
-- type: daily/minute/cross_section/minute_cs/deep_learning
+- type: daily/minute/cross_section/deep_learning
   **类型选择规则**：
-  - 需要全市场截面标准化/排名的 → `cross_section` 或 `minute_cs`
-  - 逐股票计算、需要全市场收益率作为输入参数的（如跳跃Beta、市场Beta）→ `minute`（不是 `minute_cs`！`minute_cs` 用于真正需要截面变换的因子）
+  - 分钟频因子 → **一律 `minute`**（禁用 `minute_cs`）
   - 需要多个股票数据作为输入（如行业平均、市值分组）→ `cross_section`
   - 其他 per-stock 计算 → `daily` 或 `minute` 根据数据频率
-- lookback: 天数 (1月≈20, 1季≈60, 6月≈120, 1年≈250)。注意：minute/minute_cs 类型最大 120（约 6 个月），即使论文用 1 年也要截断
+- lookback: 天数 (1月≈20, 1季≈60, 6月≈120, 1年≈250)。
+  **⚠️ 只考虑核心计算需要多少天**。论文末尾的"截面标准化+std20/取波动率"是后处理，不作为lookback依据。
+  如果核心计算只需要当天数据 → lookback=1。
 - cols: 列名列表
 - source_excerpt: 原文复制
 
@@ -172,11 +189,11 @@ while active:
 
 收集 Phase 1 所有成功定义的因子，**为每个因子启动一个 sub-agent**。每个 sub-agent 只做：**写核心函数 → 跑 test-and-export**。
 
-**⚠️ 收集策略：不要只依赖 Phase 1 agent 的返回值。agent 可能超时/失败。此外从 `数据仓库/因子产出/extracted_reports/{DATE}/` 目录读取所有已保存的 `.extracted.json` 文件，合并去重，确保不漏因子。**
+**⚠️ 收集策略：不要只依赖 Phase 1 agent 的返回值。agent 可能超时/失败。此外从 `/mnt/d/paper-factor-data/数据仓库/因子产出/extracted_reports/{DATE}/` 目录读取所有已保存的 `.extracted.json` 文件，合并去重，确保不漏因子。**
 
 最多同时启动 **5 个** sub-agent。主 Claude 控制派发。
 
-> **type→type_key 映射**（Phase 2 prompt 里填 `--type {type_key}` 用）：daily→daily_single, minute→minute, cross_section→cross_section, minute_cs→minute_cross_section, deep_learning→deep_learning。此映射只给主 Claude 填 prompt 用，不要复制进 sub-agent prompt。
+> **type→type_key 映射**（Phase 2 prompt 里填 `--type {type_key}` 用）：daily→daily_single, minute→minute, cross_section→cross_section, deep_learning→deep_learning。
 > **`--cols` 格式**：空格或逗号分隔均可（helper 自动 split），如 `--cols "close factor"` 或 `--cols "close,factor"`。
 
 #### Phase 2 sub-agent prompt（极简 ~30 行）
@@ -188,15 +205,14 @@ prompt = """
 
 ### 参考同类型因子（节省 token）
 查看已生成的成功因子代码，参考其核心函数结构：
-ls 数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py
+ls /mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py
 只看核心函数部分（calc_factor_xxx），不要复制模板代码。
-注意参考同类型因子（daily 参考 daily，minute_cs 参考 minute_cs）。
 
 ### 因子定义
 - 因子名: {name}
-- 类型: {type}
+- 类型: {type}（minute/daily/cross_section/deep_learning）
 - 函数名: {func_name}  (见下方对照表)
-- lookback: {lookback}
+- lookback: {lookback}  **（⚠️ 只含核心计算天数，不含论文末尾的截面标准化/std20后处理）**
 - 列: {cols}
 - 报告名: {report_name}
 - formulation: {formulation}
@@ -210,8 +226,9 @@ ls 数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py
 {daily: **`def calc_factor_series(df, stock) -> pd.Series`**（向量化，1次调用算完全部日期）。可选写 `calc_factor_single_stock(df, trade_date, stock)` 作为 fallback，模板默认提供包装。
  minute: `def calc_factors_one_day(df, stock):`,
  cross_section: `def calc_factor_cross_section(all_data, trade_date):`,
- minute_cs: `def calc_factor_minute_raw(df, stock):` + `def cross_section_transform(all_values):`,
  deep_learning: `def train_model(all_data, trade_date):` + `def predict_batch(model, data_dict, trade_date):`}
+
+**⚠️ 所有分钟因子用 minute 模板，不要用 minute_cs。**
 
 **日线因子必须优先写 `calc_factor_series`（向量化版本）**：
 ```python
@@ -241,10 +258,27 @@ def calc_factor_series(df, stock):
 
 **判断原则：** 如果因子逻辑可以拆成"先算每日值，再跨日 rolling" → 用 `calc_factor_series`。如果因子逻辑依赖滑动窗口内的全量数据计算 → 用 `calc_factors_one_day`。不确定时两种都写，模板自动优先走向量化。
 
-**市场代理模式（需要全市场分钟收益率的 per-stock 因子）：**
-如果因子需要全市场收益率作为输入（如跳跃Beta、连续Beta），在模块级加载预计算的市场代理：
+**市场数据模式（因子需要全市场分钟收益率/总成交量等作为输入）：**
+
+**Step 0：检查预计算文件是否存在（测试 + 全量都要检查）**
+```bash
+# 测试目录
+ls /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试/stock_data/minute_by_date/market_minute_return.parquet
+# 全量目录
+ls /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量/stock_data/minute_by_date/market_minute_return.parquet
+```
+预计算文件路径规则：`{分钟线数据目录}/stock_data/minute_by_date/market_minute_return.parquet`
+
+**Step 1：如果不存在，立即预计算（先跑再写函数！）**
+```bash
+python scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试"
+python scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量"
+```
+**必须两个目录都跑**，因为因子要在测试和全量两个环境运行。
+
+**Step 2：在因子代码模块级加载预计算文件**
 ```python
-# 模块级：和 STOCK_LIST、INDUSTRY_DICT 一样
+# 模块级：在导入时一次性加载，不在逐日函数内重复读取
 MARKET_RETURN = pd.read_parquet(
     MINUTE_BY_DATE_DIR / "market_minute_return.parquet"
 )
@@ -256,17 +290,11 @@ def calc_factors_one_day(df, stock):
     market_ret = MARKET_RETURN.reindex(dt_idx)["market_return"].values
     # ... 后续计算
 ```
-注意：`calc_factors_one_day` 收到的 `df.index` 是 `DatetimeIndex`，不是 `MultiIndex`。**不要调用 `get_level_values("datetime")`**，直接用 `df.index` 即可。
+注意：`calc_factors_one_day` 收到的 `df.index` 是 `DatetimeIndex`。**不要调用 `get_level_values("datetime")`**，直接用 `df.index` 即可。
 
-**性能注意（分钟截面）：** 全量 5435 只股票 × 120 天分钟数据，避免 Python 逐元素循环（`for i in range` + `np.argmin`/`np.sum` 等）。优先用 numpy 向量化、O(n) 单调队列或前缀和。
-
-**minute_cs 专属约束（写错必崩，测试 6~8 分钟/个，务必一次写对）：**
-1. **`cross_section_transform` 必须返回 dict，绝不能返回 pd.Series**。模板会对返回值调用 `.values()`/`.items()`（方法调用），pd.Series 的 `.values` 是 ndarray 属性、不可调用 → `TypeError: 'numpy.ndarray' object is not callable`。两种合法返回：
-   - `{股票代码: 标量}`（如 `{"000001": 0.3}`）
-   - `{股票代码: {"因子名": 值}}`（如 `{"000001": {"AnomalyTimeRatio": 0.3}}`）
-2. **`calc_factor_minute_raw` 只算单日截面需要的每日原始值**（如当日异动分钟占比、当日相关系数），**禁止在 raw 里做跨日纵向标准化**（模板每次只给一天的截面做变换，纵向 mean/std 在 raw 内做既泄露又超重）。标准化统一放 `cross_section_transform` 里做**当日全市场截面 zscore/排名**。
-3. **minute 数据是 MultiIndex[instrument, datetime]**：`df.groupby(level='datetime')` 分组、`df['return'].values` 向量化。禁止对 8 万行分钟逐行 `for`。
-4. 测试 300 只跑通后才 deploy-to-full；若 test-and-export 超时（>300s），优先检查是不是 raw 里混入了逐分钟 Python 循环。
+**如果因子逻辑依赖截面数据（全市场排名/标准化/分组等）：**
+- **直接跳过**，输出原始值即可。不需要做截面处理
+- 或者如果截面处理是因子核心逻辑（非后处理），可以额外写一个**后处理函数**，在 test-and-export 生成 `.parquet` 后读取并做截面变换：
 
 #### 2. 立即跑 test-and-export + deploy-to-full（写完后立刻执行，不停顿）
 类型在 Phase 1 已定义，**显式传 `--type {type_key}`**（确定，不依赖自动检测）。
@@ -285,7 +313,7 @@ python scripts/claude_factor_helper.py test-and-export \
 **test-and-export 成功后，立即部署到全量：**
 ```bash
 python scripts/claude_factor_helper.py deploy-to-full \
-  --code 数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py \
+  --code /mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py \
   --date {DATE}
 ```
 
@@ -330,22 +358,10 @@ while active:
     if active:
         import time; time.sleep(5)
 
-# 全部完成 → 进入 Step 3
+# 全部完成
 ```
 
 ---
-
-### Step 3: 标记完成
-
-**⚠️ deploy-to-full 已在 Phase 2 中每个因子测试成功后自动执行。本步骤只做标记完成，绝不跑全量计算（`run_all.py`/`run_factor_full.py` 等一律不碰）。** 全量 parquet 由用户通过 `/all` 启动。
-
-```bash
-python scripts/claude_factor_helper.py mark-done --name "文件名.pdf"
-# 或 website/idea:
-python scripts/claude_factor_helper.py mark-done --name <slug>
-```
-
-**Step 3 完成后即结束，不执行任何额外计算步骤。**
 
 ### 并行全量计算（自动重扫）
 
@@ -361,10 +377,15 @@ python scripts/claude_factor_helper.py mark-done --name <slug>
 
 ## 模板类型 → 函数名对照
 - daily → `def calc_factor_series(df, stock) -> pd.Series`（向量化，优先）。可选 `def calc_factor_single_stock(df, trade_date, stock)`（逐日 fallback）
-- minute → `def calc_factors_one_day(df, stock):`
+- minute → `def calc_factors_one_day(df, stock):` 或 `def calc_factor_series(df, stock):`（向量化版，每只股票只调1次）
 - cross_section → `def calc_factor_cross_section(all_data, trade_date):`
-- minute_cs → `def calc_factor_minute_raw(df, stock):` + `def cross_section_transform(all_values):`（**cross_section_transform 必须返回 dict `{股票代码: 值}` 或 `{股票代码: {"因子名": 值}}`，绝不返回 pd.Series**）
 - deep_learning → `def train_model(all_data, trade_date):` + `def predict_batch(model, data_dict, trade_date):`（LOOKBACK_DAYS 只决定预测窗口大小；训练用截止日全部历史（walk-forward），模型内部自行决定用多少历史）
+
+## type→type_key 映射
+- daily → daily_single
+- minute → minute
+- cross_section → cross_section
+- deep_learning → deep_learning
 
 ## 编码硬约束
 1. T日 = df.iloc[-1]
@@ -380,4 +401,7 @@ python scripts/claude_factor_helper.py mark-done --name <slug>
 11. 禁止 `transform('count')` → 用 `transform('size')`
 12. 禁止 `rolling.apply(lambda)`
 13. 禁止合成因子
-14. **标准化只能是截面 zscore，绝不能是时序标准化**：zscore/去均值除标准差/排名/分位永远是对同一交易日全市场股票做截面处理。禁止对单只股票的整个时间序列做 mean/std 归一化（全序列 mean/std 会让 T 日值受未来数据影响=泄露，且不符合量化惯例）。组合类因子必须用截面模板（cross_section/minute_cross_section）跨股票标准化。
+14. **所有分钟因子用 minute 模板，不用 minute_cs**（太慢，且截面标准化无意义）
+15. **lookback 只含核心计算天数**，不含论文末尾的截面标准化/std20/取波动率等后处理
+16. **禁用截面操作（排名/标准化/行业中性化）**：因子只输出个股原始值。如果截面是核心逻辑，额外写后处理函数对产出 .parquet 做截面变换
+17. **`df.index.date` 返回 ndarray**，没有 `.isin()` 方法。用 `np.isin(date_arr, list)` 替代

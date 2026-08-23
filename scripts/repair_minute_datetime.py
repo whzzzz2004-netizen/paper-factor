@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """修复全量分钟数据 datetime 时间戳：所有值为 00:00:00 → 恢复为正确的分钟时间戳。
 
@@ -18,6 +19,7 @@ import time
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+DATA_ROOT = Path("/mnt/d/paper-factor-data")
 
 import numpy as np
 import pandas as pd
@@ -117,7 +119,7 @@ def main():
         minute_dir = Path(args.data_dir)
     else:
         proj_root = Path(__file__).resolve().parent.parent
-        minute_dir = proj_root / "数据仓库" / "行情数据" / "分钟线" / "全量" / "stock_data" / "minute_by_date"
+        minute_dir = DATA_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量" / "stock_data" / "minute_by_date"
 
     if not minute_dir.exists():
         print(f"错误: 目录不存在 {minute_dir}")

@@ -126,7 +126,7 @@ def aggregate_factors(results, save_path):
     for stock, trade_date, fdict in results:
         if fdict is None or (isinstance(fdict, float) and np.isnan(fdict)):
             continue
-        row = {"datetime": trade_date, "instrument": stock}
+        row = {"trade_date": trade_date, "instrument": stock}
         if isinstance(fdict, dict):
             row.update(fdict)
         records.append(row)
@@ -136,8 +136,8 @@ def aggregate_factors(results, save_path):
         return pd.DataFrame()
 
     df = pd.DataFrame(records)
-    df["datetime"] = pd.to_datetime(df["datetime"])
-    df = df.set_index(["datetime", "instrument"]).sort_index()
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
+    df = df.set_index(["trade_date", "instrument"]).sort_index()
     df = df.replace([np.inf, -np.inf], np.nan)
 
     save_path = Path(save_path)

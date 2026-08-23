@@ -195,20 +195,21 @@ from pathlib import Path
 # Constants
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).parent.parent
-LITERATURE_REPORTS_DIR = PROJECT_ROOT / "数据仓库" / "因子产出" / "测试"
+DATA_ROOT = Path("/mnt/d/paper-factor-data")
+LITERATURE_REPORTS_DIR = DATA_ROOT / "数据仓库" / "因子产出" / "测试"
 
 def _detect_data_dir() -> Path:
     """Detect best available data directory."""
     candidates = [
         os.environ.get("FACTOR_DATA_DIR", ""),
         os.environ.get("RDAGENT_FACTOR_DATA_DIR", ""),
-        str(PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "测试" / "stock_data" / "daily"),
-        str(PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily"),
+        str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "测试" / "stock_data" / "daily"),
+        str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily"),
     ]
     for p in candidates:
         if p and Path(p).exists():
             return Path(p).parent.parent  # 返回 stock_data 的父目录
-    return PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "测试"
+    return DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "测试"
 
 
 TEST_DATA_DIR = _detect_data_dir()
@@ -593,11 +594,15 @@ def _run_test_in_tmpdir(code_path: Path, timeout: int = 3600, type_key: str = "d
     env = os.environ.copy()
     # 根据因子类型设置正确的数据目录
     if type_key in ("minute", "minute_cross_section"):
-        minute_test_dir = PROJECT_ROOT / "数据仓库" / "行情数据" / "分钟线" / "测试"
+        minute_test_dir = DATA_ROOT / "数据仓库" / "行情数据" / "分钟线" / "测试"
         if minute_test_dir.exists():
             env["FACTOR_DATA_DIR"] = str(minute_test_dir)
         else:
             env["FACTOR_DATA_DIR"] = str(TEST_DATA_DIR)
+        # 每个 test-and-export 用独立 minute chunk 目录，避免多因子并发写坏共享 _minute_chunks
+        env["FACTOR_MINUTE_CHUNK_DIR"] = str(
+            Path(tempfile.gettempdir()) / f"factor_minute_chunks_{os.getpid()}"
+        )
     else:
         env["FACTOR_DATA_DIR"] = str(TEST_DATA_DIR)
     env["FACTOR_N_WORKERS"] = os.environ.get("FACTOR_N_WORKERS", "2")
@@ -1052,9 +1057,9 @@ def cmd_deploy_to_full(args):
         _fallback = (
             'DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR") or os.environ.get("RDAGENT_FACTOR_DATA_DIR") or "")\n'
             f'if not DATA_DIR or not (DATA_DIR/"stock_data"/"{_subdir}").exists():\n'
-            f'    DATA_DIR = Path("{PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量"}")\n'
+            f'    DATA_DIR = Path("{DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量"}")\n'
             f'    if not (DATA_DIR/"stock_data"/"{_subdir}").exists():\n'
-            f'        DATA_DIR = Path("{PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "测试"}")\n'
+            f'        DATA_DIR = Path("{DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "测试"}")\n'
             f'        if not (DATA_DIR/"stock_data"/"{_subdir}").exists():\n'
             f'            DATA_DIR = Path(".")\n'
         )

@@ -12,7 +12,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-WH = PROJECT_ROOT / "数据仓库"
+DATA_ROOT = Path("/mnt/d/paper-factor-data")
+WH = DATA_ROOT / "数据仓库"
 MINUTE_BY_DATE = WH / "行情数据" / "分钟线" / "全量" / "stock_data" / "minute_by_date"
 MINUTE_META = MINUTE_BY_DATE.parent  # stock_data/
 DAILY_STOCK_LIST = WH / "行情数据" / "日线" / "全量" / "stock_data" / "daily" / "stock_list.json"
@@ -38,7 +39,7 @@ def _gen_one_file(date_str: str, stocks_int: list, n_minutes: int = 242):
 
     # 展平为长格式: stock-major, minute-minor
     n_total = n * n_minutes
-    instrument = np.repeat(stocks_int, n_minutes).astype(str)
+    instrument = np.char.zfill(np.repeat(stocks_int, n_minutes).astype(str), 6)
     dt = pd.Timestamp(date_str)
     datetime = np.empty(n_total, dtype="datetime64[us]")
     datetime[:] = dt.to_datetime64()

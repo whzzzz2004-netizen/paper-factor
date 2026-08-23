@@ -1,10 +1,10 @@
 {
   "version": "1.4",
-  "data_dir": "数据仓库/行情数据/日线/全量",
+  "data_dir": "/mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量",
   "import": {
-    "dir": "新建文件",
+    "dir": "/mnt/d/paper-factor-data/新建文件",
     "script": "scripts/import_new_data.py",
-    "note": "本地导入：用户把新增数据放到 新建文件/（日线/、分钟线/、非行情/ 或根目录），运行脚本自动检测格式并导入。"
+    "note": "本地导入：用户把新增数据放到 /mnt/d/paper-factor-data/新建文件/（日线/、分钟线/、非行情/ 或根目录），运行脚本自动检测格式并导入。"
   },
   "daily": {
     "format": "per_stock_parquet",
@@ -193,6 +193,14 @@
       },
       "volatility": {
         "description": "volatility",
+        "source": "新建文件导入"
+      },
+      "价值因子1": {
+        "description": "价值类因子1",
+        "source": "新建文件导入"
+      },
+      "价值因子2": {
+        "description": "价值类因子2",
         "source": "新建文件导入"
       }
     }

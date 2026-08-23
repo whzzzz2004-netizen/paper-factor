@@ -23,7 +23,8 @@ except ImportError:
     from scripts.evaluate_factor import load_full_data_label, compute_decile_returns, to_factor_long_series
 
 PROJECT_ROOT = Path(__file__).parent.parent
-FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量")))
+DATA_ROOT = Path("/mnt/d/paper-factor-data")
+FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量")))
 
 
 def plot_decile_returns(factor_df: pd.DataFrame, label_df: pd.DataFrame, factor_name: str, output_path: str):
@@ -38,13 +39,13 @@ def plot_decile_returns(factor_df: pd.DataFrame, label_df: pd.DataFrame, factor_
         return False
 
     # 逐日计算十分组
-    dates = merged.index.get_level_values("datetime").unique().sort_values()
+    dates = merged.index.get_level_values("trade_date").unique().sort_values()
     decile_daily = {i: [] for i in range(10)}
     date_list = []
 
     for dt in dates:
         try:
-            slab = merged.xs(dt, level="datetime")
+            slab = merged.xs(dt, level="trade_date")
         except (KeyError, ValueError):
             continue
         if isinstance(slab, pd.Series) or len(slab) < 10:

@@ -26,12 +26,13 @@ from pathlib import Path
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).parent.parent
+DATA_ROOT = Path("/mnt/d/paper-factor-data")
 
 def _detect_data_dir() -> Path:
     candidates = [
         os.environ.get("FACTOR_DATA_DIR", ""),
         os.environ.get("RDAGENT_FACTOR_DATA_DIR", ""),
-        str(PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily"),
+        str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily"),
     ]
     for p in candidates:
         if p and Path(p).exists():
@@ -39,7 +40,7 @@ def _detect_data_dir() -> Path:
     return Path(".")
 
 FULL_DATA_DIR = _detect_data_dir()
-OUTPUT_BASE = PROJECT_ROOT / "数据仓库" / "因子产出" / "全量"
+OUTPUT_BASE = DATA_ROOT / "数据仓库" / "因子产出" / "全量"
 def detect_factor_type(code_path: Path) -> str:
     code = code_path.read_text()
     if any(k in code for k in ('MINUTE_DATA_DIR', 'MINUTE_BY_DATE_DIR', 'minute_pv', 'calc_factors_one_day')):
@@ -158,7 +159,7 @@ def main():
     print(f"因子类型: {factor_type}")
 
     if factor_type == "minute":
-        data_dir = PROJECT_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量"
+        data_dir = DATA_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量"
     else:
         data_dir = FULL_DATA_DIR
     if not data_dir.exists():

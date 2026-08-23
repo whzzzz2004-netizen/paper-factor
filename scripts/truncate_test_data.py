@@ -15,7 +15,9 @@ from pathlib import Path
 
 import pandas as pd
 
-TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "数据仓库" / "行情数据" / "日线" / "测试"
+DATA_ROOT = Path("/mnt/d/paper-factor-data")
+
+TEST_DATA_DIR = DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "测试"
 DAILY_DIR = TEST_DATA_DIR / "stock_data" / "daily"
 MINUTE_DIR = TEST_DATA_DIR / "stock_data" / "minute_by_date"
 
@@ -40,11 +42,11 @@ def truncate_daily():
     for fpath in stock_files:
         df = pd.read_parquet(fpath)
         # datetime 列或 index
-        if "datetime" in df.columns:
-            df = df[df["datetime"].isin(keep_set)]
+        if "trade_date" in df.columns:
+            df = df[df["trade_date"].isin(keep_set)]
         elif isinstance(df.index, pd.DatetimeIndex):
             df = df[df.index.strftime("%Y-%m-%d").isin(keep_set)]
-        elif df.index.name == "datetime":
+        elif df.index.name == "trade_date":
             df = df[df.index.strftime("%Y-%m-%d").isin(keep_set)]
         else:
             print(f"  警告: {fpath.name} 无法识别日期列，跳过过滤")

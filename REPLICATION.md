@@ -11,8 +11,8 @@
 | 东西 | 在哪 | 怎么获取 |
 |------|------|----------|
 | 代码（scripts/rdagent/.claude/templates） | git 仓库 | `git clone` |
-| 数据源（日线/分钟/非行情 parquet） | `数据仓库/` | 从已有环境直接拷贝，或逐步导入 |
-| 因子产出（测试/全量） | `数据仓库/因子产出/` | 从已有环境拷贝，或重新计算 |
+| 数据源（日线/分钟/非行情 parquet） | `/mnt/d/paper-factor-data/数据仓库/` | 从已有环境直接拷贝，或逐步导入 |
+| 因子产出（测试/全量） | `/mnt/d/paper-factor-data/数据仓库/因子产出/` | 从已有环境拷贝，或重新计算 |
 | 研报 PDF | `papers/inbox/` | 手动拷贝 |
 | 密钥配置 | `.env` | 手动创建 |
 
@@ -51,7 +51,7 @@ pip install -e .          # 完整依赖（pyproject.toml）
 
 ### 方式 A：从已有环境拷贝（推荐）
 
-直接把整个 `数据仓库/` 目录从原有环境拷贝到项目根目录：
+直接把整个 `/mnt/d/paper-factor-data/数据仓库/` 目录从原有环境拷贝到项目根目录：
 
 ```bash
 # 从原有环境（WSL/Ubuntu）
@@ -64,7 +64,7 @@ cp -r /path/to/old/paper-factor/数据仓库 ./数据仓库
 
 如果没有现成数据，可以通过 `/getdata` 技能逐步导入：
 
-1. 准备好原始数据文件（CSV/parquet），放到 `新建文件/` 目录下
+1. 准备好原始数据文件（CSV/parquet），放到 `/mnt/d/paper-factor-data/新建文件/` 目录下
 2. 运行 `python scripts/import_new_data.py --check` 预览
 3. 运行 `python scripts/import_new_data.py` 执行导入
 
@@ -96,8 +96,8 @@ cp .env.example .env
 
 ```bash
 # 数据完整性检查
-python3 -c "import json; sl=json.load(open('数据仓库/行情数据/日线/测试/stock_data/daily/stock_list.json')); td=json.load(open('数据仓库/行情数据/日线/测试/stock_data/daily/trade_dates.json')); print(f'日线测试: {len(sl)}只×{len(td)}天')"
-python3 -c "import json; sl=json.load(open('数据仓库/行情数据/分钟线/测试/stock_data/stock_list.json')); td=json.load(open('数据仓库/行情数据/分钟线/测试/stock_data/trade_dates.json')); print(f'分钟测试: {len(sl)}只×{len(td)}天')"
+python3 -c "import json; sl=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试/stock_data/daily/stock_list.json')); td=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试/stock_data/daily/trade_dates.json')); print(f'日线测试: {len(sl)}只×{len(td)}天')"
+python3 -c "import json; sl=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试/stock_data/stock_list.json')); td=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试/stock_data/trade_dates.json')); print(f'分钟测试: {len(sl)}只×{len(td)}天')"
 
 # 扫描待处理研报
 python scripts/claude_factor_helper.py scan-pending
@@ -131,7 +131,7 @@ python scripts/import_new_data.py              # 执行导入
 ## 常见问题
 
 **Q: 只想看已有因子结果，不跑计算？**
-A: 直接看 `数据仓库/因子产出/全量/{DATE}/{report}/{factor}/` 下的 `.parquet` 和 `.decile.png`。
+A: 直接看 `/mnt/d/paper-factor-data/数据仓库/因子产出/全量/{DATE}/{report}/{factor}/` 下的 `.parquet` 和 `.decile.png`。
 
 **Q: 跑 `/factor` 需要研报 PDF 吗？**
 A: 处理新研报需要 PDF（放到 `papers/inbox/`）。已 mark-done 的研报不需要。

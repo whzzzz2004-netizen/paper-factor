@@ -50,10 +50,11 @@ from scripts.factor_utils import (
 )
 
 PROJECT_ROOT = Path(__file__).parent.parent
+DATA_ROOT = Path("/mnt/d/paper-factor-data")
 
 # ── 路径（仅本地） ──
-OUTPUT_BASE = PROJECT_ROOT / "数据仓库" / "因子产出" / "全量"
-FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量")))
+OUTPUT_BASE = DATA_ROOT / "数据仓库" / "因子产出" / "全量"
+FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量")))
 
 
 # ── 扫描 ──
@@ -228,7 +229,7 @@ def run_incremental_for_factor(item: dict) -> dict:
     # 2. 判断因子类型，确定数据目录
     code_text = code_path.read_text(encoding="utf-8")
     factor_type = detect_factor_type(code_text)
-    data_dir = (PROJECT_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量") if factor_type in ("minute", "minute_cross_section") else FULL_DATA_DIR
+    data_dir = (DATA_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量") if factor_type in ("minute", "minute_cross_section") else FULL_DATA_DIR
 
     # 3. 执行子进程
     start_date_str = last_date.strftime("%Y-%m-%d")

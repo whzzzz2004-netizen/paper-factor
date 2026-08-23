@@ -24,9 +24,10 @@ from pathlib import Path
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_ROOT = Path("/mnt/d/paper-factor-data")
 MARKET_DAILY_ROOTS = [
-    PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily",
-    PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "测试" / "stock_data" / "daily",
+    DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily",
+    DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "测试" / "stock_data" / "daily",
 ]
 
 # 行情列：只保留这 9 列

@@ -22,13 +22,14 @@ from pathlib import Path
 
 # ── 路径常量（与 scripts/full.py 保持一致） ──
 PROJECT_ROOT = Path(__file__).resolve().parents[3]  # rdagent/app/qlib_rd_loop/ → project root
+DATA_ROOT = Path("/mnt/d/paper-factor-data")
 
 # 数据目录自动检测（多路径降级）
 def _detect_data_dir() -> Path:
     candidates = [
         os.environ.get("FACTOR_DATA_DIR", ""),
         os.environ.get("RDAGENT_FACTOR_DATA_DIR", ""),
-        str(PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily"),
+        str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily"),
     ]
     for p in candidates:
         if p and Path(p).exists():
@@ -36,15 +37,15 @@ def _detect_data_dir() -> Path:
     return Path(".")
 
 # 输出目录：默认本地
-FULL_OUTPUT_BASE = PROJECT_ROOT / "数据仓库" / "因子产出" / "全量"
+FULL_OUTPUT_BASE = DATA_ROOT / "数据仓库" / "因子产出" / "全量"
 
 try:
     _detected = _detect_data_dir()
-    FULL_DATA_DIR = _detected if _detected != Path(".") else PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量"
+    FULL_DATA_DIR = _detected if _detected != Path(".") else DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量"
 except Exception:
-    FULL_DATA_DIR = PROJECT_ROOT / "数据仓库" / "行情数据" / "日线" / "全量"
+    FULL_DATA_DIR = DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量"
 BARRA_DIR = Path(os.environ.get("PAPER_FACTOR_BARRA_DIR",
-                                 str(PROJECT_ROOT / "数据仓库" / "barra_model")))
+                                 str(DATA_ROOT / "数据仓库" / "barra_model")))
 
 EXPECTED_ROWS = 2027
 DEFAULT_N_WORKERS = 4  # 日线/截面因子4核
@@ -264,7 +265,7 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
             env["FACTOR_CHUNK_SIZE"] = "15"
             env["FACTOR_N_WORKERS"] = "1"
 
-        minute_data_dir = PROJECT_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量"
+        minute_data_dir = DATA_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量"
         if minute_data_dir.exists():
             env["FACTOR_DATA_DIR"] = str(minute_data_dir)
         elif FULL_DATA_DIR != Path("."):
@@ -365,7 +366,7 @@ def _load_test_meta(factor_dir: Path, factor_name: str) -> dict:
     若测试 meta 仍缺描述字段，再从 extracted_reports/{DATE}/{report}.extracted.json
     按因子名补全 description/formulation/source_excerpt/cols→variables。
     """
-    lit = PROJECT_ROOT / "数据仓库" / "因子产出" / "测试"
+    lit = DATA_ROOT / "数据仓库" / "因子产出" / "测试"
     meta = {}
     candidates = [
         lit / factor_dir.parent.parent.name / factor_dir.parent.name
@@ -397,7 +398,7 @@ def _load_test_meta(factor_dir: Path, factor_name: str) -> dict:
             or not meta.get("variables")):
         report_name = factor_dir.parent.name
         date_str = factor_dir.parent.parent.name if factor_dir.parent.parent.name.isdigit() else ""
-        _lit = PROJECT_ROOT / "数据仓库" / "因子产出" / "extracted_reports"
+        _lit = DATA_ROOT / "数据仓库" / "因子产出" / "extracted_reports"
         extract_candidates = []
         if date_str:
             extract_candidates.append(_lit / date_str / f"{report_name}.extracted.json")
@@ -590,7 +591,7 @@ def post_process(factor_name: str, factor_dir: Path, factor_type: str,
     src_report = factor_dir.parent.parent / "literature_reports" / factor_dir.parent.name / factor_name / f"{factor_name}.report.md"
     # 回退：在测试输出目录查找
     if not src_report.exists():
-        alt = (PROJECT_ROOT / "数据仓库" / "因子产出" / "测试"
+        alt = (DATA_ROOT / "数据仓库" / "因子产出" / "测试"
                / factor_dir.parent.name / factor_name / f"{factor_name}.report.md")
         if alt.exists():
             src_report = alt
