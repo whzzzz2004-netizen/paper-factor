@@ -947,10 +947,8 @@ _CODE_DIR = Path(__file__).parent
 N_WORKERS = int(os.environ.get("FACTOR_N_WORKERS", "4"))
 
 def load_stock(stock, columns=None):
-    import pyarrow.parquet as pq
     if columns is None:
-        table = pq.read_table(STOCK_DATA_DIR / f"{stock}.parquet", memory_map=True)
-        _df = table.to_pandas()
+        _df = pd.read_parquet(STOCK_DATA_DIR / f"{stock}.parquet")
         _fund = _load_fundamental(stock)
         if _fund is not None:
             _add = _fund.loc[:, [c for c in _fund.columns if c not in _df.columns]]
@@ -958,13 +956,12 @@ def load_stock(stock, columns=None):
                 _df = _df.join(_add)
         return _df
     _fcols = [c for c in columns if c in FUNDAMENTAL_COLS]
+    # 排除索引列名（trade_date/datetime/__index_level_0__ 是 index 而非数据列，pandas 读 parquet 自动恢复 index）
+    _mcols = [c for c in columns if c not in FUNDAMENTAL_COLS and c not in ('trade_date', 'datetime', '__index_level_0__')]
     if not _fcols:
-        table = pq.read_table(STOCK_DATA_DIR / f"{stock}.parquet", columns=columns, memory_map=True)
-        return table.to_pandas()
-    _mcols = [c for c in columns if c not in FUNDAMENTAL_COLS]
+        return pd.read_parquet(STOCK_DATA_DIR / f"{stock}.parquet", columns=_mcols or None)
     if _mcols:
-        table = pq.read_table(STOCK_DATA_DIR / f"{stock}.parquet", columns=_mcols, memory_map=True)
-        _df = table.to_pandas()
+        _df = pd.read_parquet(STOCK_DATA_DIR / f"{stock}.parquet", columns=_mcols)
     else:
         _df = pd.read_parquet(STOCK_DATA_DIR / f"{stock}.parquet")
     _fund = _load_fundamental(stock, _fcols)
@@ -1058,16 +1055,14 @@ def _get_stock(s):
     global _WCACHE, _WPOS
     if s not in _WCACHE:
         try:
-            import pyarrow.parquet as pq
             # _LOAD_COLS 由主进程检测后经 initargs 传给子进程；为 None 时才加载全部列
             _cols = _LOAD_COLS if isinstance(_LOAD_COLS, list) else None
             _fcols = [c for c in _cols if c in FUNDAMENTAL_COLS] if _cols else None
-            _mcols = [c for c in _cols if c not in FUNDAMENTAL_COLS] if _cols else None
-            _t = pq.read_table(_SD / f"{s}.parquet", columns=_mcols, memory_map=True)
-            df = _t.to_pandas()
-            # _LOAD_COLS非None时pyarrow按列读取会丢失datetime索引
-            if 'trade_date' in df.columns:
-                df = df.set_index('trade_date')
+            # 只读数据列（排除索引列名 trade_date/datetime/__index_level_0__，避免 pq 按列读抛 FieldRef 错误）
+            _mcols = [c for c in _cols if c not in FUNDAMENTAL_COLS
+                      and c not in ('trade_date', 'datetime', '__index_level_0__')] if _cols else None
+            # 用 pandas 读（自动从 metadata 恢复 index），不用 pq.read_table 按列读
+            df = pd.read_parquet(_SD / f"{s}.parquet", columns=_mcols or None)
             # 合并非行情列：有检测列时只合并因子需要的列；load-all(None)时合并全部作为安全兜底
             _fund = _load_fundamental(s, _fcols) if (_cols is None or _fcols) else None
             if _fund is not None:
@@ -1136,9 +1131,9 @@ if __name__ == '__main__':
         # 提取代码中所有引号字符串，与可用列取交集
         _ALL_QUOTED = set(re.findall(r'''['\"](\w+)['\"]''', _USER_SOURCE))
         _LOAD_COLS = sorted(_ALL_QUOTED & _AVAILABLE_COLS) if _ALL_QUOTED else None
-        # 确保datetime列总是被加载（parquet按列读取时会丢失索引列）
-        if _LOAD_COLS is not None and 'trade_date' not in _LOAD_COLS:
-            _LOAD_COLS = ['trade_date'] + _LOAD_COLS
+        # 排除索引列名（trade_date/datetime 是 index 而非数据列，pandas 读 parquet 自动恢复 index）
+        if _LOAD_COLS is not None:
+            _LOAD_COLS = [c for c in _LOAD_COLS if c not in ('trade_date', 'datetime', '__index_level_0__')]
         if not _LOAD_COLS:
             _LOAD_COLS = None
         print(f"检测到因子使用的列: {_LOAD_COLS}", flush=True)
