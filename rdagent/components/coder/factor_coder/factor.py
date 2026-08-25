@@ -1139,7 +1139,11 @@ if __name__ == '__main__':
         print(f"检测到因子使用的列: {_LOAD_COLS}", flush=True)
         # ----
 
-        _CHK_DIR = _CODE_DIR / "checkpoints"
+        # cross_section 模板的 chunk checkpoint 目录：用独立目录（含进程号），
+        # 避免多因子并发 test-and-export 共享同一 checkpoints 互相删除导致
+        # "Cannot save file into a non-existent directory: '/tmp/checkpoints'"。
+        import tempfile as _tmp
+        _CHK_DIR = Path(_tmp.gettempdir()) / f"checkpoints_{os.getpid()}"
         _CHK_DIR.mkdir(exist_ok=True)
         _CHUNK = 200
         _t0_main = time.time()

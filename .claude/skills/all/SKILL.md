@@ -40,3 +40,21 @@ python3 scripts/run_all.py --dry-run
 ```bash
 python3 scripts/run_all.py {args}
 ```
+
+## ⚠️ 失败因子处理（重要）
+
+**全量跑完（所有其他因子都完成后）**，若发现有因子失败或产出异常（parquet 全空/非空率过低/无图像），**必须派 agent 介入修复**，不能直接接受：
+
+1. **等 run_all 完全结束**（`🏁 全部完成` 且 `队列已清空`）
+2. 逐因子检查全量产出：parquet 是否存在、非空率是否正常（minute/daily 应 >60%，cross_section 应 >50%）、是否有 decile.png
+3. **失败的因子 → 派 agent 分析根因**（数据问题 / 模板问题 / 因子算法问题）→ 修复核心函数 → 重新 `test-and-export` + `deploy-to-full` → 重跑该因子全量（`run_factor_full.py`）
+4. 修复后重新验证非空率正常，全部通过才算完成
+
+常见失败模式：
+- **数据 NaN**（如非行情列空）→ 检查 `非行情数据/` 是否有效
+- **模板 bug**（如 cross_section 索引列读取）→ 修模板后清 `_template_cache`
+- **因子算法**（全量规模退化、日期对齐、O(N³) 过慢）→ 改核心函数
+
+## 不跑全量时
+
+用户可能只要求"确保全量能正常产出"（不实际跑完）：此时修复因子后跑 `run_factor_full.py` 单因子验证非空率正常即可，不必等全量完整结束。
