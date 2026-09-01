@@ -29,8 +29,7 @@ mkdir -p /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/{测试,�
 mkdir -p /mnt/d/paper-factor-data/数据仓库/非行情数据/{测试,全量}/stock_data/daily
 mkdir -p /mnt/d/paper-factor-data/数据仓库/因子产出/{测试,全量}
 mkdir -p /mnt/d/paper-factor-data/数据仓库/barra_model
-mkdir -p /mnt/d/paper-factor-data/数据仓库/板块数据
-mkdir -p 新建文件
+mkdir -p 原始数据
 mkdir -p workspace/logs workspace/ideas
 ln -sfn ..//mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量 workspace/factor_implementation_source_data
 ln -sfn ..//mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试 workspace/factor_implementation_source_data_1000

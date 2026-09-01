@@ -64,7 +64,7 @@ cp -r /path/to/old/paper-factor/数据仓库 ./数据仓库
 
 如果没有现成数据，可以通过 `/getdata` 技能逐步导入：
 
-1. 准备好原始数据文件（CSV/parquet），放到 `/mnt/d/paper-factor-data/新建文件/` 目录下
+1. 准备好原始数据文件（CSV/parquet），放到 `/mnt/d/paper-factor-data/原始数据/` 目录下
 2. 运行 `python scripts/import_new_data.py --check` 预览
 3. 运行 `python scripts/import_new_data.py` 执行导入
 
@@ -122,7 +122,7 @@ python scripts/run_all.py --workers 3          # 3因子并行
 python scripts/run_all.py --dry-run            # 仅查看计划
 
 # 数据导入
-python scripts/import_new_data.py --check      # 预览新建文件
+python scripts/import_new_data.py --check      # 预览原始数据
 python scripts/import_new_data.py              # 执行导入
 ```
 

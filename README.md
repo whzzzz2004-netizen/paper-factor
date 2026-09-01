@@ -130,7 +130,6 @@ python scripts/run_factor_full.py "/mnt/d/paper-factor-data/数据仓库/因子�
 ├── 非行情数据/                                    # 非行情（基本面/截面因子等）
 │   ├── 全量/stock_data/daily/{code}.parquet       # 5435只 × 18列
 │   └── 测试/stock_data/daily/{code}.parquet       # 300只 × 300天
-├── 板块数据/                                       # 行业分类等
 ├── barra_model/                                    # Barra风险模型数据
 └── 因子产出/
     ├── 测试/{DATE}/...                             # 测试因子产出
@@ -153,7 +152,7 @@ python scripts/run_factor_full.py "/mnt/d/paper-factor-data/数据仓库/因子�
 
 ### 数据导入（/getdata）
 
-把新增数据文件放到 `/mnt/d/paper-factor-data/新建文件/` 目录，然后：
+把新增数据文件放到 `/mnt/d/paper-factor-data/原始数据/` 目录，然后：
 
 ```bash
 python scripts/import_new_data.py --check    # 预览
@@ -162,7 +161,7 @@ python scripts/import_new_data.py --dry-run  # 预览不执行
 ```
 
 自动分类行情/非行情/分钟数据，新列注册到 `data/schema.json`。
-新增截面因子时，需先在 `/mnt/d/paper-factor-data/新建文件/新因子描述.csv` 中描述因子含义（CSV 无表头，`因子名,描述文本`）。
+新增截面因子时，需先在 `/mnt/d/paper-factor-data/原始数据/新因子描述.csv` 中描述因子含义（CSV 无表头，`因子名,描述文本`）。
 
 ### 因子提取 + 测试（/factor 技能）
 
@@ -255,7 +254,7 @@ python scripts/claude_factor_helper.py mark-done --name "文件名.pdf"  # 标�
 ### 数据导入
 
 ```bash
-python scripts/import_new_data.py --check           # 预览新建文件
+python scripts/import_new_data.py --check           # 预览原始数据
 python scripts/import_new_data.py                   # 执行导入
 ```
 
@@ -263,7 +262,7 @@ python scripts/import_new_data.py                   # 执行导入
 
 ```
 /factor     — 因子提取全流程（扫描→提取→编码→测试→部署→标记完成）
-/getdata    — 从 /mnt/d/paper-factor-data/新建文件/ 导入新增数据
+/getdata    — 从 /mnt/d/paper-factor-data/原始数据/ 导入新增数据
 /all        — 全量/增量运行所有因子
 /clean      — 删除所有因子产出 + Python 缓存
 ```
