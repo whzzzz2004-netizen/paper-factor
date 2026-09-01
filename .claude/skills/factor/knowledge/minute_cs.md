@@ -27,19 +27,9 @@ def cross_section_transform(all_values):
     Example output: {"000001": 0.3, "000002": 0.8, "600519": 0.1}
 ```
 
-## 可用数据列（8 列，同分钟线）
+## 可用数据列（同分钟线）
 
-<!-- MINUTE_COLUMNS -->
-  - close: 收盘价（日线收盘价）
-  - date: 冗余日期列（flat 格式中与 trade_date 同义，仅用于导入）
-  - factor: 复权因子（前复权因子）
-  - high: 最高价（日线最高价）
-  - low: 最低价（日线最低价）
-  - open: 开盘价（日线开盘价）
-  - return: 分钟收益率
-  - trade_date: 交易日期（flat 格式原始列）
-  - volume: 成交量（单位：股）
-<!-- /MINUTE_COLUMNS -->
+> 完整列名及含义由主进程通过 `show-columns --type minute` 预跑后内联进 Phase 2 prompt（`{MINUTE_COLS_TEXT}`），此处不再重复列出。（注意：当前 /factor 已禁用 minute_cs 类型，统一走 minute 模板。）
 
 ## 特殊约束
 

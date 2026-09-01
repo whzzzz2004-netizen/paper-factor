@@ -13,7 +13,7 @@
 2. **强制提取**：每篇最多15个因子，无论是否明确写"因子"二字。择时策略的阈值→截面排序因子；行业轮动→行业偏离度；选股逻辑→多单维度因子
 3. **子因子独立提取**，formulation 必须完整（从原始数据字段出发），禁止 `f(·)` 占位符
 4. **禁止合成因子**
-5. **唯一跳过场景**：所需数据完全不可用（如专有数据库API）。择时/选基/宏观/债券不跳过
+5. **唯一跳过场景**：所需数据完全不可用（如专有数据库API）。择时/选基/宏观/债券不跳过。**因子缺字段（某列不存在）不算"跳过"**：Phase 1 照常定义所有因子（不看列、不填列名）；Phase 2 才看 `show-columns` 全部列名、结合因子定义自行判断。若判断因子因缺列无法实现 → 自己在测试因子目录写 `{factor}.missing.json` 记录缺的列，不生成代码、不部署全量。字段齐全的因子 → Phase 2 从 show-columns 挑出真实列名写代码。
 6. `source_excerpt` 从原文直接复制
 7. **DATE 永远是当天日期**：`datetime.now().strftime("%Y-%m-%d")`。所有 save-extracted / test-and-export / deploy-to-full 的 `--date` 都传当天日期，不用研报的原始日期。
 8. **不标记完成**：不跑 `mark-done`，不跟踪处理状态。每次运行直接扫 `papers/inbox/` 里的所有文件，全量处理。
@@ -59,6 +59,13 @@ python3 -c "import json; sl=json.load(open('/mnt/d/paper-factor-data/数据仓�
 ```
 如果日线不是 300只×300天，或分钟不是 300只×300天，说明测试数据有问题，**先修复数据再继续**。
 
+**主进程预跑列清单（一次性，所有 Phase 2 agent 共享，省去每个 agent 各跑一次 show-columns）：**
+```bash
+python scripts/claude_factor_helper.py show-columns --type daily_single   # → 保存为 {DAILY_COLS_TEXT}
+python scripts/claude_factor_helper.py show-columns --type minute         # → 保存为 {MINUTE_COLS_TEXT}
+```
+把两份输出直接内联进每个 Phase 2 sub-agent 的 prompt（见下），agent **不再自己跑 show-columns**。
+
 **如果需要全市场数据（如全市场分钟收益率），预计算市场代理文件：**
 检查两个目录：
 ```bash
@@ -103,7 +110,7 @@ prompt = """
 
 
 ### Step 2: 定义因子
-运行 python scripts/claude_factor_helper.py show-columns 查看可用列。
+**只看原文定义因子，不看任何数据列、不填列名（列名交给 Phase 2 统一判断）。**
 
 分析原文，定义所有因子。每条：
 - name: 英文驼峰
@@ -117,10 +124,9 @@ prompt = """
 - lookback: 天数 (1月≈20, 1季≈60, 6月≈120, 1年≈250)。
   **⚠️ 只考虑核心计算需要多少天**。论文末尾的"截面标准化+std20/取波动率"是后处理，不作为lookback依据。
   如果核心计算只需要当天数据 → lookback=1。
-- cols: 列名列表
 - source_excerpt: 原文复制
 
-最多15个因子。formulation 必须完整。只有可用列存在的因子才保留。
+最多15个因子。formulation 必须完整。**不填 cols（不要臆造列名）**。**不要静默丢弃字段可能缺失的因子**：所有因子照常定义并保留（含字段可能缺失的），字段是否存在、用什么列名，全部交给 Phase 2 的 agent 看 show-columns 输出后自行判断（确实缺失会在测试因子目录记录 `{name}.missing.json`）。
 
 ### Step 3: 保存
 python scripts/claude_factor_helper.py save-extracted --name "标题" --date {DATE} < 因子JSON
@@ -129,7 +135,7 @@ python scripts/claude_factor_helper.py save-extracted --name "标题" --date {DA
 {{{{
   "report_name": "标题",
   "date": "{DATE}",
-  "factors": [{{"name": "F1", "type": "daily", "lookback": 20, "cols": ["close"]}}, ...],
+  "factors": [{{"name": "F1", "type": "daily", "lookback": 20, "cols": []}}, ...],
   "skipped": false
 }}}}
 
@@ -203,30 +209,74 @@ subagent_type=general-purpose
 prompt = """
 你只做一件事：写一个核心函数并跑 test-and-export。不做其他任何事。
 
-### 参考同类型因子（节省 token）
-查看已生成的成功因子代码，参考其核心函数结构：
-ls /mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py
-只看核心函数部分（calc_factor_xxx），不要复制模板代码。
-
 ### 因子定义
 - 因子名: {name}
 - 类型: {type}（minute/daily/cross_section/deep_learning）
 - 函数名: {func_name}  (见下方对照表)
 - lookback: {lookback}  **（⚠️ 只含核心计算天数，不含论文末尾的截面标准化/std20后处理）**
-- 列: {cols}
 - 报告名: {report_name}
 - formulation: {formulation}
 - description: {description}
 - source_excerpt: {source_excerpt}
+- 需要的字段: 由你从 formulation/description 推导（Phase 1 不提供列名，见下方 Step 0）
+
+### Step 0：看全部列 → 推导字段 → 判断缺列 / 挑出真实列名（最重要的一步）
+**列清单已在下方直接给出（主进程预跑 show-columns 的内联结果），无需自己跑命令：**
+- **minute** 类型 → 用下方 `{MINUTE_COLS_TEXT}`
+- **daily / cross_section / deep_learning** 类型 → 用下方 `{DAILY_COLS_TEXT}`
+
+**从因子 definition/formulation/description 推导它需要的字段（语义，如"当日分钟收益率"→return、"市盈率"→pe_ttm），再对照上面给出的完整列名逐一核对（这是唯一的字段核对方式）：**
+
+- **因子需要的字段都能在输出里找到 → 字段齐全**：
+  - **从 show-columns 输出里挑出每个字段对应的真实列名**（如"市盈率"对应 `pe_ttm` 而非臆造 `pe`），这些真实列名就是本因子的 `{cols}`
+  - 继续 Step 1 写代码，`--cols` 用这些真实列名
+- **因子需要某字段但输出里没有对应列 → 先尝试"用现有列组合推导"，实在没有才算缺列**：
+  - **字段可推导知识点**（常见派生字段）：`换手率 ≈ volume / (float_shares × 10000)`（volume 单位=股，float_shares 单位=万股）；涨跌幅可用 `close.pct_change()`（或用 `pct_chg`）；"昨日收盘"可用 `close.shift(1)`；市值相关已直接有 market_cap/circulating_market_cap 列。
+  - 如果所需字段能用清单里现有列组合算出来 → **不判缺列**，用这些列实现（如 CrossSectionTurnover 用 `volume` + `float_shares` 算换手率），正常写代码。
+  - 只有组合也实现不了（如"分析师一致预期营收"这类清单里完全没有、也无法用现有列推导的专有数据）→ **才判断为缺列**：
+  - **不要写代码，不要跑 test-and-export，不要 deploy-to-full**
+  - 在测试因子目录用 Write 工具写 `{name}.missing.json` 记录缺的字段（路径见下文"缺列 JSON 格式"——**用完整路径 `/mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.missing.json`**，不要写在项目根目录的 因子产出/ 下）
+  - 然后直接返回 success=true，missing_fields=true
+  - 不需要修改字段或换因子
+
+**缺列 JSON 格式**（用 Write 工具写到 `因子产出/测试/{DATE}/{report_name}/{name}/{name}.missing.json`，即 **`/mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.missing.json`**，与其他测试因子产出同一目录；目录不存在时先创建）：
+```json
+{
+  "factor_name": "{name}",
+  "report_name": "{report_name}",
+  "date": "{DATE}",
+  "factor_type": "{type_key}",
+  "status": "missing_fields",
+  "missing_fields": ["缺的字段1", "缺的字段2"],
+  "checked_cols": ["因子定义推导需要的所有字段（语义）"],
+  "detected_by": "show-columns",
+  "message": "因子 {name} 所需字段 缺的字段1, 缺的字段2 在测试数据中不存在，因此未生成代码、未部署到全量。"
+}
+```
 
 ### 你的任务（只有两步）
 
 #### 1. 写核心函数到 /tmp/factor_{name}.py
+只有 Step 0 显示字段齐全时才写代码。列名以 Step 0 的 `show-columns --type` 输出为准。
+**写代码前，用 Read 工具读**恰好一个**知识文件——只读与你自己 type 对应的那一个（按类型映射选，不要读其他类型，省 token）：**
+```bash
+# 只读这一个（根据类型选择）：
+#   daily          → .claude/skills/factor/knowledge/daily.md
+#   minute         → .claude/skills/factor/knowledge/minute.md
+#   cross_section  → .claude/skills/factor/knowledge/cross_section.md
+#   deep_learning  → .claude/skills/factor/knowledge/deep_learning.md
+```
 根据类型写核心函数：
 {daily: **`def calc_factor_series(df, stock) -> pd.Series`**（向量化，1次调用算完全部日期）。可选写 `calc_factor_single_stock(df, trade_date, stock)` 作为 fallback，模板默认提供包装。
  minute: `def calc_factors_one_day(df, stock):`,
  cross_section: `def calc_factor_cross_section(all_data, trade_date):`,
  deep_learning: `def train_model(all_data, trade_date):` + `def predict_batch(model, data_dict, trade_date):`}
+
+**⚠️ 各模板入参的硬事实（照此写，勿猜）**：
+- **minute**：`calc_factors_one_day(df, stock)` 的 `df.index` 是 **DatetimeIndex**（模板已转换），直接用 `df.index`；`df` 是 LOOKBACK 天的滑动窗口切片（最后一天是 T 日）。不要调用 `get_level_values("datetime")`。
+- **cross_section**：`calc_factor_cross_section(all_data, trade_date)` 的 `all_data` 是 **`dict {股票代码: DataFrame}`**，不是单个 DataFrame！`all_data[stock]` 是该股票截至 `trade_date` 的 **LOOKBACK 窗口切片**（含所需列）。返回 `dict {股票代码: 值}` 或 `{股票代码: {"因子名": 值}}`，需要遍历 `all_data` 的 key。行业分类用模板已加载的 `INDUSTRY_DICT`。
+- **deep_learning**：`train_model(all_data, trade_date)` 的 `all_data` 同理是 dict。
+- **daily**：`calc_factor_series(df, stock)` 的 `df` 是单股票全历史 DataFrame（DatetimeIndex），一次调用返回全部日期的 pd.Series。
 
 **⚠️ 所有分钟因子用 minute 模板，不要用 minute_cs。**
 
@@ -258,7 +308,8 @@ def calc_factor_series(df, stock):
 
 **判断原则：** 如果因子逻辑可以拆成"先算每日值，再跨日 rolling" → 用 `calc_factor_series`。如果因子逻辑依赖滑动窗口内的全量数据计算 → 用 `calc_factors_one_day`。不确定时两种都写，模板自动优先走向量化。
 
-**市场数据模式（因子需要全市场分钟收益率/总成交量等作为输入）：**
+<!-- BEGIN_MINUTE_ONLY 主进程按 type 拼 prompt：仅 minute 因子包含以下"市场数据模式"段落 -->
+**市场数据模式（仅 minute 因子需要全市场数据时才相关；daily/cross_section/deep_learning 因子跳过本段）：**
 
 **Step 0：检查预计算文件是否存在（测试 + 全量都要检查）**
 ```bash
@@ -291,6 +342,7 @@ def calc_factors_one_day(df, stock):
     # ... 后续计算
 ```
 注意：`calc_factors_one_day` 收到的 `df.index` 是 `DatetimeIndex`。**不要调用 `get_level_values("datetime")`**，直接用 `df.index` 即可。
+<!-- END_MINUTE_ONLY -->
 
 **如果因子逻辑依赖截面数据（全市场排名/标准化/分组等）：**
 - **直接跳过**，输出原始值即可。不需要做截面处理
@@ -309,8 +361,10 @@ python scripts/claude_factor_helper.py test-and-export \
   --source-report-title "{report_name}" \
   --date {DATE}
 ```
+> `{cols}` = Step 0 从 show-columns 挑出的**真实列名**（空格或逗号分隔均可，helper 自动 split）。字段齐全时才需要；缺列已返回，不会走到这一步。
 
 **test-and-export 成功后，立即部署到全量：**
+> 注意路径结构：test-and-export 输出为 `因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py`（因子目录 = `{report_name}/{name}/`，内部文件 = `{name}.code.py`）。deploy-to-full 的 `--code` 用同一路径，**不要**多套一层 `{name}` 目录。
 ```bash
 python scripts/claude_factor_helper.py deploy-to-full \
   --code /mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py \
@@ -321,17 +375,21 @@ python scripts/claude_factor_helper.py deploy-to-full \
 1. ❌ 不要编译代码（`py_compile`）
 2. ❌ 不要 import FactorFBWorkspace
 3. ❌ 不要自己加载 parquet
-4. ❌ 不要检查 schema
+4. ❌ 不要自己加载 parquet 手动检查 schema —— 字段核对只用 Step 0 的 `show-columns --type` 输出
 5. ❌ 不要手动 debug
 6. **写代码 → 跑 test-and-export，中间不做任何事**
+7. **跑通后不得再改代码**：`test-and-export` + `deploy-to-full` 一旦成功（含"缺列已返回"），**绝不再回头修改代码**——注释措辞、变量名、格式优化等一律禁止（改了=改代码=要重跑，纯浪费 token 和时间）。只有 test-and-export **失败**时，才允许按下面"如果 test-and-export 失败"的规则修改重试。
 
 #### 如果 test-and-export 失败（含错误和超时）
+- **缺字段已在 Step 0 判断处理**（判断缺列就在 Step 0 写 `{name}.missing.json` 并返回，不会走到 test-and-export）
 - **普通错误**：看错误信息，修改函数代码后重新跑，最多重试 2 次
 - **超时**（超过 300s 无结果）：修改代码优化性能（减天数、向量化等）后重试，最多 **2 次修改机会**
 - **累计 3 次都失败** → 在结果中报告 failure，不阻塞后续因子
 
 ### 返回格式
-{{"name": "{name}", "success": true/false, "code_path": "/tmp/factor_{name}.py", "error": null 或 "失败原因"}}
+{{"name": "{name}", "success": true/false, "missing_fields": false, "code_path": "/tmp/factor_{name}.py", "error": null 或 "失败原因"}}
+
+**缺字段（Step 0 判断缺列）**：返回 {"name": "{name}", "success": true, "missing_fields": true, "error": null}。不部署全量。
 """
 ```
 
@@ -388,6 +446,12 @@ while active:
 - deep_learning → deep_learning
 
 ## 编码硬约束
+**主进程按 type 拼 prompt 时：仅把适用该类型的条目拼进去，其余丢弃**（通用条目所有类型都适用）：
+- 通用（所有类型）：2, 3, 6, 7, 8, 9, 11, 12, 13, 15, 17
+- daily 独有：1（T日=df.iloc[-1]）, 4（日线用 pct_chg）, 5（df.index.date 不放循环内）
+- minute 独有：10（禁止分钟级 for 循环）, 14（禁用 minute_cs）
+- cross_section/deep_learning：无独有条目（用通用即可）
+
 1. T日 = df.iloc[-1]
 2. 返回 `{"因子名": np.nan}`，不返回 None
 3. 禁止月末判断

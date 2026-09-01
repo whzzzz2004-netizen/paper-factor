@@ -13,19 +13,9 @@ def calc_factors_one_day(df, stock):
 - **禁止使用** `resample('5T')`、`resample('15T')` 等 `'T'` 后缀——pandas 2.3+ 已删除 `'T'` 别名
 - 必须用 `resample('5min')`、`resample('15min')` 代替
 
-## 可用数据列（8 列）
+## 可用数据列
 
-<!-- MINUTE_COLUMNS -->
-  - close: 收盘价（日线收盘价）
-  - date: 冗余日期列（flat 格式中与 trade_date 同义，仅用于导入）
-  - factor: 复权因子（前复权因子）
-  - high: 最高价（日线最高价）
-  - low: 最低价（日线最低价）
-  - open: 开盘价（日线开盘价）
-  - return: 分钟收益率
-  - trade_date: 交易日期（flat 格式原始列）
-  - volume: 成交量（单位：股）
-<!-- /MINUTE_COLUMNS -->
+> 完整列名及含义由主进程通过 `show-columns --type minute` 预跑后内联进 Phase 2 prompt（`{MINUTE_COLS_TEXT}`），此处不再重复列出。
 
 - 多天数据用 `df.index.date` 分组
 - **无 `pct_chg`、`pre_close`、非行情等日线列**

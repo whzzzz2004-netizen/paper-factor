@@ -197,6 +197,42 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_ROOT = Path("/mnt/d/paper-factor-data")
 LITERATURE_REPORTS_DIR = DATA_ROOT / "数据仓库" / "因子产出" / "测试"
+SCHEMA_FILE = PROJECT_ROOT / "data" / "schema.json"
+
+def _load_schema() -> dict:
+    """读 data/schema.json（getdata 导入新字段后由 import_new_data.py 自动维护）。"""
+    if not SCHEMA_FILE.exists():
+        return {"daily": {"columns": {}}, "minute": {"columns": {}}}
+    try:
+        return json.loads(SCHEMA_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"daily": {"columns": {}}, "minute": {"columns": {}}}
+
+def _load_ff_schema() -> dict:
+    """读 factor_field_schema.json（short_name + note 列含义，getdata 导入时同步更新）。"""
+    candidates = [
+        DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "测试" / "factor_field_schema.json",
+        DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量" / "factor_field_schema.json",
+    ]
+    for p in candidates:
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+    return {}
+
+def _desc_for_col(col: str) -> str:
+    """取列含义：优先 schema.json description，其次 factor_field_schema short_name，最后空。"""
+    schema = _load_schema()
+    for group in ("daily", "minute"):
+        cc = schema.get(group, {}).get("columns", {})
+        if col in cc and cc[col].get("description"):
+            return cc[col]["description"]
+    ff = _load_ff_schema()
+    if col in ff and ff[col].get("short_name"):
+        return ff[col]["short_name"]
+    return ""
 
 def _detect_data_dir() -> Path:
     """Detect best available data directory."""
@@ -1349,59 +1385,51 @@ def cmd_save_extracted(args):
 # Subcommand: show-columns — 显示可用数据列
 # ---------------------------------------------------------------------------
 def cmd_show_columns(args):
-    """Show available columns in stock data parquet files with descriptions."""
+    """Show available columns in stock data parquet files with descriptions.
+
+    --type 决定展示哪套数据的列：
+      minute / minute_cross_section → 分钟线列（open/high/low/close/volume/return/factor）
+      其他（daily / cross_section / deep_learning / 不传）→ 日线行情列 + 非行情列
+
+    列含义来源（getdata 导入新字段后自动带出新列含义）：
+      data/schema.json（description）→ factor_field_schema.json（short_name）
+    """
     import pyarrow.parquet as _pq
-    test_dir = TEST_DATA_DIR / "stock_data" / "daily"
-    if test_dir.exists():
-        files = sorted(test_dir.glob("*.parquet"))
+
+    if args.type in ("minute", "minute_cross_section"):
+        minute_dir = DATA_ROOT / "数据仓库" / "行情数据" / "分钟线" / "测试" / "stock_data" / "minute_by_date"
+        if not minute_dir.exists():
+            print("ERROR: 分钟线测试数据不存在", file=sys.stderr)
+            return 1
+        files = sorted(minute_dir.glob("*.parquet"))
+        if not files:
+            print("ERROR: 分钟线测试数据为空", file=sys.stderr)
+            return 1
+        cols = [n for n in _pq.read_schema(files[0]).names if n not in ("datetime", "instrument")]
+        print("可用列及含义（分钟线数据）：")
+        for c in cols:
+            print(f"  {c:30s} {_desc_for_col(c)}")
+        return 0
+
+    # 日线行情列 + 非行情列
+    cols = []
+    daily_dir = TEST_DATA_DIR / "stock_data" / "daily"
+    if daily_dir.exists():
+        files = sorted(daily_dir.glob("*.parquet"))
         if files:
-            schema = _pq.read_schema(files[0])
-            cols = [n for n in schema.names if n not in ('datetime', 'instrument')]
-            desc = {
-                "open": "开盘价",
-                "close": "收盘价",
-                "high": "最高价",
-                "low": "最低价",
-                "factor": "复权因子",
-                "volume": "成交量（股数）",
-                "pct_chg": "涨跌幅（%）",
-                "pre_close": "前收盘价",
-                "turnover_rate": "换手率（%）",
-                "roe": "净资产收益率",
-                "roa": "总资产收益率",
-                "pe_ttm": "滚动市盈率",
-                "pb": "市净率",
-                "revenue_yoy": "营业收入同比增速（%）",
-                "profit_yoy": "净利润同比增速（%）",
-                "gross_margin": "毛利率（%）",
-                "net_margin": "净利率（%）",
-                "debt_to_asset": "资产负债率（%）",
-                "ocf_per_share": "每股经营活动现金流",
-                "market_cap": "总市值",
-                "circulating_market_cap": "流通市值",
-                "total_shares": "总股本",
-                "float_shares": "流通股本",
-                "adjusted_profit": "调整后净利润",
-                "gross_profit": "营业利润",
-                "EMA5": "5日指数移动平均",
-                "EMA10": "10日指数移动平均",
-                "EMA20": "20日指数移动平均",
-                "jhjj_hsl": "集合竞价换手率",
-                "net_pct_main": "主力净流入占比",
-                "net_pct_xl": "超大单净流入占比",
-                "net_pct_l": "大单净流入占比",
-                "net_pct_m": "中单净流入占比",
-                "net_pct_s": "小单净流入占比",
-                "net_amount_main": "主力净流入金额（元）",
-                "amount": "成交金额（元）",
-            }
-            print("可用列及含义（日线数据）：")
-            for c in cols:
-                d = desc.get(c, "")
-                print(f"  {c:30s} {d}")
-            return 0
-    print("ERROR: 无法找到数据文件")
-    return 1
+            cols += [n for n in _pq.read_schema(files[0]).names if n not in ("datetime", "instrument", "trade_date")]
+    fund_dir = DATA_ROOT / "数据仓库" / "非行情数据" / "测试" / "stock_data" / "daily"
+    if fund_dir.exists():
+        files = sorted(fund_dir.glob("*.parquet"))
+        if files:
+            cols += [n for n in _pq.read_schema(files[0]).names if n not in ("datetime", "instrument", "trade_date")]
+    if not cols:
+        print("ERROR: 无法找到数据文件")
+        return 1
+    print("可用列及含义（日线数据 + 非行情数据）：")
+    for c in cols:
+        print(f"  {c:30s} {_desc_for_col(c)}")
+    return 0
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1571,7 +1599,8 @@ def main():
     p_idea.add_argument("--text", required=True, help="Factor idea description")
 
     # show-columns
-    sub.add_parser("show-columns", help="Show available columns in stock data")
+    p_showcols = sub.add_parser("show-columns", help="Show available columns in stock data (--type minute 显示分钟线列)")
+    p_showcols.add_argument("--type", default=None, help="Factor type: daily/minute/cross_section/deep_learning（决定展示日线+非行情列 还是 分钟线列）")
 
     # retrieve-knowledge
     p_rk = sub.add_parser("retrieve-knowledge", help="Retrieve domain knowledge via RAG (A股规则, 涨停机制, 列定义等)")
