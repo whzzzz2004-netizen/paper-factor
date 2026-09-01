@@ -2,7 +2,7 @@
 """生成假分钟数据和基本面数据，补全 2018~2026 的全量历史。
 
 用法: python3 scripts/generate_fake_data.py
-输出: 新建文件/分钟线/YYYYMMDD.parquet + 新建文件/非行情/{因子名}.parquet
+输出: 原始数据/分钟线/YYYYMMDD.parquet + 原始数据/非行情/{因子名}.parquet
 """
 
 import json
@@ -27,10 +27,10 @@ DAILY_STOCK_LIST = WH / "行情数据" / "日线" / "全量" / "stock_data" / "d
 
 # 分钟目录（已有文件）
 MINUTE_BY_DATE = WH / "行情数据" / "分钟线" / "全量" / "stock_data" / "minute_by_date"
-MINUTE_OUT = DATA_ROOT / "新建文件" / "分钟线"
+MINUTE_OUT = DATA_ROOT / "原始数据" / "分钟线"
 
 # 非行情输出
-FUND_OUT = DATA_ROOT / "新建文件" / "非行情"
+FUND_OUT = DATA_ROOT / "原始数据" / "非行情"
 
 FUNDAMENTAL_COLS = [
     "roe", "roa", "pe_ttm", "pb", "revenue_yoy", "profit_yoy", "gross_margin",

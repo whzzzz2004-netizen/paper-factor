@@ -11,8 +11,8 @@ import pyarrow.parquet as pq
 
 WH = DATA_ROOT / "数据仓库"
 MINUTE_BY_DATE = WH / "行情数据" / "分钟线" / "全量" / "stock_data" / "minute_by_date"
-MINUTE_OUT = DATA_ROOT / "新建文件/分钟线"
-FUND_OUT = DATA_ROOT / "新建文件/非行情"
+MINUTE_OUT = DATA_ROOT / "原始数据/分钟线"
+FUND_OUT = DATA_ROOT / "原始数据/非行情"
 DAILY_TRADE_DATES = WH / "行情数据" / "日线" / "全量" / "stock_data" / "daily" / "trade_dates.json"
 DAILY_STOCK_LIST = WH / "行情数据" / "日线" / "全量" / "stock_data" / "daily" / "stock_list.json"
 FUNDAMENTAL_COLS = [

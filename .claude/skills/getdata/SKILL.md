@@ -1,11 +1,11 @@
 ---
 name: getdata
-description: 从本地「新建文件」目录导入新增行情/非行情数据，自动检测新列 → 更新 schema → 更新 prompt
+description: 从本地「原始数据」目录导入新增行情/非行情数据，自动检测新列 → 更新 schema → 更新 prompt
 ---
 
 # /getdata — 本地增量数据导入
 
-用户手动把新增数据放到 `/mnt/d/paper-factor-data/新建文件/` 目录，用本 skill 导入。
+用户手动把新增数据放到 `/mnt/d/paper-factor-data/原始数据/` 目录，用本 skill 导入。
 （`/mnt/d/paper-factor-data/数据仓库/行情数据/日线/` + `/mnt/d/paper-factor-data/数据仓库/非行情数据/` + `/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/`）
 
 ## 三种数据格式
@@ -15,7 +15,7 @@ description: 从本地「新建文件」目录导入新增行情/非行情数据
 | **日线** | `日线/dailyData.parquet` | 单文件全量日线，含 `symbol` + `date` 列，**9 列行情数据**（open, close, high, low, factor, volume, EMA5, EMA10, EMA20） |
 | **分钟** | `分钟线/YYYYMMDD.parquet` | per-date，扁平格式（symbol + trade_date + 7 列数据）或 MultiIndex[instrument, datetime] |
 | **截面因子** | `非行情/因子名.parquet` | index=日期(str, yyyy-mm-dd), columns=股票代码(int), value=float64 |
-| **描述** | `/mnt/d/paper-factor-data/新建文件/新因子描述.csv` | CSV 无表头，每行 = 非行情/ 下一个 pqt 文件的描述 |
+| **描述** | `/mnt/d/paper-factor-data/原始数据/新因子描述.csv` | CSV 无表头，每行 = 非行情/ 下一个 pqt 文件的描述 |
 
 ## 流程
 
@@ -23,14 +23,14 @@ description: 从本地「新建文件」目录导入新增行情/非行情数据
 
 ```
 1. python3 scripts/import_new_data.py --check
-   → 看 /mnt/d/paper-factor-data/新建文件/ 下有什么新文件，预览每个文件的类型
+   → 看 /mnt/d/paper-factor-data/原始数据/ 下有什么新文件，预览每个文件的类型
 
 2. python3 scripts/import_new_data.py
    → 自动检测格式并导入（日线补齐 / 分钟补齐 / 截面因子入库）
    → 脚本自动完成全部数据操作
 
 3. 判断输出：
-   ├─ 有 NEW_COLUMNS_DETECTED → 读 `/mnt/d/paper-factor-data/新建文件/新因子描述.csv` 找新字段对应行的描述
+   ├─ 有 NEW_COLUMNS_DETECTED → 读 `/mnt/d/paper-factor-data/原始数据/新因子描述.csv` 找新字段对应行的描述
    │  → 用描述更新 data/schema.json + 两个 factor_field_schema.json 的 short_name/note
    │  → python3 scripts/import_new_data.py --update-prompts-only
    │
@@ -46,7 +46,7 @@ description: 从本地「新建文件」目录导入新增行情/非行情数据
 
 **CSV 与 `非行情/` 目录一一对应**：用户每新增一个字段/因子，会同时做两件事——
 1. 在 `非行情/` 目录放一个 pqt 数据文件
-2. 在 `/mnt/d/paper-factor-data/新建文件/新因子描述.csv` 加一行描述
+2. 在 `/mnt/d/paper-factor-data/原始数据/新因子描述.csv` 加一行描述
 
 CSV 是字段含义清单，**每行对应 `非行情/` 下一个 pqt 文件**。agent 必须以此为准更新数据描述。
 
@@ -62,12 +62,21 @@ CSV 无表头，3 列逗号分隔：
 - 也兼容 2 列格式：`因子名,描述文本`
 - 编码兼容 GBK / UTF-8（Windows 下保存的 CSV 多为 GBK，脚本自动识别）
 
-**Agent 职责**：导入出现 `NEW_COLUMNS_DETECTED` 时，在 CSV 中找该字段对应行的描述，用它更新 `factor_field_schema.json` 的 `short_name`（中文含义）和 `note`（完整说明）。
+**Agent 职责**：导入出现 `NEW_COLUMNS_DETECTED` 时，在 CSV 中找该字段对应行的描述，用它更新 `factor_field_schema.json` 的 `short_name`（中文含义）和 `note`（完整说明），并更新 `data/schema.json` 的 `description`。
+
+### ⚠️ 新列自动进入 /factor 的 show-columns（勿手动改 helper）
+
+`/factor` 的 `show-columns --type`（`scripts/claude_factor_helper.py`）**直接从 `data/schema.json` + `factor_field_schema.json` 读列含义**（不再硬编码），所以：
+
+- 新字段（含非行情新因子、追加的**分钟因子列**）只要按上面步骤更新了 `schema.json` / `factor_field_schema.json`，`show-columns --type daily`（日线+非行情）和 `show-columns --type minute`（分钟）**自动带出新列名及含义**，写日线/分钟因子的 agent 都会看到。
+- **不需要也不应该**改 `claude_factor_helper.py` 里的任何列名/含义表。
+
+验证方式：`python3 scripts/claude_factor_helper.py show-columns --type daily` 和 `--type minute` 应能看到新列名 + 含义。
 
 ## 使用方式
 
 ```bash
-# 查看 /mnt/d/paper-factor-data/新建文件/ 状态（推荐先执行）
+# 查看 /mnt/d/paper-factor-data/原始数据/ 状态（推荐先执行）
 python3 scripts/import_new_data.py --check
 
 # 自动检测格式并导入
@@ -80,10 +89,10 @@ python3 scripts/import_new_data.py --dry-run
 python3 scripts/import_new_data.py --update-prompts-only
 ```
 
-## /mnt/d/paper-factor-data/新建文件/ 目录结构
+## /mnt/d/paper-factor-data/原始数据/ 目录结构
 
 ```
-/mnt/d/paper-factor-data/新建文件/
+/mnt/d/paper-factor-data/原始数据/
   日线/
     dailyData.parquet  # 全量日线单文件（9 列：open, close, high, low, factor, volume, EMA5, EMA10, EMA20）
   分钟线/
@@ -122,8 +131,8 @@ python3 scripts/import_new_data.py --update-prompts-only
 | 文件 | 说明 |
 |------|------|
 | `scripts/import_new_data.py` | 导入脚本（全部逻辑，含分钟/截面因子支持） |
-| `/mnt/d/paper-factor-data/新建文件/` | 用户放置新增数据的目录 |
-| `/mnt/d/paper-factor-data/新建文件/新因子描述.csv` | 用户维护的字段含义清单（每行 = 非行情/ 下一个 pqt 文件） |
+| `/mnt/d/paper-factor-data/原始数据/` | 用户放置新增数据的目录 |
+| `/mnt/d/paper-factor-data/原始数据/新因子描述.csv` | 用户维护的字段含义清单（每行 = 非行情/ 下一个 pqt 文件） |
 | `data/schema.json` | 字段注册表，定义所有可用列及其来源 |
 | `/mnt/d/paper-factor-data/数据仓库/行情数据/日线/{全量,测试}/` | 行情数据（价量 9 列） |
 | `/mnt/d/paper-factor-data/数据仓库/非行情数据/{全量,测试}/` | 非行情数据（非行情列 + 新增截面因子） |
@@ -133,7 +142,7 @@ python3 scripts/import_new_data.py --update-prompts-only
 ## 新列与新数据源
 
 `import_new_data.py` 自动完成：
-1. 扫描 `/mnt/d/paper-factor-data/新建文件/` 下的 parquet/csv，自动检测文件类型
+1. 扫描 `/mnt/d/paper-factor-data/原始数据/` 下的 parquet/csv，自动检测文件类型
 2. 日线标准数据：按列名分类行情/非行情，按股票合并
 3. 分钟数据：复制到 minute_by_date + 更新 per-stock
 4. 截面因子：转长格式，按股票合并到非行情
@@ -144,7 +153,7 @@ python3 scripts/import_new_data.py --update-prompts-only
 
 **导入完成后**，如果出现 `NEW_COLUMNS_DETECTED`：
 
-1. 读 `/mnt/d/paper-factor-data/新建文件/新因子描述.csv`，找出每个新列对应行的描述（用户维护的含义清单）
+1. 读 `/mnt/d/paper-factor-data/原始数据/新因子描述.csv`，找出每个新列对应行的描述（用户维护的含义清单）
 2. 更新 `data/schema.json`：将新列的 `description` 改为 CSV 里的实际含义
 3. 更新两个 `factor_field_schema.json`：`short_name` 改为 CSV 里的中文含义，`note` 更新为完整说明
 4. 运行 `python3 scripts/import_new_data.py --update-prompts-only` 刷新 prompt 文件

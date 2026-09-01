@@ -1,10 +1,13 @@
 
 #!/usr/bin/env python3
-"""修复全量分钟数据 datetime 时间戳：所有值为 00:00:00 → 恢复为正确的分钟时间戳。
+"""修复分钟数据 datetime 时间戳：所有值为 00:00:00 → 恢复为正确的分钟时间戳。
 
-全量数据每分钟 242 行（5451 只股票，每只 242 分钟/天）：
-  - 09:30-11:30 (121 分钟)
-  - 13:00-15:00 (121 分钟)
+真实分钟数据（D:\\market_minute_daily_new 导入）每只股票每天 240 分钟：
+  - 09:31-11:30 (120 分钟)
+  - 13:01-15:00 (120 分钟)
+
+本脚本只用于修复历史损坏的分钟 parquet（datetime 全为 00:00:00）。
+新导入的真实数据自带正确分钟时间戳，无需运行本脚本。
 
 用法:
     python scripts/repair_minute_datetime.py                          # 全量
@@ -28,12 +31,14 @@ warnings.filterwarnings("ignore")
 
 
 def generate_timestamps(date_str: str, n_per_instrument: int) -> pd.DatetimeIndex:
-    """生成某一天的 242 个分钟时间戳 (09:30-11:30 + 13:00-15:00)"""
+    """生成某一天的真实分钟时间戳（240 个：09:31-11:30 + 13:01-15:00）。
+
+    若 n_per_instrument 不是 240（极少情况，历史假数据曾为 242），按需截断或填充。
+    """
     base = pd.Timestamp(date_str)
-    morning = pd.date_range(base.replace(hour=9, minute=30), base.replace(hour=11, minute=30), freq="1min")
-    afternoon = pd.date_range(base.replace(hour=13, minute=0), base.replace(hour=15, minute=0), freq="1min")
+    morning = pd.date_range(base.replace(hour=9, minute=31), base.replace(hour=11, minute=30), freq="1min")
+    afternoon = pd.date_range(base.replace(hour=13, minute=1), base.replace(hour=15, minute=0), freq="1min")
     full = morning.append(afternoon)
-    # 如果 n_per_instrument 不是 242（极少情况），截断或填充
     if len(full) >= n_per_instrument:
         return full[:n_per_instrument]
     # 填充：用最后时间重复

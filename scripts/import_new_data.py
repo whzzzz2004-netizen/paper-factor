@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-从本地「新建文件/」目录增量导入新增数据（行情 / 非行情 / 分钟 / 截面因子）。
+从本地「原始数据/」目录增量导入新增数据（行情 / 非行情 / 分钟 / 截面因子）。
 
-用户把新增数据手动放到 新建文件/ 下，本脚本自动检测格式并导入。
+用户把新增数据手动放到 原始数据/ 下，本脚本自动检测格式并导入。
 
 支持的数据格式：
 1. 日线数据（标准格式）：含 symbol+date 列，per-stock 合并
 2. dailyData.parquet：全量日线单文件（symbol+date+数据列）
 3. 分钟数据（分钟线/YYYYMMDD.parquet）：per-date 分钟，MultiIndex[instrument,datetime]
 4. 截面因子（非行情/因子名.parquet）：index=日期, columns=股票代码, values=float64
-5. 新建文件/新因子描述.csv：新因子描述（CSV 无表头，因子名,描述文本）
+5. 原始数据/新因子描述.csv：新因子描述（CSV 无表头，因子名,描述文本）
 
 用法:
-  python3 scripts/import_new_data.py --check           # 扫描 新建文件/，预览文件与列 schema
+  python3 scripts/import_new_data.py --check           # 扫描 原始数据/，预览文件与列 schema
   python3 scripts/import_new_data.py --dry-run         # 打印将要导入的内容，不执行
   python3 scripts/import_new_data.py                   # 自动检测格式并导入
   python3 scripts/import_new_data.py --update-prompts-only  # 仅根据 schema.json 更新 prompt 标记块
@@ -46,7 +46,7 @@ TEST_FUND_DAILY = DATA_ROOT / WH / "非行情数据" / "测试" / "stock_data" /
 
 # Barra 风险模型目录
 BARRA_MODEL_DIR = DATA_ROOT / WH / "barra_model"
-# 文件名含这些关键字的文件按 Barra 模型处理（放 新建文件/barra/ 或根目录均可）
+# 文件名含这些关键字的文件按 Barra 模型处理（放 原始数据/barra/ 或根目录均可）
 BARRA_KEYWORDS = ["因子收益率表", "因子暴露表", "特质收益率表", "特质风险表", "风险因子协方差矩阵表"]
 
 # 全量/测试元数据（位于 行情数据/日线 下）
@@ -72,7 +72,7 @@ FACTOR_FIELD_SCHEMA_PATHS = [
     DATA_ROOT / WH / "行情数据" / "日线" / "测试" / "factor_field_schema.json",
 ]
 
-NEW_DATA_DIR = DATA_ROOT / "新建文件"
+NEW_DATA_DIR = DATA_ROOT / "原始数据"
 DESC_FILE = NEW_DATA_DIR / "新因子描述.csv"
 
 # ── 列分类（与 scripts/strip_fundamental_cols.py 一致） ──
@@ -100,7 +100,7 @@ PANDAS_INTERNAL_COLS = {"__index_level_0__", "Unnamed: 0", "level_0", "index"}
 
 # ── 新因子描述.csv 解析 ──
 def _load_descriptions() -> dict:
-    """读取新建文件/新因子描述.csv，返回 {因子名: 描述文本}。
+    """读取原始数据/新因子描述.csv，返回 {因子名: 描述文本}。
     CSV 格式：第一列因子名（或 文件名.parquet），第二列描述文本（无表头，逗号分隔）。
     兼容 GBK / UTF-8 编码；兼容 2列（因子名,描述）与 3列（文件名,因子名,描述）。
     """
@@ -331,7 +331,7 @@ def _new_target(new: list, market: list, fund: list, hint: Optional[str]) -> str
         return "market"
     if new:
         print("  ⚠️ 无法判断新列归属（根目录且无已知列参照），默认归为 非行情。"
-              "如需归为行情，请把文件放到 新建文件/日线/", flush=True)
+              "如需归为行情，请把文件放到 原始数据/日线/", flush=True)
     return "fundamental"
 
 
@@ -662,7 +662,7 @@ def _import_daily_data_stream(info: FileInfo, new_target: dict, all_dates: set, 
 def _import_minute_file(info: FileInfo, full_dates: set, full_stocks: set) -> tuple:
     """导入分钟 per-date 文件。支持两种格式：
     - MultiIndex 格式（存量）：instrument+datetime 在 index，数据列为列
-    - 扁平格式（新建文件）：symbol, trade_date, date, 数据列 为列
+    - 扁平格式（原始数据）：symbol, trade_date, date, 数据列 为列
 
     新列（不在 MINUTE_EXPECTED_COLS 中）会自动合并到现有全量/测试 minute_by_date 文件。
     返回 (文件数, 股票数, 新列列表)。
@@ -680,19 +680,19 @@ def _import_minute_file(info: FileInfo, full_dates: set, full_stocks: set) -> tu
 
     # 扁平格式 → MultiIndex 转换
     if "symbol" in df.columns:
-        if df["symbol"].dtype.kind in "iu":
-            df["instrument"] = df["symbol"].astype(str)
-        else:
-            df["instrument"] = df["symbol"].apply(_normalize_code)
+        # 统一股票代码为 6 位字符串（如 1 → '000001'），与仓库 minute_by_date 的 instrument 格式一致
+        df["instrument"] = df["symbol"].apply(_normalize_code)
+        # flat 格式没有 datetime 列 → 用 trade_date 构建 datetime（trade_date 本身不保留为数据列）
+        if "datetime" not in df.columns:
+            if "trade_date" in df.columns and df["trade_date"].dtype.kind != "M":
+                df["trade_date"] = _parse_dates(df["trade_date"])
+            df["datetime"] = df.pop("trade_date")
         redundant = [c for c in ["symbol", "date"] if c in df.columns]
         df = df.drop(columns=redundant)
-        if "trade_date" in df.columns:
-            if df["trade_date"].dtype.kind != "M":
-                df["trade_date"] = _parse_dates(df["trade_date"])
 
-        # 检测新列（不在标准列中，也不是 instrument）
+        # 检测新列（不在标准列中，也不是 instrument / datetime / trade_date）
         data_cols = [c for c in df.columns if c not in ["instrument"]]
-        new_cols = [c for c in data_cols if c not in MINUTE_EXPECTED_COLS and c != "trade_date"]
+        new_cols = [c for c in data_cols if c not in MINUTE_EXPECTED_COLS and c not in ("datetime", "trade_date")]
         if new_cols:
             new_cols_detected = new_cols
             print(f"  检测到分钟新列: {new_cols}", flush=True)
@@ -789,6 +789,9 @@ def _update_minute_meta(full_dates: set, full_stocks: set):
     old_stocks = set(_load_json_list(FULL_MINUTE_STOCK_LIST))
     if sorted(full_stocks) != sorted(old_stocks):
         _write_json_list(FULL_MINUTE_STOCK_LIST, sorted(full_stocks))
+        # 同步更新 minute_by_date 子目录的 stock_list.json（模板从子目录读）
+        bd_sl = FULL_MINUTE_BY_DATE / "stock_list.json"
+        _write_json_list(bd_sl, sorted(full_stocks))
         print(f"  📈 分钟 stock_list.json: {len(old_stocks)} → {len(full_stocks)} 只", flush=True)
 
 
@@ -919,7 +922,8 @@ def _import_minute_cross_sectional_factors_batch(infos: list) -> list:
             day_df = df.loc[timestamps]
             # 直接构建 MultiIndex Series，避免 melt 的中间 DataFrame 开销
             times = day_df.index.values
-            stocks = day_df.columns.values.astype(str)
+            # 股票代码统一 6 位（如 1 → '000001'），与仓库 minute_by_date 的 instrument 格式一致
+            stocks = [_normalize_code(c) for c in day_df.columns]
             n_times, n_stocks = len(times), len(stocks)
             dt_idx = np.repeat(times, n_stocks)
             inst_idx = np.tile(stocks, n_times)
@@ -978,7 +982,7 @@ def _import_minute_cross_sectional_factors_batch(infos: list) -> list:
     schema = _load_schema()
     for c in new_cols:
         if c not in schema["minute"]["columns"]:
-            schema["minute"]["columns"][c] = {"description": c, "source": "新建文件导入"}
+            schema["minute"]["columns"][c] = {"description": c, "source": "原始数据导入"}
             print(f"  📋 注册分钟 schema 列: {c}", flush=True)
     _save_schema(schema)
 
@@ -1000,7 +1004,7 @@ def _type_label(ft: str) -> str:
 def check_new_data():
     files = scan_new_data_dir()
     if not files:
-        print("新建文件/ 下没有可导入的文件（parquet/csv）")
+        print("原始数据/ 下没有可导入的文件（parquet/csv）")
         note = DESC_FILE
         if note.exists():
             print(f"提示: 可读 {DESC_FILE} 了解新列含义")
@@ -1138,7 +1142,7 @@ def _register_new_cols(schema: dict, cols_encountered: set, write: bool,
     truly_new = []
     for c in sorted(cols_encountered):
         if c not in schema_cols:
-            schema_cols[c] = {"description": _known_desc(c), "source": "新建文件导入"}
+            schema_cols[c] = {"description": _known_desc(c), "source": "原始数据导入"}
             print(f"  📋 注册 schema 列: {c}", flush=True)
         for ffp in FACTOR_FIELD_SCHEMA_PATHS:
             ff = _load_factor_field_schema(ffp)
@@ -1147,7 +1151,7 @@ def _register_new_cols(schema: dict, cols_encountered: set, write: bool,
                 note = descs.get(c, "字段含义待补充（见 新因子描述.csv）")
                 ff[c] = {
                     "factor_name": c, "short_name": short_name, "formula": "",
-                    "source": "新建文件导入", "note": note,
+                    "source": "原始数据导入", "note": note,
                 }
                 print(f"  📋 注册 factor_field_schema: {ffp.parent.name}/{c} → {short_name}", flush=True)
                 if write:
@@ -1163,7 +1167,7 @@ def _register_new_cols(schema: dict, cols_encountered: set, write: bool,
 def do_import(dry_run: bool = False):
     files = scan_new_data_dir()
     if not files:
-        print("新建文件/ 下没有可导入的文件（parquet/csv）")
+        print("原始数据/ 下没有可导入的文件（parquet/csv）")
         descs = _load_descriptions()
         if descs:
             print(f"  新因子描述.csv 已注册 {len(descs)} 个因子描述，但无数据文件需要导入。")
@@ -1285,7 +1289,7 @@ def do_import(dry_run: bool = False):
         if minute_new_cols:
             for c in sorted(set(minute_new_cols)):
                 if c not in schema["minute"]["columns"]:
-                    schema["minute"]["columns"][c] = {"description": c, "source": "新建文件导入"}
+                    schema["minute"]["columns"][c] = {"description": c, "source": "原始数据导入"}
                     print(f"  📋 注册分钟 schema 列: {c}", flush=True)
             _save_schema(schema)
         print(f"  分钟批量完成: {len(minute_infos)} 个文件, {time.time()-t0:.0f}s", flush=True)
@@ -1344,7 +1348,7 @@ def do_import(dry_run: bool = False):
     print(f"\n✅ 导入完成: {n_stock_updated} 只股票更新", flush=True)
     if truly_new:
         print(f"⚠️ NEW_COLUMNS_DETECTED: {truly_new}")
-        print("Agent: 读 新建文件/新因子描述.csv 理解新列含义 → 更新 data/schema.json + "
+        print("Agent: 读 原始数据/新因子描述.csv 理解新列含义 → 更新 data/schema.json + "
               "两个 factor_field_schema.json → 运行 --update-prompts-only")
     else:
         print("无新列。如需刷新 prompt 标记块: python3 scripts/import_new_data.py --update-prompts-only")
@@ -1379,21 +1383,9 @@ def update_prompt_files(schema: dict):
             ("<!-- DAILY_COLUMNS -->", "<!-- /DAILY_COLUMNS -->", daily_text),
             ("<!-- MINUTE_COLUMNS -->", "<!-- /MINUTE_COLUMNS -->", minute_text),
         ],
-        ".claude/skills/factor/knowledge/daily.md": [
-            ("<!-- DAILY_COLUMNS -->", "<!-- /DAILY_COLUMNS -->", daily_text),
-        ],
-        ".claude/skills/factor/knowledge/cross_section.md": [
-            ("<!-- DAILY_COLUMNS -->", "<!-- /DAILY_COLUMNS -->", daily_text),
-        ],
-        ".claude/skills/factor/knowledge/deep_learning.md": [
-            ("<!-- DAILY_COLUMNS -->", "<!-- /DAILY_COLUMNS -->", daily_text),
-        ],
-        ".claude/skills/factor/knowledge/minute.md": [
-            ("<!-- MINUTE_COLUMNS -->", "<!-- /MINUTE_COLUMNS -->", minute_text),
-        ],
-        ".claude/skills/factor/knowledge/minute_cs.md": [
-            ("<!-- MINUTE_COLUMNS -->", "<!-- /MINUTE_COLUMNS -->", minute_text),
-        ],
+        # 注意：/factor 的知识文件（knowledge/*.md）不再写入列清单块——
+        # 列名由主进程预跑 show-columns 后内联进 Phase 2 prompt，避免与知识文件重复浪费 token。
+        # 如需给 agent 展示列，请用 `python scripts/claude_factor_helper.py show-columns`。
     }
 
     for rel_path, markers in updates.items():
@@ -1416,8 +1408,8 @@ def update_prompt_files(schema: dict):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="从本地 新建文件/ 目录导入新增行情/非行情数据")
-    parser.add_argument("--check", action="store_true", help="扫描 新建文件/，预览文件与列 schema")
+    parser = argparse.ArgumentParser(description="从本地 原始数据/ 目录导入新增行情/非行情数据")
+    parser.add_argument("--check", action="store_true", help="扫描 原始数据/，预览文件与列 schema")
     parser.add_argument("--dry-run", action="store_true", help="打印将要导入的内容，不执行")
     parser.add_argument("--update-prompts-only", action="store_true", help="仅根据 schema.json 更新 prompt 标记块")
     args = parser.parse_args()

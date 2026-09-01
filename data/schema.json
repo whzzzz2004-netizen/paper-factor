@@ -2,9 +2,9 @@
   "version": "1.4",
   "data_dir": "/mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量",
   "import": {
-    "dir": "/mnt/d/paper-factor-data/新建文件",
+    "dir": "/mnt/d/paper-factor-data/原始数据",
     "script": "scripts/import_new_data.py",
-    "note": "本地导入：用户把新增数据放到 /mnt/d/paper-factor-data/新建文件/（日线/、分钟线/、非行情/ 或根目录），运行脚本自动检测格式并导入。"
+    "note": "本地导入：用户把新增数据放到 /mnt/d/paper-factor-data/原始数据/（日线/、分钟线/、非行情/ 或根目录），运行脚本自动检测格式并导入。"
   },
   "daily": {
     "format": "per_stock_parquet",
@@ -177,31 +177,31 @@
       },
       "growth": {
         "description": "growth",
-        "source": "新建文件导入"
+        "source": "原始数据导入"
       },
       "momentum": {
         "description": "momentum",
-        "source": "新建文件导入"
+        "source": "原始数据导入"
       },
       "quality": {
         "description": "quality",
-        "source": "新建文件导入"
+        "source": "原始数据导入"
       },
       "value": {
         "description": "value",
-        "source": "新建文件导入"
+        "source": "原始数据导入"
       },
       "volatility": {
         "description": "volatility",
-        "source": "新建文件导入"
+        "source": "原始数据导入"
       },
       "价值因子1": {
         "description": "价值类因子1",
-        "source": "新建文件导入"
+        "source": "原始数据导入"
       },
       "价值因子2": {
         "description": "价值类因子2",
-        "source": "新建文件导入"
+        "source": "原始数据导入"
       }
     }
   },
@@ -211,40 +211,32 @@
     "trade_dates_file": "stock_data/minute_by_date/trade_dates.json",
     "columns": {
       "open": {
-        "description": "开盘价",
-        "source": "remote_minute"
+        "description": "分钟开盘价",
+        "source": "原始数据导入"
       },
       "close": {
-        "description": "收盘价",
-        "source": "remote_minute"
+        "description": "分钟收盘价",
+        "source": "原始数据导入"
       },
       "high": {
-        "description": "最高价",
-        "source": "remote_minute"
+        "description": "分钟最高价",
+        "source": "原始数据导入"
       },
       "low": {
-        "description": "最低价",
-        "source": "remote_minute"
+        "description": "分钟最低价",
+        "source": "原始数据导入"
       },
       "volume": {
-        "description": "成交量",
-        "source": "remote_minute"
+        "description": "分钟成交量（手）",
+        "source": "原始数据导入"
       },
       "factor": {
-        "description": "复权因子",
-        "source": "remote_minute"
+        "description": "复权因子（close×factor=后复权价）",
+        "source": "原始数据导入"
       },
       "return": {
-        "description": "分钟收益率",
-        "source": "remote_minute"
-      },
-      "trade_date": {
-        "description": "交易日期（flat 格式原始列）",
-        "source": "remote_minute"
-      },
-      "date": {
-        "description": "冗余日期列（flat 格式中与 trade_date 同义，仅用于导入）",
-        "source": "remote_minute"
+        "description": "分钟收益率（相对昨收）",
+        "source": "原始数据导入"
       }
     }
   }
