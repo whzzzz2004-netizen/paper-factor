@@ -2,8 +2,9 @@
 #!/usr/bin/env python3
 """生成 50 天增量数据测导入速度。"""
 import json, shutil, time
+import os
 from pathlib import Path
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+DATA_ROOT = Path(os.environ.get("PAPER_FACTOR_DATA_ROOT", "/mnt/d/paper-factor-data"))
 import numpy as np
 import pandas as pd
 import pyarrow as pa

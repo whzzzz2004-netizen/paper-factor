@@ -19,12 +19,13 @@
   float_shares, adjusted_profit, gross_profit, total_holders, holder_change_pct
 """
 
+import os
 from pathlib import Path
 
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+DATA_ROOT = Path(os.environ.get("PAPER_FACTOR_DATA_ROOT", "/mnt/d/paper-factor-data"))
 MARKET_DAILY_ROOTS = [
     DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily",
     DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "测试" / "stock_data" / "daily",

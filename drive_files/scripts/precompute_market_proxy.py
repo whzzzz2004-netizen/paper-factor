@@ -7,15 +7,16 @@
 保存为 market_minute_return.parquet（与 minute_by_date 同目录）。
 
 用法:
-    python scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试"
-    python scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量"
+    python /mnt/d/paper-factor-data/scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试"
+    python /mnt/d/paper-factor-data/scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量"
 """
 
 import argparse
 import pandas as pd
 import numpy as np
+import os
 from pathlib import Path
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+DATA_ROOT = Path(os.environ.get("PAPER_FACTOR_DATA_ROOT", "/mnt/d/paper-factor-data"))
 import time
 import warnings
 warnings.filterwarnings("ignore")

@@ -13,7 +13,7 @@
 | 代码（scripts/rdagent/.claude/templates） | git 仓库 | `git clone` |
 | 数据源（日线/分钟/非行情 parquet） | `/mnt/d/paper-factor-data/数据仓库/` | 从已有环境直接拷贝，或逐步导入 |
 | 因子产出（测试/全量） | `/mnt/d/paper-factor-data/数据仓库/因子产出/` | 从已有环境拷贝，或重新计算 |
-| 研报 PDF | `papers/inbox/` | 手动拷贝 |
+| 研报 PDF | `/mnt/d/paper-factor-data/papers/inbox/` | 手动拷贝 |
 | 密钥配置 | `.env` | 手动创建 |
 
 ---
@@ -65,8 +65,8 @@ cp -r /path/to/old/paper-factor/数据仓库 ./数据仓库
 如果没有现成数据，可以通过 `/getdata` 技能逐步导入：
 
 1. 准备好原始数据文件（CSV/parquet），放到 `/mnt/d/paper-factor-data/原始数据/` 目录下
-2. 运行 `python scripts/import_new_data.py --check` 预览
-3. 运行 `python scripts/import_new_data.py` 执行导入
+2. 运行 `python /mnt/d/paper-factor-data/scripts/import_new_data.py --check` 预览
+3. 运行 `python /mnt/d/paper-factor-data/scripts/import_new_data.py` 执行导入
 
 详细数据目录结构见 README.md 的「数据目录结构」章节。
 
@@ -122,8 +122,8 @@ python scripts/run_all.py --workers 3          # 3因子并行
 python scripts/run_all.py --dry-run            # 仅查看计划
 
 # 数据导入
-python scripts/import_new_data.py --check      # 预览原始数据
-python scripts/import_new_data.py              # 执行导入
+python /mnt/d/paper-factor-data/scripts/import_new_data.py --check      # 预览原始数据
+python /mnt/d/paper-factor-data/scripts/import_new_data.py              # 执行导入
 ```
 
 ---
@@ -134,7 +134,7 @@ python scripts/import_new_data.py              # 执行导入
 A: 直接看 `/mnt/d/paper-factor-data/数据仓库/因子产出/全量/{DATE}/{report}/{factor}/` 下的 `.parquet` 和 `.decile.png`。
 
 **Q: 跑 `/factor` 需要研报 PDF 吗？**
-A: 处理新研报需要 PDF（放到 `papers/inbox/`）。已 mark-done 的研报不需要。
+A: 处理新研报需要 PDF（放到 `/mnt/d/paper-factor-data/papers/inbox/`）。已 mark-done 的研报不需要。
 
 **Q: 数据从哪里来？**
 A: 本项目不提供原始数据。需要从已有数据源（如聚宽、Tushare、券商数据终端）获取，通过 `import_new_data.py` 导入。

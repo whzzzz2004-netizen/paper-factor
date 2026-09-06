@@ -22,17 +22,17 @@ description: 从本地「原始数据」目录导入新增行情/非行情数据
 **每次导入按此顺序执行：**
 
 ```
-1. python3 scripts/import_new_data.py --check
+1. python3 /mnt/d/paper-factor-data/scripts/import_new_data.py --check
    → 看 /mnt/d/paper-factor-data/原始数据/ 下有什么新文件，预览每个文件的类型
 
-2. python3 scripts/import_new_data.py
+2. python3 /mnt/d/paper-factor-data/scripts/import_new_data.py
    → 自动检测格式并导入（日线补齐 / 分钟补齐 / 截面因子入库）
    → 脚本自动完成全部数据操作
 
 3. 判断输出：
    ├─ 有 NEW_COLUMNS_DETECTED → 读 `/mnt/d/paper-factor-data/原始数据/新因子描述.csv` 找新字段对应行的描述
-   │  → 用描述更新 data/schema.json + 两个 factor_field_schema.json 的 short_name/note
-   │  → python3 scripts/import_new_data.py --update-prompts-only
+   │  → 用描述更新 /mnt/d/paper-factor-data/schema.json + 两个 factor_field_schema.json 的 short_name/note
+   │  → python3 /mnt/d/paper-factor-data/scripts/import_new_data.py --update-prompts-only
    │
    └─ 无 NEW_COLUMNS_DETECTED → 只是数据补齐，无新字段
       → 直接汇报结果即可（无需 agent 干预）
@@ -62,11 +62,11 @@ CSV 无表头，3 列逗号分隔：
 - 也兼容 2 列格式：`因子名,描述文本`
 - 编码兼容 GBK / UTF-8（Windows 下保存的 CSV 多为 GBK，脚本自动识别）
 
-**Agent 职责**：导入出现 `NEW_COLUMNS_DETECTED` 时，在 CSV 中找该字段对应行的描述，用它更新 `factor_field_schema.json` 的 `short_name`（中文含义）和 `note`（完整说明），并更新 `data/schema.json` 的 `description`。
+**Agent 职责**：导入出现 `NEW_COLUMNS_DETECTED` 时，在 CSV 中找该字段对应行的描述，用它更新 `factor_field_schema.json` 的 `short_name`（中文含义）和 `note`（完整说明），并更新 `/mnt/d/paper-factor-data/schema.json` 的 `description`。
 
 ### ⚠️ 新列自动进入 /factor 的 show-columns（勿手动改 helper）
 
-`/factor` 的 `show-columns --type`（`scripts/claude_factor_helper.py`）**直接从 `data/schema.json` + `factor_field_schema.json` 读列含义**（不再硬编码），所以：
+`/factor` 的 `show-columns --type`（`scripts/claude_factor_helper.py`）**直接从 `/mnt/d/paper-factor-data/schema.json` + `factor_field_schema.json` 读列含义**（不再硬编码），所以：
 
 - 新字段（含非行情新因子、追加的**分钟因子列**）只要按上面步骤更新了 `schema.json` / `factor_field_schema.json`，`show-columns --type daily`（日线+非行情）和 `show-columns --type minute`（分钟）**自动带出新列名及含义**，写日线/分钟因子的 agent 都会看到。
 - **不需要也不应该**改 `claude_factor_helper.py` 里的任何列名/含义表。
@@ -77,16 +77,16 @@ CSV 无表头，3 列逗号分隔：
 
 ```bash
 # 查看 /mnt/d/paper-factor-data/原始数据/ 状态（推荐先执行）
-python3 scripts/import_new_data.py --check
+python3 /mnt/d/paper-factor-data/scripts/import_new_data.py --check
 
 # 自动检测格式并导入
-python3 scripts/import_new_data.py
+python3 /mnt/d/paper-factor-data/scripts/import_new_data.py
 
 # 只看将要导入的内容，不执行
-python3 scripts/import_new_data.py --dry-run
+python3 /mnt/d/paper-factor-data/scripts/import_new_data.py --dry-run
 
 # 仅根据 schema.json 更新 prompt 标记块
-python3 scripts/import_new_data.py --update-prompts-only
+python3 /mnt/d/paper-factor-data/scripts/import_new_data.py --update-prompts-only
 ```
 
 ## /mnt/d/paper-factor-data/原始数据/ 目录结构
@@ -113,7 +113,7 @@ python3 scripts/import_new_data.py --update-prompts-only
 - **分钟数据** → 复制到 `minute_by_date/` + 更新 per-stock `minute/{code}.parquet`
 - **截面因子** → 转长格式 → 合并进全量非行情 per-stock parquet（新列）
 - 逐股票合并（concat + 按日期去重，新数据优先，sort）
-- **新列** → 自动注册 `data/schema.json` + 两个 `factor_field_schema.json`
+- **新列** → 自动注册 `/mnt/d/paper-factor-data/schema.json` + 两个 `factor_field_schema.json`
   → 输出 `NEW_COLUMNS_DETECTED`
 - 更新全量 `trade_dates.json` / `stock_list.json`（并集）；`industry.json` 不变
 - 分钟数据更新分钟 `trade_dates.json` / `stock_list.json`
@@ -130,10 +130,10 @@ python3 scripts/import_new_data.py --update-prompts-only
 
 | 文件 | 说明 |
 |------|------|
-| `scripts/import_new_data.py` | 导入脚本（全部逻辑，含分钟/截面因子支持） |
+| `/mnt/d/paper-factor-data/scripts/import_new_data.py` | 导入脚本（全部逻辑，含分钟/截面因子支持） |
 | `/mnt/d/paper-factor-data/原始数据/` | 用户放置新增数据的目录 |
 | `/mnt/d/paper-factor-data/原始数据/新因子描述.csv` | 用户维护的字段含义清单（每行 = 非行情/ 下一个 pqt 文件） |
-| `data/schema.json` | 字段注册表，定义所有可用列及其来源 |
+| `/mnt/d/paper-factor-data/schema.json` | 字段注册表，定义所有可用列及其来源 |
 | `/mnt/d/paper-factor-data/数据仓库/行情数据/日线/{全量,测试}/` | 行情数据（价量 9 列） |
 | `/mnt/d/paper-factor-data/数据仓库/非行情数据/{全量,测试}/` | 非行情数据（非行情列 + 新增截面因子） |
 | `/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/{全量,测试}/` | 分钟数据（per-date + per-stock） |
@@ -154,12 +154,12 @@ python3 scripts/import_new_data.py --update-prompts-only
 **导入完成后**，如果出现 `NEW_COLUMNS_DETECTED`：
 
 1. 读 `/mnt/d/paper-factor-data/原始数据/新因子描述.csv`，找出每个新列对应行的描述（用户维护的含义清单）
-2. 更新 `data/schema.json`：将新列的 `description` 改为 CSV 里的实际含义
+2. 更新 `/mnt/d/paper-factor-data/schema.json`：将新列的 `description` 改为 CSV 里的实际含义
 3. 更新两个 `factor_field_schema.json`：`short_name` 改为 CSV 里的中文含义，`note` 更新为完整说明
-4. 运行 `python3 scripts/import_new_data.py --update-prompts-only` 刷新 prompt 文件
+4. 运行 `python3 /mnt/d/paper-factor-data/scripts/import_new_data.py --update-prompts-only` 刷新 prompt 文件
 
 **数据说明提到了新文件夹/新文件格式时**（import_new_data.py 暂不支持的）：
-- Agent 需要修改 `scripts/import_new_data.py`，新增对应的解析分支
+- Agent 需要修改 `/mnt/d/paper-factor-data/scripts/import_new_data.py`，新增对应的解析分支
 - 参考现有 `_detect_file_type` 的格式检测逻辑
 
 ### 被更新的 prompt 文件
@@ -176,4 +176,4 @@ python3 scripts/import_new_data.py --update-prompts-only
 ### 描述生成规则
 
 列描述优先使用 `factor_field_schema.json` 的 `short_name` + `note`（含中文含义与备注），
-fallback 到 `data/schema.json` 的 `description`。
+fallback 到 `/mnt/d/paper-factor-data/schema.json` 的 `description`。

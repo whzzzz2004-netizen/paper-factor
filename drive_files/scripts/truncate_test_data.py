@@ -11,11 +11,12 @@ stock_list.json 和 industry.json 保持不变。
 
 import json
 import shutil
+import os
 from pathlib import Path
 
 import pandas as pd
 
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+DATA_ROOT = Path(os.environ.get("PAPER_FACTOR_DATA_ROOT", "/mnt/d/paper-factor-data"))
 
 TEST_DATA_DIR = DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "测试"
 DAILY_DIR = TEST_DATA_DIR / "stock_data" / "daily"

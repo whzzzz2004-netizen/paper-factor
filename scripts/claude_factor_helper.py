@@ -197,10 +197,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_ROOT = Path("/mnt/d/paper-factor-data")
 LITERATURE_REPORTS_DIR = DATA_ROOT / "数据仓库" / "因子产出" / "测试"
-SCHEMA_FILE = PROJECT_ROOT / "data" / "schema.json"
+SCHEMA_FILE = DATA_ROOT / "schema.json"
 
 def _load_schema() -> dict:
-    """读 data/schema.json（getdata 导入新字段后由 import_new_data.py 自动维护）。"""
+    """读 /mnt/d/paper-factor-data/schema.json（getdata 导入新字段后由 import_new_data.py 自动维护）。"""
     if not SCHEMA_FILE.exists():
         return {"daily": {"columns": {}}, "minute": {"columns": {}}}
     try:
@@ -395,7 +395,7 @@ def cmd_extract_website(args):
         except Exception:
             return ""
 
-    sources_json = PROJECT_ROOT / "papers" / "website" / "sources.json"
+    sources_json = DATA_ROOT / "papers" / "website" / "sources.json"
     if not sources_json.exists():
         print(json.dumps({"success": False, "error": "sources.json not found"}))
         return 1
@@ -1147,10 +1147,9 @@ def cmd_deploy_to_full(args):
 # Subcommand: scan-pending
 # ---------------------------------------------------------------------------
 def cmd_scan_pending(args):
-    """Scan for unprocessed papers, website sources, and ideas."""
+    """Scan for unprocessed papers and website sources."""
     inbox_dir = PROJECT_ROOT / "papers" / "inbox"
-    sources_json = PROJECT_ROOT / "papers" / "website" / "sources.json"
-    ideas_json = PROJECT_ROOT / "papers" / "ideas" / "ideas.json"
+    sources_json = DATA_ROOT / "papers" / "website" / "sources.json"
     processed_json = LITERATURE_REPORTS_DIR.parent / "processed_reports.json"
     extracted_dir = LITERATURE_REPORTS_DIR.parent / "extracted_reports"
 
@@ -1162,7 +1161,7 @@ def cmd_scan_pending(args):
         except Exception:
             pass
 
-    result = {"papers": [], "websites": [], "ideas": [], "fully_processed_papers": [], "fully_processed_websites": [], "fully_processed_ideas": []}
+    result = {"papers": [], "websites": [], "fully_processed_papers": [], "fully_processed_websites": []}
 
     # Scan inbox PDFs
     if inbox_dir.exists():
@@ -1207,50 +1206,14 @@ def cmd_scan_pending(args):
         except Exception:
             pass
 
-    # Scan ideas.json
-    if ideas_json.exists():
-        try:
-            ideas = json.loads(ideas_json.read_text())
-            for i, idea in enumerate(ideas):
-                slug = f"idea__{i}"
-                idea_text = (idea.get("text") or idea.get("idea", ""))
-                # 从 idea 文本中提取名称（冒号前部分）
-                idea_name = idea_text.split(":")[0].split("：")[0].strip() if idea_text else slug
-                # Check if in processed_reports.json (mark-done skip)
-                # mark-done 存的是 idea 名称（如"MinuteReturnHomogeneity"），非 slug
-                if slug in processed_set or idea_name in processed_set:
-                    result["fully_processed_ideas"].append(idea_name[:60])
-                    continue
-                # 尝试用 idea 名称和 slug 两种路径查找报告目录
-                report_dir = LITERATURE_REPORTS_DIR / slug
-                report_dir_by_name = LITERATURE_REPORTS_DIR / idea_name if idea_name else None
-                if report_dir.exists() or (report_dir_by_name and report_dir_by_name.exists()):
-                    _rd = report_dir if report_dir.exists() else report_dir_by_name
-                    # 检查子目录是否有 .code.py
-                    _has_code = any(f.endswith(".code.py") for f in os.listdir(_rd))
-                    if not _has_code:
-                        for _sub in _rd.iterdir():
-                            if _sub.is_dir() and any(f.endswith(".code.py") for f in os.listdir(_sub)):
-                                _has_code = True
-                                break
-                    if _has_code:
-                        result["fully_processed_ideas"].append(idea_name[:60])
-                        continue
-                else:
-                    result["ideas"].append({"index": i, "slug": slug, "title": idea.get("title"), "text": idea_text[:200], "status": "pending"})
-        except Exception:
-            pass
-
     # Summary
-    total_pending = len(result["papers"]) + len(result["websites"]) + len(result["ideas"])
+    total_pending = len(result["papers"]) + len(result["websites"])
     result["summary"] = {
         "total_pending": total_pending,
         "papers_pending": len(result["papers"]),
         "websites_pending": len(result["websites"]),
-        "ideas_pending": len(result["ideas"]),
         "fully_processed_papers": len(result["fully_processed_papers"]),
         "fully_processed_websites": len(result["fully_processed_websites"]),
-        "fully_processed_ideas": len(result["fully_processed_ideas"]),
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
@@ -1382,6 +1345,134 @@ def cmd_save_extracted(args):
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: write-repro-report — 生成复现报告（成功/未复现及原因）
+# ---------------------------------------------------------------------------
+def cmd_write_repro_report(args):
+    """为一份测试因子报告生成复现报告 Markdown。
+
+    扫描 因子产出/测试/{DATE}/{report}/ 下每个因子子目录，结合
+    extracted_reports/{DATE}/{report}.extracted.json 的因子定义，判定：
+      - ✅ 成功复现：存在 {factor}.parquet + {factor}.code.py
+      - ❌ 缺列未复现：存在 {factor}.missing.json（原因=missing_fields）
+      - ⚠️ 未复现/无产出：有 extracted 定义但无上面两者
+    输出 因子产出/测试/{DATE}/{report}/复现报告.md，同时打印结构化 JSON。
+    """
+    date_str = args.date
+    report_name = args.report
+
+    report_dir = LITERATURE_REPORTS_DIR / date_str / report_name
+    if not report_dir.exists():
+        print(f"ERROR: 报告测试目录不存在: {report_dir}", file=sys.stderr)
+        return 1
+
+    # 读取因子定义（extracted.json）
+    extracted_path = LITERATURE_REPORTS_DIR.parent / "extracted_reports" / date_str / f"{report_name}.extracted.json"
+    extracted = {}
+    if extracted_path.exists():
+        try:
+            extracted = json.loads(extracted_path.read_text(encoding="utf-8"))
+        except Exception:
+            extracted = {}
+    def_by_name = {f.get("name", ""): f for f in extracted.get("factors", []) if f.get("name")}
+
+    success = []
+    missing = []
+    no_output = []
+
+    for sub in sorted(report_dir.iterdir()):
+        if not sub.is_dir():
+            continue  # 跳过 复现报告.md 等非因子文件
+        factor = sub.name
+        parquet = sub / f"{factor}.parquet"
+        code = sub / f"{factor}.code.py"
+        miss = sub / f"{factor}.missing.json"
+
+        definition = def_by_name.get(factor, {})
+        if parquet.exists() and code.exists():
+            success.append({"name": factor, **definition})
+        elif miss.exists():
+            reason = "缺字段"
+            try:
+                m = json.loads(miss.read_text(encoding="utf-8"))
+                mf = m.get("missing_fields") or []
+                cc = m.get("checked_cols") or []
+                if mf:
+                    # checked_cols 形如 "中文语义 consensus_eps"，把英文名翻译成中文（老板可读）
+                    parts = []
+                    for field in mf:
+                        cn = None
+                        for entry in cc:
+                            s = str(entry)
+                            # 找 "中文 xxx 英文名" 里中文部分（英文名前的部分）
+                            idx = s.find(field)
+                            if idx > 0:
+                                cand = s[:idx].strip().rstrip("：（()：")
+                                if cand:
+                                    cn = cand
+                                    break
+                        if cn:
+                            parts.append(f"{cn}({field})")
+                        else:
+                            parts.append(field)
+                    reason = "缺字段: " + ", ".join(parts)
+            except Exception:
+                pass
+            missing.append({"name": factor, "reason": reason, **definition})
+        else:
+            no_output.append({"name": factor, "reason": "未生成代码（无 parquet / missing.json）", **definition})
+
+    def _trunc(s, n=60):
+        s = (s or "").strip().replace("\n", " ")
+        return s if len(s) <= n else s[: n - 1] + "…"
+
+    lines = []
+    lines.append(f"# 复现报告：{report_name}")
+    lines.append("")
+    lines.append(f"- 日期: {date_str}")
+    lines.append(f"- 因子总数: {len(success) + len(missing) + len(no_output)} | "
+                 f"成功复现: {len(success)} | 未复现: {len(missing) + len(no_output)}")
+    lines.append("")
+
+    lines.append("## 成功复现")
+    lines.append("")
+    if success:
+        lines.append("| 因子 | 类型 | lookback | 描述 |")
+        lines.append("|------|------|---------|------|")
+        for f in success:
+            lines.append(f"| {f['name']} | {f.get('type', '')} | {f.get('lookback', '')} | {_trunc(f.get('description'))} |")
+    else:
+        lines.append("（无）")
+    lines.append("")
+
+    lines.append("## 未复现及原因")
+    lines.append("")
+    if missing or no_output:
+        lines.append("| 因子 | 原因 |")
+        lines.append("|------|------|")
+        for f in missing + no_output:
+            lines.append(f"| {f['name']} | {f['reason']} |")
+    else:
+        lines.append("（无）")
+    lines.append("")
+
+    md = "\n".join(lines)
+    out_path = report_dir / "复现报告.md"
+    out_path.write_text(md, encoding="utf-8")
+
+    result = {
+        "date": date_str,
+        "report": report_name,
+        "total": len(success) + len(missing) + len(no_output),
+        "success": len(success),
+        "missing": len(missing),
+        "no_output": len(no_output),
+        "report_path": str(out_path),
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: show-columns — 显示可用数据列
 # ---------------------------------------------------------------------------
 def cmd_show_columns(args):
@@ -1392,7 +1483,7 @@ def cmd_show_columns(args):
       其他（daily / cross_section / deep_learning / 不传）→ 日线行情列 + 非行情列
 
     列含义来源（getdata 导入新字段后自动带出新列含义）：
-      data/schema.json（description）→ factor_field_schema.json（short_name）
+      /mnt/d/paper-factor-data/schema.json（description）→ factor_field_schema.json（short_name）
     """
     import pyarrow.parquet as _pq
 
@@ -1477,32 +1568,6 @@ def cmd_find_similar(args):
 
 
 # ---------------------------------------------------------------------------
-# Subcommand: add-idea
-# ---------------------------------------------------------------------------
-def cmd_add_idea(args):
-    """Add a factor idea to ideas.json. Auto-generates title from text if not provided."""
-    ideas_json = PROJECT_ROOT / "papers" / "ideas" / "ideas.json"
-    ideas_json.parent.mkdir(parents=True, exist_ok=True)
-
-    ideas = []
-    if ideas_json.exists():
-        try:
-            ideas = json.loads(ideas_json.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-
-    text = args.text
-    title = args.title or None  # None = agent 处理时自动生成标题
-
-    entry = {"title": title, "text": text}
-    ideas.append(entry)
-    ideas_json.write_text(json.dumps(ideas, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(entry, ensure_ascii=False))
-    print(f"OK: added idea #{len(ideas)-1} ({title})", file=sys.stderr)
-    return 0
-
-
-# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def main():
@@ -1582,7 +1647,7 @@ def main():
     p_run.add_argument("--meta", default=None, help="JSON file with metadata (alternative to individual --* args)")
 
     # scan-pending
-    p_scan = sub.add_parser("scan-pending", help="Scan for unprocessed papers, websites, and ideas")
+    p_scan = sub.add_parser("scan-pending", help="Scan for unprocessed papers and websites")
 
     # mark-done
     p_mark = sub.add_parser("mark-done", help="Mark a paper as processed")
@@ -1593,10 +1658,10 @@ def main():
     p_se.add_argument("--name", required=True, help="Report title (stem, e.g. '基于GRU的因子选股')")
     p_se.add_argument("--date", default=None, help="Date subdirectory (YYYY-MM-DD)")
 
-    # add-idea
-    p_idea = sub.add_parser("add-idea", help="Add a factor idea (title optional; agent auto-generates if omitted)")
-    p_idea.add_argument("--title", default=None, help="Factor idea title (optional; auto-generated from text)")
-    p_idea.add_argument("--text", required=True, help="Factor idea description")
+    # write-repro-report
+    p_rr = sub.add_parser("write-repro-report", help="Generate 复现报告.md for a test report (success / missing reasons)")
+    p_rr.add_argument("--date", required=True, help="Date subdirectory (YYYY-MM-DD)")
+    p_rr.add_argument("--report", required=True, help="Report name")
 
     # show-columns
     p_showcols = sub.add_parser("show-columns", help="Show available columns in stock data (--type minute 显示分钟线列)")
@@ -1643,7 +1708,7 @@ def main():
         "scan-pending": cmd_scan_pending,
         "mark-done": cmd_mark_done,
         "save-extracted": cmd_save_extracted,
-        "add-idea": cmd_add_idea,
+        "write-repro-report": cmd_write_repro_report,
         "show-columns": cmd_show_columns,
         "retrieve-knowledge": cmd_retrieve_knowledge,
         "find-similar": cmd_find_similar,

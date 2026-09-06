@@ -29,6 +29,7 @@ mkdir -p /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/{测试,�
 mkdir -p /mnt/d/paper-factor-data/数据仓库/非行情数据/{测试,全量}/stock_data/daily
 mkdir -p /mnt/d/paper-factor-data/数据仓库/因子产出/{测试,全量}
 mkdir -p /mnt/d/paper-factor-data/数据仓库/barra_model
+mkdir -p /mnt/d/paper-factor-data/scripts /mnt/d/paper-factor-data/papers/inbox /mnt/d/paper-factor-data/papers/website
 mkdir -p 原始数据
 mkdir -p workspace/logs workspace/ideas
 ln -sfn ..//mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量 workspace/factor_implementation_source_data
@@ -38,6 +39,10 @@ echo ""
 echo "  ⚠️  需要把数据仓库复制到 $REPO_DIR//mnt/d/paper-factor-data/数据仓库/"
 echo "      从硬盘/开发机 rsync 即可:"
 echo "      rsync -avhP user@dev:$REPO_DIR//mnt/d/paper-factor-data/数据仓库/ .//mnt/d/paper-factor-data/数据仓库/"
+
+# ---------- 2.5 同步交付副本（scripts/papers/schema.json → D 盘）----------
+echo "[2.5] 同步交付副本到 D 盘（数据转换脚本 + 研报 + 字段注册表）..."
+bash "$REPO_DIR/sync_drive.sh"
 
 # ---------- 3. 环境配置 ----------
 echo "[3/5] 配置 conda 环境..."

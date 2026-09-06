@@ -12,10 +12,10 @@
 5. 原始数据/新因子描述.csv：新因子描述（CSV 无表头，因子名,描述文本）
 
 用法:
-  python3 scripts/import_new_data.py --check           # 扫描 原始数据/，预览文件与列 schema
-  python3 scripts/import_new_data.py --dry-run         # 打印将要导入的内容，不执行
-  python3 scripts/import_new_data.py                   # 自动检测格式并导入
-  python3 scripts/import_new_data.py --update-prompts-only  # 仅根据 schema.json 更新 prompt 标记块
+  python3 /mnt/d/paper-factor-data/scripts/import_new_data.py --check           # 扫描 原始数据/，预览文件与列 schema
+  python3 /mnt/d/paper-factor-data/scripts/import_new_data.py --dry-run         # 打印将要导入的内容，不执行
+  python3 /mnt/d/paper-factor-data/scripts/import_new_data.py                   # 自动检测格式并导入
+  python3 /mnt/d/paper-factor-data/scripts/import_new_data.py --update-prompts-only  # 仅根据 schema.json 更新 prompt 标记块
 """
 
 import argparse
@@ -35,7 +35,19 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+DATA_ROOT = Path(os.environ.get("PAPER_FACTOR_DATA_ROOT", "/mnt/d/paper-factor-data"))
+# 因子仓库根目录（prompts.yaml 所在，import_new_data 写回 prompt 用）。
+# 优先环境变量 PAPER_FACTOR_REPO；其次 D 盘 repo_path.txt（由 sync_drive.sh 写入）；
+# 都没有则回退到脚本父目录的父目录（D 盘根，通常就是数据根）。
+_project_repo_env = os.environ.get("PAPER_FACTOR_REPO", "").strip()
+_project_repo_file = DATA_ROOT / "repo_path.txt"
+if _project_repo_env:
+    PROJECT_REPO = Path(_project_repo_env)
+elif _project_repo_file.exists():
+    _p = _project_repo_file.read_text(encoding="utf-8").strip()
+    PROJECT_REPO = Path(_p) if _p else PROJECT_ROOT
+else:
+    PROJECT_REPO = PROJECT_ROOT
 WH = "数据仓库"
 
 # ── 数据目录（数据仓库分层） ──
@@ -66,7 +78,7 @@ FULL_MINUTE_STOCK_LIST = FULL_MINUTE_META / "stock_list.json"
 TEST_MINUTE_TRADE_DATES = TEST_MINUTE_BY_DATE.parent / "trade_dates.json"
 TEST_MINUTE_STOCK_LIST = TEST_MINUTE_BY_DATE.parent / "stock_list.json"
 
-SCHEMA_FILE = PROJECT_ROOT / "data" / "schema.json"
+SCHEMA_FILE = PROJECT_ROOT / "schema.json"
 FACTOR_FIELD_SCHEMA_PATHS = [
     DATA_ROOT / WH / "行情数据" / "日线" / "全量" / "factor_field_schema.json",
     DATA_ROOT / WH / "行情数据" / "日线" / "测试" / "factor_field_schema.json",
@@ -75,7 +87,7 @@ FACTOR_FIELD_SCHEMA_PATHS = [
 NEW_DATA_DIR = DATA_ROOT / "原始数据"
 DESC_FILE = NEW_DATA_DIR / "新因子描述.csv"
 
-# ── 列分类（与 scripts/strip_fundamental_cols.py 一致） ──
+# ── 列分类（与 /mnt/d/paper-factor-data/scripts/strip_fundamental_cols.py 一致） ──
 MARKET_COLS = [
     "open", "close", "high", "low", "factor", "volume",
     "EMA5", "EMA10", "EMA20",
@@ -1038,7 +1050,7 @@ def check_new_data():
         print(f"    非行情列({len(info.fund_cols)}): {info.fund_cols or '-'}")
         new_txt = f" → {'行情' if info.new_target == 'market' else '非行情'}" if info.new_cols else ""
         print(f"    新列({len(info.new_cols)}): {info.new_cols or '-'}{new_txt}")
-    print("\n✅ 检查完成。运行 `python3 scripts/import_new_data.py` 导入。")
+    print("\n✅ 检查完成。运行 `python3 /mnt/d/paper-factor-data/scripts/import_new_data.py` 导入。")
 
 
 def print_plan(inspections: list):
@@ -1348,10 +1360,10 @@ def do_import(dry_run: bool = False):
     print(f"\n✅ 导入完成: {n_stock_updated} 只股票更新", flush=True)
     if truly_new:
         print(f"⚠️ NEW_COLUMNS_DETECTED: {truly_new}")
-        print("Agent: 读 原始数据/新因子描述.csv 理解新列含义 → 更新 data/schema.json + "
+        print("Agent: 读 原始数据/新因子描述.csv 理解新列含义 → 更新 schema.json + "
               "两个 factor_field_schema.json → 运行 --update-prompts-only")
     else:
-        print("无新列。如需刷新 prompt 标记块: python3 scripts/import_new_data.py --update-prompts-only")
+        print("无新列。如需刷新 prompt 标记块: python3 /mnt/d/paper-factor-data/scripts/import_new_data.py --update-prompts-only")
 
 
 # ── prompt 标记块更新（复用旧 sync_data.py 逻辑） ──
@@ -1389,7 +1401,7 @@ def update_prompt_files(schema: dict):
     }
 
     for rel_path, markers in updates.items():
-        full_path = PROJECT_ROOT / rel_path
+        full_path = PROJECT_REPO / rel_path
         if not full_path.exists():
             print(f"  ⚠️ 文件不存在: {rel_path}", flush=True)
             continue

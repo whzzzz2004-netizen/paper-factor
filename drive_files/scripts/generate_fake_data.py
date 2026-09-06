@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """生成假分钟数据和基本面数据，补全 2018~2026 的全量历史。
 
-用法: python3 scripts/generate_fake_data.py
+用法: python3 /mnt/d/paper-factor-data/scripts/generate_fake_data.py
 输出: 原始数据/分钟线/YYYYMMDD.parquet + 原始数据/非行情/{因子名}.parquet
 """
 
@@ -10,6 +10,7 @@ import random
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +19,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+DATA_ROOT = Path(os.environ.get("PAPER_FACTOR_DATA_ROOT", "/mnt/d/paper-factor-data"))
 WH = DATA_ROOT / "数据仓库"
 
 # 日线元数据（已导入）
@@ -176,7 +177,7 @@ def main():
     generate_minute_data(dates, stocks_int)
     generate_fundamental_data(dates, stocks_int)
 
-    print("\n✅ 生成完毕，可以运行 python3 scripts/import_new_data.py 导入", flush=True)
+    print("\n✅ 生成完毕，可以运行 python3 /mnt/d/paper-factor-data/scripts/import_new_data.py 导入", flush=True)
 
 
 if __name__ == "__main__":

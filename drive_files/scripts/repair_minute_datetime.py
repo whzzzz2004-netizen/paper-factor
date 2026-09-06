@@ -10,10 +10,10 @@
 新导入的真实数据自带正确分钟时间戳，无需运行本脚本。
 
 用法:
-    python scripts/repair_minute_datetime.py                          # 全量
-    python scripts/repair_minute_datetime.py --data-dir "..."         # 指定目录
-    python scripts/repair_minute_datetime.py --dry-run                # 预览
-    python scripts/repair_minute_datetime.py --workers 8              # 并行数
+    python /mnt/d/paper-factor-data/scripts/repair_minute_datetime.py                          # 全量
+    python /mnt/d/paper-factor-data/scripts/repair_minute_datetime.py --data-dir "..."         # 指定目录
+    python /mnt/d/paper-factor-data/scripts/repair_minute_datetime.py --dry-run                # 预览
+    python /mnt/d/paper-factor-data/scripts/repair_minute_datetime.py --workers 8              # 并行数
 """
 
 import argparse
@@ -21,8 +21,9 @@ import json
 import time
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import os
 from pathlib import Path
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+DATA_ROOT = Path(os.environ.get("PAPER_FACTOR_DATA_ROOT", "/mnt/d/paper-factor-data"))
 
 import numpy as np
 import pandas as pd

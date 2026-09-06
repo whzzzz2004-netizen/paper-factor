@@ -2,9 +2,8 @@
 
 ## 用法
 
-- `/factor` — 扫描 `papers/inbox/` 和 `papers/ideas/ideas.json`，处理所有未处理项
-- `/factor papers/inbox/某篇.pdf` — 处理单个 PDF
-- `/factor 一段因子描述` — 处理纯文本
+- `/factor` — 扫描 `/mnt/d/paper-factor-data/papers/inbox/`，处理所有未处理项
+- `/factor /mnt/d/paper-factor-data/papers/inbox/某篇.pdf` — 处理单个 PDF
 
 ## 核心规则
 
@@ -16,7 +15,7 @@
 5. **唯一跳过场景**：所需数据完全不可用（如专有数据库API）。择时/选基/宏观/债券不跳过。**因子缺字段（某列不存在）不算"跳过"**：Phase 1 照常定义所有因子（不看列、不填列名）；Phase 2 才看 `show-columns` 全部列名、结合因子定义自行判断。若判断因子因缺列无法实现 → 自己在测试因子目录写 `{factor}.missing.json` 记录缺的列，不生成代码、不部署全量。字段齐全的因子 → Phase 2 从 show-columns 挑出真实列名写代码。
 6. `source_excerpt` 从原文直接复制
 7. **DATE 永远是当天日期**：`datetime.now().strftime("%Y-%m-%d")`。所有 save-extracted / test-and-export / deploy-to-full 的 `--date` 都传当天日期，不用研报的原始日期。
-8. **不标记完成**：不跑 `mark-done`，不跟踪处理状态。每次运行直接扫 `papers/inbox/` 里的所有文件，全量处理。
+8. **不标记完成**：不跑 `mark-done`，不跟踪处理状态。每次运行直接扫 `/mnt/d/paper-factor-data/papers/inbox/` 里的所有文件，全量处理。
 9. **所有分钟因子必须用 `minute` 类型模板，严禁用 `minute_cs`**：
    - `minute_cs` 太慢（测试 6~8 分钟/个，全量可能数小时），且截面标准化对单因子无意义
    - 如果因子需要全市场数据（市场收益率、总成交量等），先用 `ls` 检查 `minute_by_date/` 下是否有预计算文件，没有就让 LLM **在代码中自己计算**（模块级预加载，一次性计算）
@@ -41,11 +40,10 @@
 
 ### Step 0: 扫描 inbox + 数据预检
 
-直接扫 `papers/inbox/` 目录列出所有 PDF 文件，以及 `papers/ideas/ideas.json` 中的所有 ideas。不跑 `scan-pending`，不检查完成状态。
+直接扫 `/mnt/d/paper-factor-data/papers/inbox/` 目录列出所有 PDF 文件。不跑 `scan-pending`，不检查完成状态。
 
 ```bash
-ls papers/inbox/*.pdf 2>/dev/null
-python3 -c "import json; d=json.load(open('papers/ideas/ideas.json')); print([x.get('text','') or x.get('description','') for x in d])"
+ls /mnt/d/paper-factor-data/papers/inbox/*.pdf 2>/dev/null
 ```
 
 **队列排序规则：** 含 "深度学习/GRU/TCN/LSTM/deep_learning" 的排末尾，其他优先。
@@ -74,8 +72,8 @@ ls /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量/stock_dat
 ```
 如果有缺失，跑预计算脚本（测试 + 全量都要跑）：
 ```bash
-python scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试"
-python scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量"
+python /mnt/d/paper-factor-data/scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试"
+python /mnt/d/paper-factor-data/scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量"
 ```
 
 ---
@@ -84,7 +82,7 @@ python scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/�
 
 > **`{DATE}` 永远是当天日期**：`datetime.now().strftime("%Y-%m-%d")`。所有 `--date` 参数都传这个值，不传研报原始日期。
 
-对每个待处理项（paper/website/idea），启动一个 sub-agent。**每个 sub-agent 只做两件事：提取原文 → 定义因子。不做编码测试。**
+对每个待处理项（paper/website），启动一个 sub-agent。**每个 sub-agent 只做两件事：提取原文 → 定义因子。不做编码测试。**
 
 sub-agent 同时启动最多 **5 个**（`run_in_background=true`），完成后主 Claude 立即派发下一个。
 
@@ -98,13 +96,11 @@ prompt = """
 ### 输入
 - 类型: {type}
 - 文本路径: {txt_path}  (仅paper，已预提取为 .txt)
-- 文本: {text}  (仅idea)
 - 网站索引: {index} (仅website)
 
 ### Step 1: 获取原文
 - paper：用 Read 工具直接读取 {txt_path}（主进程已用 extract-pdf --outdir 预提取，无需自己跑命令）
 - website：运行 `python scripts/claude_factor_helper.py extract-website --index {index}`，解析输出 JSON 的 `content` 字段作为正文
-- idea：直接用 {text}
 
 如果文本为空，跳过（返回 skipped）。
 
@@ -158,9 +154,9 @@ run: rm -rf /tmp/factor_pdf
 run: python scripts/claude_factor_helper.py extract-pdf {全部真实paper路径，空格分隔} --outdir /tmp/factor_pdf
      → 输出 {"<源路径>": "/tmp/factor_pdf/00_xxx.txt", ...} 映射
      → 把每个 paper 的 txt 路径存入 task.txt_path；无映射的 paper 跳过
-     （paper 路径含特殊字符时，直接传目录 papers/inbox 代替，映射仍按文件输出）
+     （paper 路径含特殊字符时，直接传目录 /mnt/d/paper-factor-data/papers/inbox 代替，映射仍按文件输出）
 
-tasks = flatten(papers + websites + ideas, DL排最后)
+tasks = flatten(papers + websites, DL排最后)
 next_idx = 0
 active = {}  # {agent_id: task_info}
 results = []
@@ -322,8 +318,8 @@ ls /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量/stock_dat
 
 **Step 1：如果不存在，立即预计算（先跑再写函数！）**
 ```bash
-python scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试"
-python scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量"
+python /mnt/d/paper-factor-data/scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试"
+python /mnt/d/paper-factor-data/scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量"
 ```
 **必须两个目录都跑**，因为因子要在测试和全量两个环境运行。
 
@@ -417,6 +413,12 @@ while active:
         import time; time.sleep(5)
 
 # 全部完成
+
+# ── 收尾：按报告生成复现报告（哪些因子成功复现 / 哪些未复现及原因）──
+# 遍历当天所有 extracted_reports/{DATE}/*.extracted.json 的报告名，逐个生成
+for each report_name in 当天所有报告的集合:
+    run: python scripts/claude_factor_helper.py write-repro-report --date {DATE} --report "{report_name}"
+# 每份报告输出 因子产出/测试/{DATE}/{report_name}/复现报告.md
 ```
 
 ---

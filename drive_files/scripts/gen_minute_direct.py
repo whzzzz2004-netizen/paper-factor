@@ -4,6 +4,7 @@
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +13,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+DATA_ROOT = Path(os.environ.get("PAPER_FACTOR_DATA_ROOT", "/mnt/d/paper-factor-data"))
 WH = DATA_ROOT / "数据仓库"
 MINUTE_BY_DATE = WH / "行情数据" / "分钟线" / "全量" / "stock_data" / "minute_by_date"
 MINUTE_META = MINUTE_BY_DATE.parent  # stock_data/

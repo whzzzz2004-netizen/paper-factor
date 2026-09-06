@@ -25,6 +25,6 @@ description: 删除所有因子产出（测试因子 / 全量因子 / Python 缓
 
 ## 注意事项
 
-- 不删除 `papers/inbox/` 中的源 PDF
+- 不删除 `/mnt/d/paper-factor-data/papers/inbox/` 中的源 PDF
 - 不删除数据目录 `factor_implementation_source_data/` 中的原始行情数据
 - 跑完 `/clean` 后需要重新跑 `start`

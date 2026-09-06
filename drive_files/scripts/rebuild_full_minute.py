@@ -7,9 +7,9 @@
         MultiIndex[instrument, datetime], 7 数据列, instrument 统一 6 位, datetime ns 精度
 
 用法:
-    python scripts/rebuild_full_minute.py                 # 转换全部日期到目标目录
-    python scripts/rebuild_full_minute.py --dry-run       # 只打印计划, 不写盘
-    python scripts/rebuild_full_minute.py --workers 8     # 并行进程数
+    python /mnt/d/paper-factor-data/scripts/rebuild_full_minute.py                 # 转换全部日期到目标目录
+    python /mnt/d/paper-factor-data/scripts/rebuild_full_minute.py --dry-run       # 只打印计划, 不写盘
+    python /mnt/d/paper-factor-data/scripts/rebuild_full_minute.py --workers 8     # 并行进程数
 """
 
 import argparse
