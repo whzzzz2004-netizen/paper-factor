@@ -19,10 +19,11 @@ echo "=========================================="
 echo " 同步 drive_files → $DATA_ROOT"
 echo "=========================================="
 
-# 1. 数据转换脚本
+# 1. 数据转换脚本（.py + getdata.bat Windows 一键命令）
 echo "[1/4] scripts ..."
 mkdir -p "$DATA_ROOT/scripts"
 cp -f "$REPO_DIR"/drive_files/scripts/*.py "$DATA_ROOT/scripts/"
+cp -f "$REPO_DIR"/drive_files/scripts/*.bat "$DATA_ROOT/scripts/" 2>/dev/null || true
 
 # 2. 研报 papers
 echo "[2/4] papers ..."

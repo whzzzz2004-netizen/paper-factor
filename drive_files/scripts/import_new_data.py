@@ -35,7 +35,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_ROOT = Path(os.environ.get("PAPER_FACTOR_DATA_ROOT", "/mnt/d/paper-factor-data"))
+# 数据根目录：Windows 原生运行用 D:\paper-factor-data，WSL/其它用 /mnt/d/paper-factor-data。
+# 均可用环境变量 PAPER_FACTOR_DATA_ROOT 覆盖（getdata.bat 已设置）。
+_DEFAULT_DATA_ROOT = r"D:\paper-factor-data" if os.name == "nt" else "/mnt/d/paper-factor-data"
+DATA_ROOT = Path(os.environ.get("PAPER_FACTOR_DATA_ROOT", _DEFAULT_DATA_ROOT))
 # 因子仓库根目录（prompts.yaml 所在，import_new_data 写回 prompt 用）。
 # 优先环境变量 PAPER_FACTOR_REPO；其次 D 盘 repo_path.txt（由 sync_drive.sh 写入）；
 # 都没有则回退到脚本父目录的父目录（D 盘根，通常就是数据根）。
@@ -903,7 +906,7 @@ def _import_cross_sectional_factors_batch(infos: list, descs: dict) -> list:
     return [info.factor_name for info in infos]
 
 
-def _import_minute_cross_sectional_factors_batch(infos: list) -> list:
+def _import_minute_cross_sectional_factors_batch(infos: list, descs: Optional[dict] = None) -> list:
     """批量导入分钟截面因子：按日期并行处理，避免 OOM。
 
     每个因子：index=DatetimeIndex(分钟精度), columns=股票代码(int), values=float64
@@ -991,10 +994,11 @@ def _import_minute_cross_sectional_factors_batch(infos: list) -> list:
         new_cols.append(fn)
 
     # 注册分钟新列到 schema
+    descs = descs or {}
     schema = _load_schema()
     for c in new_cols:
         if c not in schema["minute"]["columns"]:
-            schema["minute"]["columns"][c] = {"description": c, "source": "原始数据导入"}
+            schema["minute"]["columns"][c] = {"description": descs.get(c, c), "source": "原始数据导入"}
             print(f"  📋 注册分钟 schema 列: {c}", flush=True)
     _save_schema(schema)
 
@@ -1153,8 +1157,10 @@ def _register_new_cols(schema: dict, cols_encountered: set, write: bool,
     descs = descs or {}
     truly_new = []
     for c in sorted(cols_encountered):
+        # 字段含义完全照搬 CSV 原话（descs），CSV 没有才回退 _known_desc（列名/已有含义）
+        _csv_desc = descs.get(c, "")
         if c not in schema_cols:
-            schema_cols[c] = {"description": _known_desc(c), "source": "原始数据导入"}
+            schema_cols[c] = {"description": _csv_desc or _known_desc(c), "source": "原始数据导入"}
             print(f"  📋 注册 schema 列: {c}", flush=True)
         for ffp in FACTOR_FIELD_SCHEMA_PATHS:
             ff = _load_factor_field_schema(ffp)
@@ -1301,7 +1307,7 @@ def do_import(dry_run: bool = False):
         if minute_new_cols:
             for c in sorted(set(minute_new_cols)):
                 if c not in schema["minute"]["columns"]:
-                    schema["minute"]["columns"][c] = {"description": c, "source": "原始数据导入"}
+                    schema["minute"]["columns"][c] = {"description": descs.get(c, c), "source": "原始数据导入"}
                     print(f"  📋 注册分钟 schema 列: {c}", flush=True)
             _save_schema(schema)
         print(f"  分钟批量完成: {len(minute_infos)} 个文件, {time.time()-t0:.0f}s", flush=True)
@@ -1324,7 +1330,7 @@ def do_import(dry_run: bool = False):
     # ── 批量处理分钟截面因子 ──
     if minute_factor_infos:
         t0 = time.time()
-        minute_new = _import_minute_cross_sectional_factors_batch(minute_factor_infos)
+        minute_new = _import_minute_cross_sectional_factors_batch(minute_factor_infos, descs)
         has_minute_data = True
         print(f"  分钟截面因子完成: {len(minute_factor_infos)} 个因子, {time.time()-t0:.0f}s", flush=True)
 
@@ -1419,11 +1425,59 @@ def update_prompt_files(schema: dict):
             print(f"  ✅ 已更新: {rel_path}", flush=True)
 
 
+def cmd_summary():
+    """打印导入总结：新列含义（照搬 CSV 原话）+ 数据仓库列统计 + 测试数据状态。"""
+    print("\n" + "=" * 56)
+    print("  📊 getdata 导入总结")
+    print("=" * 56)
+
+    # 1. CSV 字段含义（照搬原话）
+    descs = _load_descriptions()
+    print(f"\n📄 字段含义清单（{len(descs)} 个，来自 新因子描述.csv 原话）：")
+    if descs:
+        for name, desc in sorted(descs.items()):
+            print(f"  - {name}: {desc}")
+    else:
+        print("  （新因子描述.csv 为空或不存在）")
+
+    # 2. schema 列统计
+    schema = _load_schema()
+    daily_cols = schema.get("daily", {}).get("columns", {})
+    minute_cols = schema.get("minute", {}).get("columns", {})
+    print(f"\n🗂 数据仓库列：日线 {len(daily_cols)} 列 | 分钟 {len(minute_cols)} 列")
+
+    # 3. 测试数据状态（固定 300 天 × 300 只）
+    try:
+        sl = json.loads((DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "测试" / "stock_data" / "daily" / "stock_list.json").read_text(encoding="utf-8"))
+        td = json.loads((DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "测试" / "stock_data" / "daily" / "trade_dates.json").read_text(encoding="utf-8"))
+        print(f"🧪 测试数据：{len(sl)} 只 × {len(td)} 天（应为 300×300，固定不动）")
+    except Exception as e:
+        print(f"⚠️ 测试数据读取失败: {e}")
+
+    # 4. 原始数据目录待导入状态
+    try:
+        from collections import Counter
+        cnt = Counter()
+        for p in sorted(NEW_DATA_DIR.rglob("*")):
+            if p.is_file() and p.suffix.lower() in (".parquet", ".csv") and p.resolve() != DESC_FILE.resolve():
+                cnt[p.parent.name if p.parent.name != NEW_DATA_DIR.name else "(根目录)"] += 1
+        if cnt:
+            print("\n📁 原始数据/ 目录文件分布：" + ", ".join(f"{k}:{v}" for k, v in sorted(cnt.items())))
+        else:
+            print("\n📁 原始数据/ 目录当前无待导入文件")
+    except Exception as e:
+        print(f"⚠️ 原始数据扫描失败: {e}")
+
+    print("\n✅ 总结完毕")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="从本地 原始数据/ 目录导入新增行情/非行情数据")
     parser.add_argument("--check", action="store_true", help="扫描 原始数据/，预览文件与列 schema")
     parser.add_argument("--dry-run", action="store_true", help="打印将要导入的内容，不执行")
     parser.add_argument("--update-prompts-only", action="store_true", help="仅根据 schema.json 更新 prompt 标记块")
+    parser.add_argument("--summary", action="store_true", help="打印导入总结（CSV 字段含义 + 列统计 + 测试数据状态）")
     args = parser.parse_args()
 
     if args.update_prompts_only:
@@ -1435,6 +1489,9 @@ def main():
         return
     if args.dry_run:
         do_import(dry_run=True)
+        return
+    if args.summary:
+        cmd_summary()
         return
     do_import(dry_run=False)
 

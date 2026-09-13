@@ -57,13 +57,6 @@ python3 -c "import json; sl=json.load(open('/mnt/d/paper-factor-data/数据仓�
 ```
 如果日线不是 300只×300天，或分钟不是 300只×300天，说明测试数据有问题，**先修复数据再继续**。
 
-**主进程预跑列清单（一次性，所有 Phase 2 agent 共享，省去每个 agent 各跑一次 show-columns）：**
-```bash
-python scripts/claude_factor_helper.py show-columns --type daily_single   # → 保存为 {DAILY_COLS_TEXT}
-python scripts/claude_factor_helper.py show-columns --type minute         # → 保存为 {MINUTE_COLS_TEXT}
-```
-把两份输出直接内联进每个 Phase 2 sub-agent 的 prompt（见下），agent **不再自己跑 show-columns**。
-
 **如果需要全市场数据（如全市场分钟收益率），预计算市场代理文件：**
 检查两个目录：
 ```bash
@@ -217,11 +210,16 @@ prompt = """
 - 需要的字段: 由你从 formulation/description 推导（Phase 1 不提供列名，见下方 Step 0）
 
 ### Step 0：看全部列 → 推导字段 → 判断缺列 / 挑出真实列名（最重要的一步）
-**列清单已在下方直接给出（主进程预跑 show-columns 的内联结果），无需自己跑命令：**
-- **minute** 类型 → 用下方 `{MINUTE_COLS_TEXT}`
-- **daily / cross_section / deep_learning** 类型 → 用下方 `{DAILY_COLS_TEXT}`
+**自己跑 show-columns 拿最新、真实的完整列清单（列随数据仓库变化——新增列如"分析师预期"会自动出现，绝不能靠记忆或别人转述）：**
+```bash
+# minute 类型
+python scripts/claude_factor_helper.py show-columns --type minute
+# daily / cross_section / deep_learning
+python scripts/claude_factor_helper.py show-columns --type daily_single
+```
+**以自己运行的输出为唯一字段核对依据。**
 
-**从因子 definition/formulation/description 推导它需要的字段（语义，如"当日分钟收益率"→return、"市盈率"→pe_ttm），再对照上面给出的完整列名逐一核对（这是唯一的字段核对方式）：**
+**从因子 definition/formulation/description 推导它需要的字段（语义，如"当日分钟收益率"→return、"市盈率"→pe_ttm），再对照你自己跑 show-columns 得到的完整列名逐一核对（这是唯一的字段核对方式）：**
 
 - **因子需要的字段都能在输出里找到 → 字段齐全**：
   - **从 show-columns 输出里挑出每个字段对应的真实列名**（如"市盈率"对应 `pe_ttm` 而非臆造 `pe`），这些真实列名就是本因子的 `{cols}`

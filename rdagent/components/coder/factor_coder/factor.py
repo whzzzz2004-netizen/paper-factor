@@ -164,7 +164,14 @@ STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
 # ── 非行情数据（独立目录：行情只含价量，非行情列从非行情数据目录合并） ──
 FUNDAMENTAL_DATA_DIR = DATA_DIR.resolve().parent.parent.parent / "非行情数据" / DATA_DIR.resolve().name
 FUNDAMENTAL_STOCK_DATA_DIR = FUNDAMENTAL_DATA_DIR / "stock_data" / "daily"
-FUNDAMENTAL_COLS = {{'roe', 'roa', 'pe_ttm', 'pb', 'revenue_yoy', 'profit_yoy', 'gross_margin', 'net_margin', 'debt_to_asset', 'ocf_per_share', 'market_cap', 'circulating_market_cap', 'total_shares', 'float_shares', 'adjusted_profit', 'gross_profit', 'total_holders', 'holder_change_pct'}}
+FUNDAMENTAL_COLS = set()
+try:
+    import pyarrow.parquet as _pq
+    _sample = next(FUNDAMENTAL_STOCK_DATA_DIR.glob("*.parquet"))
+    FUNDAMENTAL_COLS = {c for c in _pq.read_schema(_sample).names
+                        if c not in ("datetime", "trade_date", "date", "__index_level_0__")}
+except Exception:
+    FUNDAMENTAL_COLS = set()
 
 def _load_fundamental(stock, columns=None):
     _p = FUNDAMENTAL_STOCK_DATA_DIR / f"{{stock}}.parquet"
@@ -926,7 +933,14 @@ STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
 # ── 非行情数据（独立目录：行情只含价量，非行情列从非行情数据目录合并） ──
 FUNDAMENTAL_DATA_DIR = DATA_DIR.resolve().parent.parent.parent / "非行情数据" / DATA_DIR.resolve().name
 FUNDAMENTAL_STOCK_DATA_DIR = FUNDAMENTAL_DATA_DIR / "stock_data" / "daily"
-FUNDAMENTAL_COLS = {'roe', 'roa', 'pe_ttm', 'pb', 'revenue_yoy', 'profit_yoy', 'gross_margin', 'net_margin', 'debt_to_asset', 'ocf_per_share', 'market_cap', 'circulating_market_cap', 'total_shares', 'float_shares', 'adjusted_profit', 'gross_profit', 'total_holders', 'holder_change_pct'}
+FUNDAMENTAL_COLS = set()
+try:
+    import pyarrow.parquet as _pq
+    _sample = next(FUNDAMENTAL_STOCK_DATA_DIR.glob("*.parquet"))
+    FUNDAMENTAL_COLS = {c for c in _pq.read_schema(_sample).names
+                        if c not in ("datetime", "trade_date", "date", "__index_level_0__")}
+except Exception:
+    FUNDAMENTAL_COLS = set()
 
 def _load_fundamental(stock, columns=None):
     _p = FUNDAMENTAL_STOCK_DATA_DIR / f"{stock}.parquet"
@@ -1520,7 +1534,14 @@ STOCK_DATA_DIR = DATA_DIR / "stock_data" / "daily"
 # ── 非行情数据（独立目录：行情只含价量，非行情列从非行情数据目录合并） ──
 FUNDAMENTAL_DATA_DIR = DATA_DIR.resolve().parent.parent.parent / "非行情数据" / DATA_DIR.resolve().name
 FUNDAMENTAL_STOCK_DATA_DIR = FUNDAMENTAL_DATA_DIR / "stock_data" / "daily"
-FUNDAMENTAL_COLS = {{'roe', 'roa', 'pe_ttm', 'pb', 'revenue_yoy', 'profit_yoy', 'gross_margin', 'net_margin', 'debt_to_asset', 'ocf_per_share', 'market_cap', 'circulating_market_cap', 'total_shares', 'float_shares', 'adjusted_profit', 'gross_profit', 'total_holders', 'holder_change_pct'}}
+FUNDAMENTAL_COLS = set()
+try:
+    import pyarrow.parquet as _pq
+    _sample = next(FUNDAMENTAL_STOCK_DATA_DIR.glob("*.parquet"))
+    FUNDAMENTAL_COLS = {c for c in _pq.read_schema(_sample).names
+                        if c not in ("datetime", "trade_date", "date", "__index_level_0__")}
+except Exception:
+    FUNDAMENTAL_COLS = set()
 
 def _load_fundamental(stock, columns=None):
     _p = FUNDAMENTAL_STOCK_DATA_DIR / f"{{stock}}.parquet"
