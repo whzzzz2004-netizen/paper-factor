@@ -9,7 +9,7 @@
   因子产出/全量/<report>/<factor_name>/
     ├── factor_name.parquet       # 全量因子值
     ├── factor_name.code.py       # 因子代码
-    ├── factor_name.meta.json     # 元数据 (含评估指标 + LLM审查)
+    ├── factor_name.meta.json     # 元数据 (含评估指标)
     ├── factor_name.decile.png    # 十分组收益图
     └── factor_name.report.md     # 原始研报信息
 """
@@ -306,33 +306,10 @@ def main():
         report_path.write_text(report_md)
         print(f"\n研报信息已保存: {report_path}")
 
-    # --- 阶段4: LLM逻辑正确性审查（测试阶段已做过则跳过） ---
-    print(f"\n{'='*50}")
-    print(f"阶段3: LLM逻辑正确性审查")
-    print(f"{'='*50}")
+    # --- 阶段4: LLM 审查已取消（老板要求）→ 直接接受，不写 llm_review 字段 ---
+    meta = json.loads(meta_path.read_text())
 
-    # 检查meta.json是否已有LLM审查结果
-    existing_meta = json.loads(meta_path.read_text())
-    if existing_meta.get("llm_review") and existing_meta["llm_review"].get("verdict"):
-        print(f"  复用测试阶段LLM审查结果: {existing_meta['llm_review']['verdict']}")
-        print(f"  {existing_meta['llm_review']['summary']}")
-    else:
-        llm_script = PROJECT_ROOT / "scripts" / "llm_review_factor.py"
-        code_file = factor_dir / f"{factor_name}.code.py"
-        llm_result = subprocess.run(
-            [sys.executable, str(llm_script), str(meta_path), str(code_file)],
-            capture_output=True, text=True, timeout=120
-        )
-        if llm_result.returncode == 0:
-            for line in llm_result.stdout.split("\n"):
-                if any(k in line for k in ("判定", "总结")):
-                    print(f"  {line.strip()}")
-        else:
-            print(f"  ⚠️ LLM审查失败: {llm_result.stderr[-200:] if llm_result.stderr else 'unknown'}")
-        # 重新读取meta（llm_review_factor.py已更新meta.json）
-        meta = json.loads(meta_path.read_text())
-
-    # 更新meta.json (含评估+LLM审查)
+    # 更新 meta.json
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
 
@@ -341,7 +318,7 @@ def main():
     print(f"   {factor_dir}/")
     print(f"   - {factor_name}.parquet")
     print(f"   - {factor_name}.code.py")
-    print(f"   - {factor_name}.meta.json  (含评估指标 + LLM审查)")
+    print(f"   - {factor_name}.meta.json")
     print(f"   - {factor_name}.decile.png")
     print(f"   - {factor_name}.report.md")
     print(f"{'='*50}")
