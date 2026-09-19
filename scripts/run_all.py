@@ -229,12 +229,11 @@ def run_incremental_for_factor(item: dict) -> dict:
     # 2. 判断因子类型，确定数据目录
     code_text = code_path.read_text(encoding="utf-8")
     factor_type = detect_factor_type(code_text)
-    data_dir = (DATA_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量") if factor_type in ("minute", "minute_cross_section") else FULL_DATA_DIR
-
-    # 3. 执行子进程
+    market_data_dir = (DATA_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量"
+                       if factor_type in ("minute", "minute_cross_section") else FULL_DATA_DIR)
     start_date_str = last_date.strftime("%Y-%m-%d")
     result_parquet = run_factor_subprocess(
-        code_text, factor_name, data_dir,
+        code_text, factor_name, market_data_dir,
         start_date=start_date_str, n_workers=4, timeout=7200,
     )
     if result_parquet is None:
@@ -246,7 +245,9 @@ def run_incremental_for_factor(item: dict) -> dict:
     new_df = pd.read_parquet(result_parquet)
     result_parquet.unlink(missing_ok=True)  # 清理临时文件
 
-    combined = merge_incremental_result(existing_df, new_df, last_date)
+    # 传权威交易日历给 merge：裁剪周末/非交易日脏行（旧数据若含周末也一并清除）
+    _cal = load_trade_dates(market_data_dir)
+    combined = merge_incremental_result(existing_df, new_df, last_date, trade_dates=_cal)
     if combined is existing_df:
         print("  ⚠️ 增量结果为空")
         result["status"] = "skipped"

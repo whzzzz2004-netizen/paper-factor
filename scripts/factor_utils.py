@@ -120,11 +120,15 @@ def run_factor_subprocess(
         return out_path
 
 
-def merge_incremental_result(existing_df: pd.DataFrame, new_df: pd.DataFrame, last_date: pd.Timestamp | None = None) -> pd.DataFrame:
+def merge_incremental_result(existing_df: pd.DataFrame, new_df: pd.DataFrame, last_date: pd.Timestamp | None = None,
+                             trade_dates: list | None = None) -> pd.DataFrame:
     """
     合并增量结果：裁掉重叠，concat + 去重 + sort。
 
     如果 last_date 不为 None，先只保留 new_df 中 date > last_date 的行。
+    如果 trade_dates 提供（权威交易日历），合并后裁掉不在日历内的行（清周末幽灵行）：
+    - new_df 里非交易日（周末/非交易日）行直接丢弃
+    - existing_df 里同样保留日历内行（旧数据含周末脏行时一并清除）
     """
     # 统一 index 为 DatetimeIndex
     if not isinstance(new_df.index, pd.DatetimeIndex):
@@ -135,12 +139,24 @@ def merge_incremental_result(existing_df: pd.DataFrame, new_df: pd.DataFrame, la
     if last_date is not None:
         new_df = new_df[new_df.index > last_date]
 
+    if not new_df.empty and trade_dates:
+        _cal_set = set(pd.DatetimeIndex(trade_dates))
+        new_df = new_df[new_df.index.isin(_cal_set)]
+        existing_df = existing_df[existing_df.index.isin(_cal_set)]
+
     if new_df.empty:
         return existing_df
 
     combined = pd.concat([existing_df, new_df])
     combined = combined[~combined.index.duplicated(keep='last')]
     combined.sort_index(inplace=True)
+
+    if trade_dates:
+        _cal = pd.DatetimeIndex(sorted(trade_dates))
+        _extra = combined.index.difference(_cal)
+        if len(_extra):
+            combined = combined.drop(index=_extra)
+
     return combined
 
 
