@@ -1,0 +1,16 @@
+{
+  "analyst_coverage": {
+    "factor_name": "analyst_coverage",
+    "short_name": "基于市值转换的分析师覆盖度",
+    "formula": "",
+    "source": "原始数据导入",
+    "note": "基于市值转换的分析师覆盖度"
+  },
+  "EPS_Predict": {
+    "factor_name": "EPS_Predict",
+    "short_name": "基于通联数据的股票股票EPS预测数据（对应最近一个季度财报）",
+    "formula": "",
+    "source": "原始数据导入",
+    "note": "基于通联数据的股票股票EPS预测数据（对应最近一个季度财报）"
+  }
+}
