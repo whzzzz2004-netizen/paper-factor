@@ -5,6 +5,7 @@
 # 运行时残留（自动重建）：RD-Agent 代码执行工作区 + 运行日志
 /workspace/RD-Agent_workspace/
 /workspace/logs/
+/log/
 # 运行时缓存（自动重建）
 __pycache__/
 *.py[cod]

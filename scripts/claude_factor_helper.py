@@ -9,182 +9,20 @@ import json
 import os
 import re
 
-# Factor Memory Bank 路径
-_FACTOR_MEMORY_PATH = os.path.join(
-    os.path.dirname(__file__), "..",
-    ".claude/projects/-home-dministrator-paper-factor/memory/factor_memory.json"
-)
+def _clip(s: str, head: int = 1500, tail: int = 3000) -> str:
+    """把长文本截成「首 head + 尾 tail」，中间标注省略量。
 
-# Domain Knowledge RAG
-_DOMAIN_KNOWLEDGE_RAG = None
-def _get_domain_rag():
-    global _DOMAIN_KNOWLEDGE_RAG
-    if _DOMAIN_KNOWLEDGE_RAG is None:
-        import sys as _sys
-        _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        from domain_knowledge_rag import DomainKnowledgeRAG
-        _DOMAIN_KNOWLEDGE_RAG = DomainKnowledgeRAG()
-        _DOMAIN_KNOWLEDGE_RAG.load_chunks_and_build()
-    return _DOMAIN_KNOWLEDGE_RAG
-
-def retrieve_domain_knowledge(query, top_k=3, min_score=0.01):
-    """从领域知识库检索与 query 相关的知识块。
-
-    知识库包含：A 股涨停规则、板块代码区间、数据列含义、因子编码惯例等。
-    在编码因子时注入 LLM prompt，帮助 LLM 理解 A 股市场特殊规则。
-
-    Args:
-        query: 检索查询（如 "涨停阈值判断"、"怎么计算收益率"）
-        top_k: 返回最多几个知识块
-        min_score: 最低相似度阈值
-    Returns:
-        str: 格式化的知识文本，无匹配时返回空字符串
+    用于失败时回传日志：保留开头（通常含首个报错）和结尾（traceback 收尾），
+    避免整段日志（分钟因子可达数万字符）灌进 agent context。
     """
-    try:
-        rag = _get_domain_rag()
-        results = rag.retrieve(query, top_k=top_k, min_score=min_score)
-        if not results:
-            return ""
-        lines = ["## 领域知识参考（RAG）"]
-        for r in results:
-            lines.append(f"### {r['source']} > {r['heading']} (relevance={r['score']})")
-            lines.append(r['text'])
-            lines.append("")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"<!-- RAG 检索失败: {e} -->"
-
-def _load_factor_memory():
-    """加载因子记忆库"""
-    path = os.path.abspath(_FACTOR_MEMORY_PATH)
-    if not os.path.exists(path):
-        return []
-    try:
-        return json.load(open(path, encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return []
-
-def _save_factor_memory(memory):
-    """保存因子记忆库"""
-    path = os.path.abspath(_FACTOR_MEMORY_PATH)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    json.dump(memory, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-
-def find_similar_factors(factor_type, cols=None, lookback=None, top_k=3):
-    """从记忆库中查找同类高分因子，返回格式化的参考文本
-
-    Args:
-        factor_type: 因子类型 (minute, daily, cross_section, minute_cs)
-        cols: 使用的数据列列表 (可选，用于更精确匹配)
-        lookback: lookback天数 (可选)
-        top_k: 返回最多几个参考
-    Returns:
-        str: 格式化的参考文本，无匹配时返回空字符串
-    """
-    memory = _load_factor_memory()
-    if not memory:
+    if not s:
         return ""
+    if len(s) <= head + tail:
+        return s
+    omitted = len(s) - head - tail
+    return f"{s[:head]}\n…[中间省略 {omitted} 字符]…\n{s[-tail:]}"
 
-    # 筛选同类因子，且 |alpha_tstat| > 2.0 的才算有效参考
-    candidates = [
-        m for m in memory
-        if m.get("factor_type") == factor_type
-        and abs(m.get("alpha_tstat") or 0) > 2.0
-    ]
 
-    if not candidates:
-        return ""
-
-    # 按 |alpha_tstat| 排序
-    candidates.sort(key=lambda x: abs(x.get("alpha_tstat", 0) or 0), reverse=True)
-
-    lines = ["## 参考记忆（同类高分因子）", "以下是与当前因子同类型的、效果较好的历史因子，可供参考其做法："]
-    for m in candidates[:top_k]:
-        name = m.get("name", "?")
-        ic = m.get("ic_mean", "?")
-        ir = m.get("ic_ir", "?")
-        at = m.get("alpha_tstat", "?")
-        desc = m.get("description", "") or ""
-        form = m.get("formulation", "") or ""
-        ic_str = f"{ic:.4f}" if isinstance(ic, (int, float)) else "?"
-        ir_str = f"{ir:.3f}" if isinstance(ir, (int, float)) else "?"
-        at_str = f"{at:.2f}" if isinstance(at, (int, float)) else "?"
-        desc_str = f" — {desc[:120]}" if desc else ""
-        lines.append(f"- {name}: IC={ic_str}, IR={ir_str}, Alpha t={at_str}{desc_str}")
-        if form:
-            lines.append(f"  formulation: {form[:200]}")
-
-    lines.append("注意：如果上述参考与当前因子的原始描述不符，严格按照原始描述实现，不要照搬参考。")
-    return "\n".join(lines)
-
-def update_factor_memory(factor_name, report_name, factor_type, meta_path, full_meta_path):
-    """因子全量运行完成后，记录到记忆库"""
-    memory = _load_factor_memory()
-
-    # 读取测试阶段 meta.json（含 description / formulation）
-    test_meta = {}
-    if meta_path and os.path.isfile(meta_path):
-        try:
-            test_meta = json.load(open(meta_path, encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    # 读取全量 meta.json
-    full_meta = {}
-    if full_meta_path and os.path.isfile(full_meta_path):
-        try:
-            full_meta = json.load(open(full_meta_path, encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    ev = full_meta.get("evaluation") or {}
-
-    # description：优先 test_meta.description → test_meta.factor_description → full_meta.factor_description
-    description = (
-        test_meta.get("description")
-        or test_meta.get("factor_description")
-        or full_meta.get("factor_description")
-        or ""
-    )
-    # formulation：优先 test_meta.formulation → test_meta.factor_formulation → full_meta.factor_formulation
-    formulation = (
-        test_meta.get("formulation")
-        or test_meta.get("factor_formulation")
-        or full_meta.get("factor_formulation")
-        or ""
-    )
-    source_excerpt = test_meta.get("source_excerpt") or full_meta.get("source_excerpt") or ""
-
-    record = {
-        "name": factor_name,
-        "report": report_name,
-        "factor_type": factor_type,
-        "description": description,
-        "formulation": formulation,
-        "source_excerpt": source_excerpt,
-        "ic_mean": ev.get("ic_mean"),
-        "rank_ic_mean": ev.get("rank_ic_mean"),
-        "ic_ir": ev.get("ic_ir"),
-        "alpha_tstat": full_meta.get("barra_analysis", {}).get("exposures", {}).get("alpha", {}).get("tstat"),
-        "rows": full_meta.get("rows"),
-        "stock_count": full_meta.get("stock_count"),
-        "updated_at": full_meta.get("updated_at", ""),
-    }
-
-    # 更新或追加
-    found = False
-    for i, m in enumerate(memory):
-        if m.get("name") == factor_name:
-            memory[i] = record
-            found = True
-            break
-    if not found:
-        memory.append(record)
-
-    # 按 |alpha_tstat| 排序
-    memory.sort(key=lambda x: abs(x.get("alpha_tstat") or 0), reverse=True)
-    _save_factor_memory(memory)
-    return record
 import shutil
 import subprocess
 import sys
@@ -795,9 +633,11 @@ def cmd_test_and_export(args):
             "success": False,
             "detected_type": type_key,
             "detected_lookback": lookback,
-            "stderr_full": test_result.get("stderr", ""),
+            # 失败输出不再回传完整 stdout/stderr（分钟因子日志可达数万字符，纯 token 黑洞）。
+            # 改为「首 1500 字符 + 尾 3000 字符」，报错（通常在首尾）不丢；中间被截断并标注省略量。
+            "stderr_clip": _clip(test_result.get("stderr", ""), head=2000, tail=4000),
             "stderr_tail": test_result["stderr_tail"],
-            "stdout_full": test_result.get("stdout", ""),
+            "stdout_clip": _clip(test_result.get("stdout", ""), head=1500, tail=3000),
             "stdout_tail": test_result["stdout_tail"],
             "returncode": test_result["returncode"],
             **{k: v for k, v in test_result.items() if k in extra_keys},
@@ -926,15 +766,6 @@ def cmd_trigger_full(args):
             source_excerpt=source_excerpt,
         )
         status = "success" if ok else "failed"
-
-    # 全量成功 → 记录到因子记忆库
-    if status == "success":
-        try:
-            full_meta_path = output_dir / f"{factor_name}.meta.json"
-            code_text = code_path.read_text(encoding="utf-8")
-            update_factor_memory(factor_name, report_name, factor_type, meta_path, full_meta_path)
-        except Exception as e:
-            print(f"  ⚠️ 因子记忆记录失败: {e}", file=sys.stderr)
 
     output = {
         "status": status,
@@ -1143,89 +974,6 @@ def cmd_deploy_to_full(args):
     return 0
 
 
-# ---------------------------------------------------------------------------
-# Subcommand: scan-pending
-# ---------------------------------------------------------------------------
-def cmd_scan_pending(args):
-    """Scan for unprocessed papers and website sources."""
-    inbox_dir = PROJECT_ROOT / "papers" / "inbox"
-    sources_json = DATA_ROOT / "papers" / "website" / "sources.json"
-    processed_json = LITERATURE_REPORTS_DIR.parent / "processed_reports.json"
-    extracted_dir = LITERATURE_REPORTS_DIR.parent / "extracted_reports"
-
-    # Load processed list
-    processed_set = set()
-    if processed_json.exists():
-        try:
-            processed_set = set(json.loads(processed_json.read_text()))
-        except Exception:
-            pass
-
-    result = {"papers": [], "websites": [], "fully_processed_papers": [], "fully_processed_websites": []}
-
-    # Scan inbox PDFs
-    if inbox_dir.exists():
-        for pdf_path in sorted(inbox_dir.glob("*.pdf")):
-            pdf_name = pdf_path.name
-            status, info = _check_report_status(pdf_path, processed_set, extracted_dir, LITERATURE_REPORTS_DIR)
-            if status == "done":
-                result["fully_processed_papers"].append(pdf_name)
-            elif status == "partial":
-                result["papers"].append({"file": str(pdf_path), "name": pdf_name, "status": "partial", **info})
-            else:
-                result["papers"].append({"file": str(pdf_path), "name": pdf_name, "status": "pending"})
-
-    # Scan website sources.json
-    if sources_json.exists():
-        try:
-            sources = json.loads(sources_json.read_text())
-            for i, src in enumerate(sources):
-                src = _normalize_source(src, i)
-                slug = _make_source_slug(src, i)
-                slug_name = f"{slug}.extracted.json"
-                # Check if in processed_reports.json (skip/mark-done by slug or URL)
-                if slug in processed_set or src.get("url", "") in processed_set:
-                    result["fully_processed_websites"].append(slug)
-                    continue
-                # Check if already in literature_reports (递归检查子目录)
-                report_dir = LITERATURE_REPORTS_DIR / slug
-                _has_code = False
-                if report_dir.exists():
-                    _has_code = any(f.endswith(".code.py") for f in os.listdir(report_dir))
-                    if not _has_code:
-                        for _sub in report_dir.iterdir():
-                            if _sub.is_dir() and any(f.endswith(".code.py") for f in os.listdir(_sub)):
-                                _has_code = True
-                                break
-                if _has_code:
-                    result["fully_processed_websites"].append(src.get("title", slug))
-                elif (extracted_dir / slug_name).exists():
-                    result["websites"].append({"index": i, "slug": slug, "title": src.get("title", ""), "url": src.get("url", ""), "status": "extracted"})
-                else:
-                    result["websites"].append({"index": i, "slug": slug, "title": src.get("title", ""), "url": src.get("url", ""), "status": "pending"})
-        except Exception:
-            pass
-
-    # Summary
-    total_pending = len(result["papers"]) + len(result["websites"])
-    result["summary"] = {
-        "total_pending": total_pending,
-        "papers_pending": len(result["papers"]),
-        "websites_pending": len(result["websites"]),
-        "fully_processed_papers": len(result["fully_processed_papers"]),
-        "fully_processed_websites": len(result["fully_processed_websites"]),
-    }
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
-
-
-def _sanitize_name(name: str) -> str:
-    """Sanitize report/factor name for filesystem (same as FactorFBWorkspace._sanitize_factor_name)."""
-    for ch in r'\/:*?"<>|':
-        name = name.replace(ch, "_")
-    return name.strip()
-
-
 def _normalize_source(src, index: int) -> dict:
     """Normalize a sources.json entry to dict format (handles both string URLs and dicts)."""
     if isinstance(src, str):
@@ -1233,96 +981,6 @@ def _normalize_source(src, index: int) -> dict:
     if isinstance(src, dict):
         return {"url": src.get("url", ""), "title": src.get("title", ""), "source": src.get("source", "")}
     return {"url": "", "title": f"未知来源_{index}", "source": ""}
-
-
-def _make_source_slug(src, index: int) -> str:
-    """Create a slug for a website source entry."""
-    src = _normalize_source(src, index)
-    title = src.get("title", "")
-    if title:
-        return _sanitize_name(f"website__{title[:80]}")
-    url = src.get("url", "")
-    if url:
-        # Extract domain + path tail
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        path_parts = parsed.path.strip("/").split("/")
-        short = path_parts[-1][:40] if path_parts else parsed.hostname or f"src_{index}"
-        return _sanitize_name(f"website__{short}")
-    return f"website__{index}"
-
-
-def _check_report_status(pdf_path, processed_set, extracted_dir, lit_dir) -> tuple:
-    """Check if a report PDF is fully processed, partial, or unprocessed.
-    Returns (status, info_dict) where status is 'done', 'partial', or 'pending'.
-    """
-    import unicodedata
-    pdf_name = pdf_path.name
-    report_title = pdf_path.stem
-
-    # Normalize for comparison: strip common punctuation differences (Chinese/ASCII quotes, etc.)
-    def _norm(s):
-        s = unicodedata.normalize('NFKC', s)
-        for ch in '\u201c\u201d\u2018\u2019""''':
-            s = s.replace(ch, '')
-        return s
-
-    pdf_name_norm = _norm(pdf_name)
-    pdf_stem_norm = _norm(report_title)
-    for processed_name in processed_set:
-        pn = _norm(processed_name)
-        if pn == pdf_name_norm or pn == pdf_stem_norm:
-            return "done", {}
-
-    # Check extracted report cache
-    extracted_json = extracted_dir / f"{report_title}.extracted.json"
-    extracted_count = 0
-    if extracted_json.exists():
-        try:
-            payload = json.loads(extracted_json.read_text(encoding="utf-8"))
-            factors = payload.get("factors") or {}
-            extracted_count = len(factors)
-        except Exception:
-            pass
-
-    if extracted_count == 0:
-        return "pending", {}
-
-    # Check how many factors made it to literature_reports
-    report_dir = lit_dir / _sanitize_name(report_title)
-    terminal_count = 0
-    if report_dir.exists():
-        for factor_dir in report_dir.iterdir():
-            if factor_dir.is_dir():
-                if any(f.endswith(".code.py") for f in os.listdir(factor_dir)):
-                    terminal_count += 1
-
-    if terminal_count >= extracted_count:
-        return "done", {"extracted": extracted_count, "terminal": terminal_count}
-    else:
-        return "partial", {"extracted": extracted_count, "terminal": terminal_count}
-
-
-# ---------------------------------------------------------------------------
-# Subcommand: mark-done
-# ---------------------------------------------------------------------------
-def cmd_mark_done(args):
-    """Mark a paper as processed by adding it to processed_reports.json."""
-    processed_json = LITERATURE_REPORTS_DIR.parent / "processed_reports.json"
-    processed = []
-    if processed_json.exists():
-        try:
-            processed = json.loads(processed_json.read_text())
-        except Exception:
-            pass
-
-    name = args.name
-    if name not in processed:
-        processed.append(name)
-        processed_json.write_text(json.dumps(processed, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    print(json.dumps({"marked_done": name, "total_processed": len(processed)}))
-    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1526,47 +1184,6 @@ def cmd_show_columns(args):
 # ═══════════════════════════════════════════════════════════════════
 # retrieve-domain-knowledge — 领域知识 RAG 检索
 # ═══════════════════════════════════════════════════════════════════
-def cmd_retrieve_knowledge(args):
-    """检索领域知识（A 股规则、涨停机制、列定义等）"""
-    query = " ".join(args.query)
-    top_k = args.top_k
-    min_score = args.min_score
-
-    import sys as _sys
-    _sys.path.insert(0, os.path.dirname(__file__))
-    from domain_knowledge_rag import DomainKnowledgeRAG
-    rag = DomainKnowledgeRAG()
-    rag.load_chunks_and_build()
-    results = rag.retrieve(query, top_k=top_k, min_score=min_score)
-
-    if not results:
-        print("无匹配结果")
-        return 0
-
-    for r in results:
-        print(f"[{r['score']:.3f}] {r['source']} > {r['heading']}")
-        print(f"  {r['text'][:200]}")
-        print()
-
-    if args.json:
-        import json as _json
-        print("---")
-        print(_json.dumps(results, ensure_ascii=False, indent=2))
-
-    return 0
-
-
-def cmd_find_similar(args):
-    """查找同类因子参考"""
-    cols = [c.strip() for c in re.split(r"[,，\s]+", args.cols) if c.strip()] if args.cols else None
-    result = find_similar_factors(args.type, cols=cols, lookback=args.lookback, top_k=args.top_k)
-    if result:
-        print(result)
-    else:
-        print("无匹配的同类因子参考")
-    return 0
-
-
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -1646,13 +1263,6 @@ def main():
     p_run.add_argument("--source-report-title", default=None, help="Source report title")
     p_run.add_argument("--meta", default=None, help="JSON file with metadata (alternative to individual --* args)")
 
-    # scan-pending
-    p_scan = sub.add_parser("scan-pending", help="Scan for unprocessed papers and websites")
-
-    # mark-done
-    p_mark = sub.add_parser("mark-done", help="Mark a paper as processed")
-    p_mark.add_argument("--name", required=True, help="Paper filename (e.g. '报告名.pdf')")
-
     # save-extracted
     p_se = sub.add_parser("save-extracted", help="Save factor definitions JSON to extracted_reports/ (read from stdin)")
     p_se.add_argument("--name", required=True, help="Report title (stem, e.g. '基于GRU的因子选股')")
@@ -1666,20 +1276,6 @@ def main():
     # show-columns
     p_showcols = sub.add_parser("show-columns", help="Show available columns in stock data (--type minute 显示分钟线列)")
     p_showcols.add_argument("--type", default=None, help="Factor type: daily/minute/cross_section/deep_learning（决定展示日线+非行情列 还是 分钟线列）")
-
-    # retrieve-knowledge
-    p_rk = sub.add_parser("retrieve-knowledge", help="Retrieve domain knowledge via RAG (A股规则, 涨停机制, 列定义等)")
-    p_rk.add_argument("query", nargs="+", help="Search query (e.g. '涨停阈值 科创板')")
-    p_rk.add_argument("--top-k", type=int, default=3, help="Number of results (default: 3)")
-    p_rk.add_argument("--min-score", type=float, default=0.01, help="Minimum similarity score (default: 0.01)")
-    p_rk.add_argument("--json", action="store_true", help="Output as JSON")
-
-    # find-similar
-    p_fs = sub.add_parser("find-similar", help="Find similar factors from factor memory")
-    p_fs.add_argument("--type", required=True, help="Factor type (daily, minute, cross_section, minute_cs)")
-    p_fs.add_argument("--cols", default=None, help="Comma-separated columns used")
-    p_fs.add_argument("--lookback", type=int, default=None, help="Lookback days")
-    p_fs.add_argument("--top-k", type=int, default=3, help="Number of results (default: 3)")
 
     # wait-full
     p_wait = sub.add_parser("wait-full", help="Wait for all submitted full pipeline tasks to complete")
@@ -1705,13 +1301,9 @@ def main():
         "run-full": cmd_run_full,
         "wait-full": cmd_wait_full,
         "deploy-to-full": cmd_deploy_to_full,
-        "scan-pending": cmd_scan_pending,
-        "mark-done": cmd_mark_done,
         "save-extracted": cmd_save_extracted,
         "write-repro-report": cmd_write_repro_report,
         "show-columns": cmd_show_columns,
-        "retrieve-knowledge": cmd_retrieve_knowledge,
-        "find-similar": cmd_find_similar,
     }
     fn = cmd_map[args.command]
     return fn(args)

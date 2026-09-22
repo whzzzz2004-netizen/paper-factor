@@ -245,10 +245,8 @@ python scripts/run_all.py --dry-run          # 仅查看计划
 ### 因子处理
 
 ```bash
-python scripts/claude_factor_helper.py scan-pending                  # 扫描未处理内容
 python scripts/claude_factor_helper.py test-and-export ...           # 测试+导出
 python scripts/claude_factor_helper.py deploy-to-full ...            # 部署全量
-python scripts/claude_factor_helper.py mark-done --name "文件名.pdf"  # 标记完成
 ```
 
 ### 数据导入

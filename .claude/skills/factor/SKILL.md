@@ -15,7 +15,7 @@
 5. **唯一跳过场景**：所需数据完全不可用（如专有数据库API）。择时/选基/宏观/债券不跳过。**因子缺字段（某列不存在）不算"跳过"**：Phase 1 照常定义所有因子（不看列、不填列名）；Phase 2 才看 `show-columns` 全部列名、结合因子定义自行判断。若判断因子因缺列无法实现 → 自己在测试因子目录写 `{factor}.missing.json` 记录缺的列，不生成代码、不部署全量。字段齐全的因子 → Phase 2 从 show-columns 挑出真实列名写代码。
 6. `source_excerpt` 从原文直接复制
 7. **DATE 永远是当天日期**：`datetime.now().strftime("%Y-%m-%d")`。所有 save-extracted / test-and-export / deploy-to-full 的 `--date` 都传当天日期，不用研报的原始日期。
-8. **不标记完成**：不跑 `mark-done`，不跟踪处理状态。每次运行直接扫 `/mnt/d/paper-factor-data/papers/inbox/` 里的所有文件，全量处理。
+8. **每次全量处理**：每次运行直接扫 `/mnt/d/paper-factor-data/papers/inbox/` 里的所有文件并全部处理。
 9. **所有分钟因子必须用 `minute` 类型模板，严禁用 `minute_cs`**：
    - `minute_cs` 太慢（测试 6~8 分钟/个，全量可能数小时），且截面标准化对单因子无意义
    - 如果因子需要全市场数据（市场收益率、总成交量等），先用 `ls` 检查 `minute_by_date/` 下是否有预计算文件，没有就让 LLM **在代码中自己计算**（模块级预加载，一次性计算）
@@ -40,11 +40,13 @@
 
 ### Step 0: 扫描 inbox + 数据预检
 
-直接扫 `/mnt/d/paper-factor-data/papers/inbox/` 目录列出所有 PDF 文件。不跑 `scan-pending`，不检查完成状态。
+直接扫 `/mnt/d/paper-factor-data/papers/inbox/` 目录列出所有**研报文件（PDF 和 Markdown）**。
 
 ```bash
-ls /mnt/d/paper-factor-data/papers/inbox/*.pdf 2>/dev/null
+ls /mnt/d/paper-factor-data/papers/inbox/*.pdf /mnt/d/paper-factor-data/papers/inbox/*.md 2>/dev/null
 ```
+
+> ⚠️ **必须同时包含 `.md`**：`extract-pdf` 支持 PDF 和 .md；只扫 `*.pdf` 会静默漏掉 Markdown 研报（曾经漏过 `EpsRevision因子研究.md`）。
 
 **队列排序规则：** 含 "深度学习/GRU/TCN/LSTM/deep_learning" 的排末尾，其他优先。
 
@@ -161,19 +163,22 @@ for _ in range(min(5, len(tasks))):
     next_idx += 1
 
 # 每当一个 worker 返回 → 立即派发下一个
+# ⚠️ 用 block=true 阻塞等待，不要用 block=false + sleep(5) 轮询空转
+#    （后者每个因子要空转几十轮主 agent 调用，纯烧 token；总耗时不变）
 while active:
-    # 对每个 active agent 用 TaskOutput block=false 检查完成状态
+    # 阻塞等待「任意一个」agent 完成；单次上限 10 分钟，超时后本轮重扫再继续等
+    output = TaskOutput(task_id=next(iter(active)), block=true, timeout=600000)
+    # 该 agent 完成（或超时）后，用 block=false 一次性收走所有已完成的
     for agent_id in list(active.keys()):
-        output = TaskOutput(task_id=agent_id, block=false, timeout=0)
-        if output.status == "completed":
-            results.append({agent_id: output.result})
+        out = TaskOutput(task_id=agent_id, block=false, timeout=0)
+        if out.status == "completed":
+            results.append({agent_id: out.result})
             del active[agent_id]
             if next_idx < len(tasks):
                 new_id = dispatch_phase1_worker(tasks[next_idx])
                 active[new_id] = tasks[next_idx]
                 next_idx += 1
-    if active:
-        import time; time.sleep(5)  # 等 5 秒再检查
+    # 仍有人在跑 → 回到 while 顶部继续阻塞等待，不 sleep 空转
 
 # 全部完成 → 进入 Phase 2
 ```
@@ -191,201 +196,31 @@ while active:
 > **type→type_key 映射**（Phase 2 prompt 里填 `--type {type_key}` 用）：daily→daily_single, minute→minute, cross_section→cross_section, deep_learning→deep_learning。
 > **`--cols` 格式**：空格或逗号分隔均可（helper 自动 split），如 `--cols "close factor"` 或 `--cols "close,factor"`。
 
-#### Phase 2 sub-agent prompt（极简 ~30 行）
+#### Phase 2 sub-agent prompt（主 agent 只传参数，不重复输出全文）
+
+**主 agent 的 prompt 只有下面这几行**（把 190 行作业指导交给子 agent 自己读）：
 
 ```
 subagent_type=general-purpose
 prompt = """
-你只做一件事：写一个核心函数并跑 test-and-export。不做其他任何事。
+你是因子编码 agent。第一步：Read `.claude/skills/factor/phase2_prompt.md`（完整作业指导，含 Step 0 列核对、写码规范、test-and-export 命令、失败重试规则）。然后严格按该文件执行，不要做文件之外的事。
 
-### 因子定义
+### 本因子参数
 - 因子名: {name}
-- 类型: {type}（minute/daily/cross_section/deep_learning）
-- 函数名: {func_name}  (见下方对照表)
-- lookback: {lookback}  **（⚠️ 只含核心计算天数，不含论文末尾的截面标准化/std20后处理）**
+- 类型: {type}（type_key={type_key}）
+- 函数名: {func_name}
+- lookback: {lookback}
 - 报告名: {report_name}
 - formulation: {formulation}
 - description: {description}
 - source_excerpt: {source_excerpt}
-- 需要的字段: 由你从 formulation/description 推导（Phase 1 不提供列名，见下方 Step 0）
 
-### Step 0：看全部列 → 推导字段 → 判断缺列 / 挑出真实列名（最重要的一步）
-**自己跑 show-columns 拿最新、真实的完整列清单（列随数据仓库变化——新增列如"分析师预期"会自动出现，绝不能靠记忆或别人转述）：**
-```bash
-# minute 类型
-python scripts/claude_factor_helper.py show-columns --type minute
-# daily / cross_section / deep_learning
-python scripts/claude_factor_helper.py show-columns --type daily_single
-```
-**以自己运行的输出为唯一字段核对依据。**
-
-**从因子 definition/formulation/description 推导它需要的字段（语义，如"当日分钟收益率"→return、"市盈率"→pe_ttm），再对照你自己跑 show-columns 得到的完整列名逐一核对（这是唯一的字段核对方式）：**
-
-- **因子需要的字段都能在输出里找到 → 字段齐全**：
-  - **从 show-columns 输出里挑出每个字段对应的真实列名**（如"市盈率"对应 `pe_ttm` 而非臆造 `pe`），这些真实列名就是本因子的 `{cols}`
-  - 继续 Step 1 写代码，`--cols` 用这些真实列名
-- **因子需要某字段但输出里没有对应列 → 先尝试"用现有列组合推导"，实在没有才算缺列**：
-  - **字段可推导知识点**（常见派生字段）：`换手率 ≈ volume / (float_shares × 10000)`（volume 单位=股，float_shares 单位=万股）；涨跌幅可用 `close.pct_change()`（或用 `pct_chg`）；"昨日收盘"可用 `close.shift(1)`；市值相关已直接有 market_cap/circulating_market_cap 列。
-  - 如果所需字段能用清单里现有列组合算出来 → **不判缺列**，用这些列实现（如 CrossSectionTurnover 用 `volume` + `float_shares` 算换手率），正常写代码。
-  - 只有组合也实现不了（如"分析师一致预期营收"这类清单里完全没有、也无法用现有列推导的专有数据）→ **才判断为缺列**：
-  - **不要写代码，不要跑 test-and-export，不要 deploy-to-full**
-  - 在测试因子目录用 Write 工具写 `{name}.missing.json` 记录缺的字段（路径见下文"缺列 JSON 格式"——**用完整路径 `/mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.missing.json`**，不要写在项目根目录的 因子产出/ 下）
-  - 然后直接返回 success=true，missing_fields=true
-  - 不需要修改字段或换因子
-
-**缺列 JSON 格式**（用 Write 工具写到 `因子产出/测试/{DATE}/{report_name}/{name}/{name}.missing.json`，即 **`/mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.missing.json`**，与其他测试因子产出同一目录；目录不存在时先创建）：
-```json
-{
-  "factor_name": "{name}",
-  "report_name": "{report_name}",
-  "date": "{DATE}",
-  "factor_type": "{type_key}",
-  "status": "missing_fields",
-  "missing_fields": ["缺的字段1", "缺的字段2"],
-  "checked_cols": ["因子定义推导需要的所有字段（语义）"],
-  "detected_by": "show-columns",
-  "message": "因子 {name} 所需字段 缺的字段1, 缺的字段2 在测试数据中不存在，因此未生成代码、未部署到全量。"
-}
-```
-
-### 你的任务（只有两步）
-
-#### 1. 写核心函数到 /tmp/factor_{name}.py
-只有 Step 0 显示字段齐全时才写代码。列名以 Step 0 的 `show-columns --type` 输出为准。
-**写代码前，用 Read 工具读**恰好一个**知识文件——只读与你自己 type 对应的那一个（按类型映射选，不要读其他类型，省 token）：**
-```bash
-# 只读这一个（根据类型选择）：
-#   daily          → .claude/skills/factor/knowledge/daily.md
-#   minute         → .claude/skills/factor/knowledge/minute.md
-#   cross_section  → .claude/skills/factor/knowledge/cross_section.md
-#   deep_learning  → .claude/skills/factor/knowledge/deep_learning.md
-```
-根据类型写核心函数：
-{daily: **`def calc_factor_series(df, stock) -> pd.Series`**（向量化，1次调用算完全部日期）。可选写 `calc_factor_single_stock(df, trade_date, stock)` 作为 fallback，模板默认提供包装。
- minute: `def calc_factors_one_day(df, stock):`,
- cross_section: `def calc_factor_cross_section(all_data, trade_date):`,
- deep_learning: `def train_model(all_data, trade_date):` + `def predict_batch(model, data_dict, trade_date):`}
-
-**⚠️ 各模板入参的硬事实（照此写，勿猜）**：
-- **minute**：`calc_factors_one_day(df, stock)` 的 `df.index` 是 **DatetimeIndex**（模板已转换），直接用 `df.index`；`df` 是 LOOKBACK 天的滑动窗口切片（最后一天是 T 日）。不要调用 `get_level_values("datetime")`。
-- **cross_section**：`calc_factor_cross_section(all_data, trade_date)` 的 `all_data` 是 **`dict {股票代码: DataFrame}`**，不是单个 DataFrame！`all_data[stock]` 是该股票截至 `trade_date` 的 **LOOKBACK 窗口切片**（含所需列）。返回 `dict {股票代码: 值}` 或 `{股票代码: {"因子名": 值}}`，需要遍历 `all_data` 的 key。行业分类用模板已加载的 `INDUSTRY_DICT`。
-- **deep_learning**：`train_model(all_data, trade_date)` 的 `all_data` 同理是 dict。
-- **daily**：`calc_factor_series(df, stock)` 的 `df` 是单股票全历史 DataFrame（DatetimeIndex），一次调用返回全部日期的 pd.Series。
-
-**⚠️ 所有分钟因子用 minute 模板，不要用 minute_cs。**
-
-**日线因子必须优先写 `calc_factor_series`（向量化版本）**：
-```python
-def calc_factor_series(df, stock):
-    \"\"\"一次算完全部日期的因子值。返回 pd.Series(index=原日期, name=因子名)\"\"\"
-    if df is None or len(df) < LOOKBACK_DAYS:
-        return pd.Series(dtype=float, name=因子名)
-    # 用 pandas rolling 向量化计算，避免逐日循环
-    s1 = df["col1"].rolling(20, min_periods=20).sum()
-    s2 = df["col2"].rolling(20, min_periods=20).mean()
-    ...
-    result = ...  # 组合逻辑
-    result.name = "因子名"
-    return result
-```
-**性能要求**：`calc_factor_series` 内禁止 for 循环逐行/逐日计算。必须用 pandas/numpy 向量化操作（rolling/expanding/shift/diff/groupby transform）。
-`calc_factor_single_stock` 可省略（模板自动 fallback 到逐日模式，但速度慢 10~100x）。
-
-只实现核心计算逻辑。不要写模板框架代码（数据加载、并行、涨停剔除等模板会自动处理）。
-
-**分钟模板有两条路径，LLM 自行判断用哪个：**
-- `calc_factors_one_day(df, stock)` → **非向量化**，模板按 LOOKBACK 滑动窗口逐天调用。
-  适合：单日截面因子、LOOKBACK≤21 的因子。每只股票调 N 次（N=天数），每次处理 LOOKBACK 天数据。
-- `calc_factor_series(df, stock)` → **向量化**，一次接收全部数据，返回 `pd.Series(index=日期, name="因子名")`。
-  适合：滚动累积/平均类因子（过去 N 天累加、累乘、均值等），LOOKBACK 大的因子。每只股票只调 1 次，快 10~30 倍。
-  **不需要删 `calc_factors_one_day`，模板会自动优先走 `calc_factor_series`。**
-
-**判断原则：** 如果因子逻辑可以拆成"先算每日值，再跨日 rolling" → 用 `calc_factor_series`。如果因子逻辑依赖滑动窗口内的全量数据计算 → 用 `calc_factors_one_day`。不确定时两种都写，模板自动优先走向量化。
-
-<!-- BEGIN_MINUTE_ONLY 主进程按 type 拼 prompt：仅 minute 因子包含以下"市场数据模式"段落 -->
-**市场数据模式（仅 minute 因子需要全市场数据时才相关；daily/cross_section/deep_learning 因子跳过本段）：**
-
-**Step 0：检查预计算文件是否存在（测试 + 全量都要检查）**
-```bash
-# 测试目录
-ls /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试/stock_data/minute_by_date/market_minute_return.parquet
-# 全量目录
-ls /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量/stock_data/minute_by_date/market_minute_return.parquet
-```
-预计算文件路径规则：`{分钟线数据目录}/stock_data/minute_by_date/market_minute_return.parquet`
-
-**Step 1：如果不存在，立即预计算（先跑再写函数！）**
-```bash
-python /mnt/d/paper-factor-data/scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试"
-python /mnt/d/paper-factor-data/scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量"
-```
-**必须两个目录都跑**，因为因子要在测试和全量两个环境运行。
-
-**Step 2：在因子代码模块级加载预计算文件**
-```python
-# 模块级：在导入时一次性加载，不在逐日函数内重复读取
-MARKET_RETURN = pd.read_parquet(
-    MINUTE_BY_DATE_DIR / "market_minute_return.parquet"
-)
-MARKET_RETURN = MARKET_RETURN.groupby(level=0).first()  # 去重
-
-def calc_factors_one_day(df, stock):
-    # df.index 是 DatetimeIndex（模板已转换），直接用
-    dt_idx = df.index
-    market_ret = MARKET_RETURN.reindex(dt_idx)["market_return"].values
-    # ... 后续计算
-```
-注意：`calc_factors_one_day` 收到的 `df.index` 是 `DatetimeIndex`。**不要调用 `get_level_values("datetime")`**，直接用 `df.index` 即可。
-<!-- END_MINUTE_ONLY -->
-
-**如果因子逻辑依赖截面数据（全市场排名/标准化/分组等）：**
-- **直接跳过**，输出原始值即可。不需要做截面处理
-- 或者如果截面处理是因子核心逻辑（非后处理），可以额外写一个**后处理函数**，在 test-and-export 生成 `.parquet` 后读取并做截面变换：
-
-#### 2. 立即跑 test-and-export + deploy-to-full（写完后立刻执行，不停顿）
-类型在 Phase 1 已定义，**显式传 `--type {type_key}`**（确定，不依赖自动检测）。
-```bash
-python scripts/claude_factor_helper.py test-and-export \
-  --code /tmp/factor_{name}.py \
-  --report "{report_name}" --factor "{name}" \
-  --cols "{cols}" --lookback {lookback} \
-  --type {type_key} \
-  --description "{description}" --formulation "{formulation}" \
-  --source-excerpt "{source_excerpt}" \
-  --source-report-title "{report_name}" \
-  --date {DATE}
-```
-> `{cols}` = Step 0 从 show-columns 挑出的**真实列名**（空格或逗号分隔均可，helper 自动 split）。字段齐全时才需要；缺列已返回，不会走到这一步。
-
-**test-and-export 成功后，立即部署到全量：**
-> 注意路径结构：test-and-export 输出为 `因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py`（因子目录 = `{report_name}/{name}/`，内部文件 = `{name}.code.py`）。deploy-to-full 的 `--code` 用同一路径，**不要**多套一层 `{name}` 目录。
-```bash
-python scripts/claude_factor_helper.py deploy-to-full \
-  --code /mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py \
-  --date {DATE}
-```
-
-#### ⚠️ 绝对禁止（违反将导致流程失败）
-1. ❌ 不要编译代码（`py_compile`）
-2. ❌ 不要 import FactorFBWorkspace
-3. ❌ 不要自己加载 parquet
-4. ❌ 不要自己加载 parquet 手动检查 schema —— 字段核对只用 Step 0 的 `show-columns --type` 输出
-5. ❌ 不要手动 debug
-6. **写代码 → 跑 test-and-export，中间不做任何事**
-7. **跑通后不得再改代码**：`test-and-export` + `deploy-to-full` 一旦成功（含"缺列已返回"），**绝不再回头修改代码**——注释措辞、变量名、格式优化等一律禁止（改了=改代码=要重跑，纯浪费 token 和时间）。只有 test-and-export **失败**时，才允许按下面"如果 test-and-export 失败"的规则修改重试。
-
-#### 如果 test-and-export 失败（含错误和超时）
-- **缺字段已在 Step 0 判断处理**（判断缺列就在 Step 0 写 `{name}.missing.json` 并返回，不会走到 test-and-export）
-- **普通错误**：看错误信息，修改函数代码后重新跑，最多重试 2 次
-- **超时**（超过 300s 无结果）：修改代码优化性能（减天数、向量化等）后重试，最多 **2 次修改机会**
-- **累计 3 次都失败** → 在结果中报告 failure，不阻塞后续因子
-
-### 返回格式
+完成后只返回 JSON：
 {{"name": "{name}", "success": true/false, "missing_fields": false, "code_path": "/tmp/factor_{name}.py", "error": null 或 "失败原因"}}
-
-**缺字段（Step 0 判断缺列）**：返回 {"name": "{name}", "success": true, "missing_fields": true, "error": null}。不部署全量。
 """
 ```
+
+> ⚠️ **不要再把 `phase2_prompt.md` 的正文贴进 prompt**。以前主 agent 每个因子重复输出 ~2.5k tokens 的作业指导（13 个因子≈32k tokens 纯浪费），现在由子 agent 自己 Read 一次即可。
 
 #### 派发逻辑
 ```
@@ -398,17 +233,18 @@ for _ in range(min(5, len(all_factors))):
     agent_id = dispatch_phase2_worker(all_factors[next_idx]); next_idx += 1
     active[agent_id] = all_factors[next_idx-1]
 
+# ⚠️ 同 Phase 1：用 block=true 阻塞等待，不要 block=false + sleep(5) 轮询空转
 while active:
+    output = TaskOutput(task_id=next(iter(active)), block=true, timeout=600000)
     for agent_id in list(active.keys()):
-        output = TaskOutput(task_id=agent_id, block=false, timeout=0)
-        if output.status == "completed":
-            results.append({agent_id: output.result})
+        out = TaskOutput(task_id=agent_id, block=false, timeout=0)
+        if out.status == "completed":
+            results.append({agent_id: out.result})
             del active[agent_id]
             if next_idx < len(all_factors):
                 new_id = dispatch_phase2_worker(all_factors[next_idx])
                 active[new_id] = all_factors[next_idx]; next_idx += 1
-    if active:
-        import time; time.sleep(5)
+    # 仍有人跑 → 回 while 顶部继续阻塞，不 sleep
 
 # 全部完成
 

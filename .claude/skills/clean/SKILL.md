@@ -13,7 +13,6 @@ description: 删除所有因子产出（测试因子 / 全量因子 / Python 缓
 |------|------|------|
 | 全量因子 | `因子产出/全量/` | 清空 |
 | 测试因子 | `因子产出/测试/` | 清空 |
-| 已处理名单 | `因子产出/processed_reports.json` | 删除 |
 | label 缓存 | `factor_implementation_source_data/label_full.parquet` | 删除 |
 | Python 缓存 | `__pycache__` / `*.pyc` | 删除 |
 

@@ -99,9 +99,6 @@ cp .env.example .env
 python3 -c "import json; sl=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试/stock_data/daily/stock_list.json')); td=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试/stock_data/daily/trade_dates.json')); print(f'日线测试: {len(sl)}只×{len(td)}天')"
 python3 -c "import json; sl=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试/stock_data/stock_list.json')); td=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试/stock_data/trade_dates.json')); print(f'分钟测试: {len(sl)}只×{len(td)}天')"
 
-# 扫描待处理研报
-python scripts/claude_factor_helper.py scan-pending
-
 # 查看可用数据列
 python scripts/claude_factor_helper.py show-columns
 ```
@@ -134,7 +131,7 @@ python /mnt/d/paper-factor-data/scripts/import_new_data.py              # 执行
 A: 直接看 `/mnt/d/paper-factor-data/数据仓库/因子产出/全量/{DATE}/{report}/{factor}/` 下的 `.parquet` 和 `.decile.png`。
 
 **Q: 跑 `/factor` 需要研报 PDF 吗？**
-A: 处理新研报需要 PDF（放到 `/mnt/d/paper-factor-data/papers/inbox/`）。已 mark-done 的研报不需要。
+A: 需要（放到 `/mnt/d/paper-factor-data/papers/inbox/`，支持 `.pdf` 和 `.md`）。
 
 **Q: 数据从哪里来？**
 A: 本项目不提供原始数据。需要从已有数据源（如聚宽、Tushare、券商数据终端）获取，通过 `import_new_data.py` 导入。
