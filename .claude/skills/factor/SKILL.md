@@ -134,6 +134,11 @@ python scripts/claude_factor_helper.py save-extracted --name "标题" --date {DA
 - ❌ 不写代码，不跑测试
 - ❌ 不调 FactorFBWorkspace
 - ❌ 不加载 parquet
+
+### ⚠️ 返回值纪律（省 token 关键）
+**只返回上面那段 JSON，前后不加任何文字。**
+禁止附加：完成说明、实现要点、判定理由、注意事项、原文摘录、验证过程。
+需要留档的写进因子 JSON 的 formulation/description 字段，不要放进返回值。
 """
 ```
 
@@ -215,12 +220,15 @@ prompt = """
 - description: {description}
 - source_excerpt: {source_excerpt}
 
-完成后只返回 JSON：
-{{"name": "{name}", "success": true/false, "missing_fields": false, "code_path": "/tmp/factor_{name}.py", "error": null 或 "失败原因"}}
+完成后**只返回这一行 JSON，前后不加任何文字**（不写完成说明/实现要点/判定理由/注意事项）：
+{{"name": "{name}", "success": true/false, "missing_fields": false, "code_path": "/tmp/factor_{name}.py", "error": null 或 "不超过20字的失败原因"}}
 """
 ```
 
 > ⚠️ **不要再把 `phase2_prompt.md` 的正文贴进 prompt**。以前主 agent 每个因子重复输出 ~2.5k tokens 的作业指导（13 个因子≈32k tokens 纯浪费），现在由子 agent 自己 Read 一次即可。
+>
+> ⚠️ **返回值纪律**：agent 的返回值会**永久留在主 agent 上下文**（每轮重发）。附加说明会累积成几十 k token。
+> 因此主 agent 派发时必须带上"只返回一行 JSON，不加任何文字"的约束（见上方 prompt）。
 
 #### 派发逻辑
 ```

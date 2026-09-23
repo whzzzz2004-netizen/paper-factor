@@ -206,6 +206,16 @@ python scripts/claude_factor_helper.py deploy-to-full \
 - **累计 3 次都失败** → 在结果中报告 failure，不阻塞后续因子
 
 ### 返回格式
-{{"name": "{name}", "success": true/false, "missing_fields": false, "code_path": "/tmp/factor_{name}.py", "error": null 或 "失败原因"}}
 
-**缺字段（Step 0 判断缺列）**：返回 {"name": "{name}", "success": true, "missing_fields": true, "error": null}。不部署全量。
+**返回值只有下面这一行 JSON，前后不加任何文字。**
+禁止附加：完成说明、实现要点、判定理由、注意事项、代码摘要、验证过程、schema 普查结果。
+需要留档的说明一律写进**代码注释**或 **missing.json**，不要放进返回值。
+
+成功：
+{{"name": "{name}", "success": true, "missing_fields": false, "code_path": "/tmp/factor_{name}.py", "error": null}}
+
+缺字段（Step 0 判断缺列）：
+{{"name": "{name}", "success": true, "missing_fields": true, "code_path": null, "error": null}}
+
+失败：
+{{"name": "{name}", "success": false, "missing_fields": false, "code_path": null, "error": "不超过 20 字的失败原因"}}
