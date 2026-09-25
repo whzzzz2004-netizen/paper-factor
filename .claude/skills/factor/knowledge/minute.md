@@ -15,11 +15,11 @@ def calc_factors_one_day(df, stock):
 
 ## 可用数据列
 
-> 完整列名及含义由主进程通过 `show-columns --type minute` 预跑后内联进 Phase 2 prompt（`{MINUTE_COLS_TEXT}`），此处不再重复列出。
+> **以你自己跑的 `show-columns --type minute` 输出为准**，那是完整且唯一的字段清单。
+> 主进程也会把该输出内联进 Phase 2 prompt（`{MINUTE_COLS_TEXT}`），此处不重复列出。
 
 - 多天数据用 `df.index.date` 分组
-- 分钟列共 7 个：`open` `high` `low` `close` `volume` `return` `factor`
-- **以上 7 列即为全部**。无 `pct_chg`、`pre_close`、`amount`、成交笔数、财务指标等任何其他列，不要去找。
+- 字段可能随数据更新而变化，**不要凭记忆假定有哪些列**
 
 ## 特殊约束
 
@@ -27,8 +27,8 @@ def calc_factors_one_day(df, stock):
 2. 返回 `pd.Series(index=date_series, values=values)`，不是 dict
 3. 日内涨跌用 `return` 列（不含隔夜跳空）
 4. 无复权概念，直接用 `close * factor`
-5. **禁止读日线数据**（日线列在分钟模板中不存在）
-6. **字段只认 `show-columns --type minute` 输出**：没列出的 = 不存在，直接判缺列，不要去别处找
+5. **禁止读日线数据**（分钟模板只提供分钟列）
+6. **字段只认 `show-columns --type minute` 输出**：有则用、无则判缺列，不要去别处找
 
 ## lookback
 

@@ -11,14 +11,12 @@ def calc_factor_single_stock(df, trade_date, stock):
 
 ## 可用数据列
 
-> 完整列名及含义由主进程通过 `show-columns --type daily_single` 预跑后内联进 Phase 2 prompt（`{DAILY_COLS_TEXT}`），此处不再重复列出。
+> **以你自己跑的 `show-columns --type daily_single` 输出为准**，那是完整且唯一的字段清单。
+> 主进程也会把该输出内联进 Phase 2 prompt（`{DAILY_COLS_TEXT}`），此处不重复列出。
 
 - 索引：DatetimeIndex
-- 行情列：`open` `close` `high` `low` `factor` `volume` `EMA5` `EMA10` `EMA20`
-- 非行情列：`analyst_coverage`（分析师覆盖度）、`EPS_Predict`（EPS 预测，季度更新、日频前向填充）
-- **日线无 `return` 列**，计算收益率用 `close.pct_change()`
-- 复权价比较：`close * factor`
-- **以上 11 列即为全部**。没有 `pct_chg` / `pe_ttm` / `pb` / `market_cap` / `roe` 等任何其他字段，不要去找。
+- 字段可能随数据更新而变化（新字段会由 getdata 导入并自动出现在 show-columns 里），**不要凭记忆假定有哪些列**
+- 收益率：优先用 `close.pct_change()`（复权价口径 `close * factor`）
 
 ## 额外工具
 
@@ -28,8 +26,10 @@ def calc_factor_single_stock(df, trade_date, stock):
 
 ## 字段纪律
 
-**`show-columns --type daily_single` 的输出就是全部可用字段。没列出的就是不存在。**
-不要为了找某个字段去翻数据仓库 / 源码 / memory / barra / 备份——不会有，纯浪费 token。缺字段直接判缺列。
+**字段只认 `show-columns --type daily_single` 的输出。**
+- 输出里有 → 直接用（列名照抄，不要臆造）
+- 输出里没有 → 判缺列，写 `{name}.missing.json` 后返回
+- **不要**为了找某个字段去翻数据仓库 / 源码 / memory / barra / 备份——字段清单只由 show-columns 决定，翻别处纯浪费 token
 
 ## 特殊约束
 
