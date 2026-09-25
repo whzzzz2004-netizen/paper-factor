@@ -25,7 +25,8 @@ def predict(model, df, trade_date, stock):
 
 ## 可用数据列（同日线）
 
-> 完整列名及含义由主进程通过 `show-columns --type deep_learning` 预跑后内联进 Phase 2 prompt（`{DAILY_COLS_TEXT}`），此处不再重复列出。
+> 完整列名及含义由主进程通过 `show-columns --type daily_single` 预跑后内联进 Phase 2 prompt（`{DAILY_COLS_TEXT}`），此处不再重复列出。
+> （deep_learning 用的就是日线+非行情那套列，**没有** `--type deep_learning` 这个参数值。）
 
 ## 特殊约束
 

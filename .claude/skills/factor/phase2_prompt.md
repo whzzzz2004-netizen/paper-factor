@@ -66,6 +66,7 @@ python scripts/claude_factor_helper.py show-columns --type daily_single
 | 读**其他因子**的 `.code.py` / `.meta.json` / `.parquet` | 你不需要参考别人的实现，本文档已给全接口 |
 | `Read` / `grep` **`claude_factor_helper.py`** 或 **`factor.py`** 的源码 | 命令用法和函数签名本文档已给全，**不要去找源码验证** |
 | 用 `pyarrow` / `pd.read_parquet` **直接读 parquet 看 schema** | 字段核对**只用** `show-columns` |
+| 为了找某个列去翻数据仓库 / 源码 / memory / barra / 备份 | `show-columns` 的输出就是全部字段，没列出=不存在 |
 | `ls` 反复翻 `因子产出/` 目录 | 与你的任务无关 |
 | 试 `--type cross_section` 等不存在的参数值 | 见上方表格，只有两个合法值 |
 
@@ -73,15 +74,17 @@ python scripts/claude_factor_helper.py show-columns --type daily_single
 
 > 这些探索已被 `PreToolUse` 钩子（`.claude/hooks/block_explore.py`）硬拦截，执行会直接报错。
 
-**从因子 definition/formulation/description 推导它需要的字段（语义，如"当日分钟收益率"→return、"市盈率"→pe_ttm），再对照你自己跑 show-columns 得到的完整列名逐一核对（这是唯一的字段核对方式）：**
+**`show-columns` 的输出就是全部可用字段——列出的就是有，没列出的就是没有。**
+
+**这是唯一且完整的字段清单。绝不存在"没显示出来、但藏在别处"的字段。**
+**不要为了找某个字段去翻数据仓库、源码、别的因子实现、memory、barra、备份文件或任何其他位置——没列出 = 不存在 = 直接判缺列。翻了也不会有，纯浪费 token。**
 
 - **因子需要的字段都能在输出里找到 → 字段齐全**：
-  - **从 show-columns 输出里挑出每个字段对应的真实列名**（如"市盈率"对应 `pe_ttm` 而非臆造 `pe`），这些真实列名就是本因子的 `{cols}`
+  - **从 show-columns 输出里挑出每个字段对应的真实列名**（如"复权收盘价"对应 `close` × `factor`），这些真实列名就是本因子的 `{cols}`
   - 继续 Step 1 写代码，`--cols` 用这些真实列名
-- **因子需要某字段但输出里没有对应列 → 先尝试"用现有列组合推导"，实在没有才算缺列**：
-  - **字段可推导知识点**（常见派生字段）：`换手率 ≈ volume / (float_shares × 10000)`（volume 单位=股，float_shares 单位=万股）；涨跌幅可用 `close.pct_change()`（或用 `pct_chg`）；"昨日收盘"可用 `close.shift(1)`；市值相关已直接有 market_cap/circulating_market_cap 列。
-  - 如果所需字段能用清单里现有列组合算出来 → **不判缺列**，用这些列实现（如 CrossSectionTurnover 用 `volume` + `float_shares` 算换手率），正常写代码。
-  - 只有组合也实现不了（如"分析师一致预期营收"这类清单里完全没有、也无法用现有列推导的专有数据）→ **才判断为缺列**：
+- **因子需要某字段但输出里没有对应列 → 判断缺列**：
+  - 允许做的唯一推导：用**清单内已有的列**做四则运算 / 差分 / 滚动。例如收益率 `close.pct_change()`、昨日收盘 `close.shift(1)`、复权价 `close * factor`
+  - 如果连推导所需的原料列都不在清单里 → **判缺列，停止**，不要再找
   - **不要写代码，不要跑 test-and-export，不要 deploy-to-full**
   - 在测试因子目录用 Write 工具写 `{name}.missing.json` 记录缺的字段（路径见下文"缺列 JSON 格式"——**用完整路径 `/mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.missing.json`**，不要写在项目根目录的 因子产出/ 下）
   - 然后直接返回 success=true，missing_fields=true

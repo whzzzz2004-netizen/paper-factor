@@ -318,14 +318,14 @@ run: python scripts/claude_factor_helper.py archive-inbox --date {DATE}
 ## 编码硬约束
 **主进程按 type 拼 prompt 时：仅把适用该类型的条目拼进去，其余丢弃**（通用条目所有类型都适用）：
 - 通用（所有类型）：2, 3, 6, 7, 8, 9, 11, 12, 13, 15, 17
-- daily 独有：1（T日=df.iloc[-1]）, 4（日线用 pct_chg）, 5（df.index.date 不放循环内）
-- minute 独有：10（禁止分钟级 for 循环）, 14（禁用 minute_cs）
+- daily 独有：1（T日=df.iloc[-1]）, 4（日线收益率用 close.pct_change()）, 5（df.index.date 不放循环内）
+- minute 独有：10（禁止分钟级 for 循环）
 - cross_section/deep_learning：无独有条目（用通用即可）
 
 1. T日 = df.iloc[-1]
 2. 返回 `{"因子名": np.nan}`，不返回 None
 3. 禁止月末判断
-4. 日线用 `pct_chg` 或 `close.pct_change()`
+4. 日线收益率用 `close.pct_change()`
 5. `df.index.date` 不放循环内
 6. 布尔 shift() 后 fillna(False)
 7. 禁止 `len(df) < X` 做上市天数筛选
@@ -335,7 +335,8 @@ run: python scripts/claude_factor_helper.py archive-inbox --date {DATE}
 11. 禁止 `transform('count')` → 用 `transform('size')`
 12. 禁止 `rolling.apply(lambda)`
 13. 禁止合成因子
-14. **所有分钟因子用 minute 模板，不用 minute_cs**（太慢，且截面标准化无意义）
+14. **所有分钟因子用 minute 模板**（禁用 minute_cs：太慢，且截面标准化无意义）
 15. **lookback 只含核心计算天数**，不含论文末尾的截面标准化/std20/取波动率等后处理
 16. **禁用截面操作（排名/标准化/行业中性化）**：因子只输出个股原始值。如果截面是核心逻辑，额外写后处理函数对产出 .parquet 做截面变换
 17. **`df.index.date` 返回 ndarray**，没有 `.isin()` 方法。用 `np.isin(date_arr, list)` 替代
+18. **字段只认 `show-columns` 输出**：没列出的列 = 不存在，直接判缺列。不要为了找字段去翻数据仓库/源码/memory/barra/备份

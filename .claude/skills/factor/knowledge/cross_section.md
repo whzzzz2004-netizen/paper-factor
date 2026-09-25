@@ -10,7 +10,8 @@ def calc_factor_cross_section(all_data, trade_date):
 
 ## 可用数据列（同日线）
 
-> 完整列名及含义由主进程通过 `show-columns --type cross_section` 预跑后内联进 Phase 2 prompt（`{DAILY_COLS_TEXT}`），此处不再重复列出。
+> 完整列名及含义由主进程通过 `show-columns --type daily_single` 预跑后内联进 Phase 2 prompt（`{DAILY_COLS_TEXT}`），此处不再重复列出。
+> （cross_section 用的就是日线+非行情那套列，**没有** `--type cross_section` 这个参数值。）
 
 ## 额外工具
 
