@@ -78,13 +78,18 @@ python scripts/claude_factor_helper.py show-columns --type daily_single
 
 数据会持续补充字段，所以**不要凭记忆或本文档假定有哪些列**——每次都实跑 show-columns，以当次输出为准。
 
-- **因子需要的字段在输出里能找到 → 字段齐全**：
-  - **从 show-columns 输出里挑出每个字段对应的真实列名**（如"复权收盘价"对应 `close` × `factor`），这些真实列名就是本因子的 `{cols}`
+**判断缺列的标准（两条都满足才算缺列）：**
+1. 你已经看过当次 `show-columns` 的完整输出
+2. 你明确知道：想要的列**既不在清单里，也不能由清单里的列推导得到**
+
+- **需要的字段在清单里能找到 → 字段齐全**：
+  - 挑出对应的真实列名（如"复权收盘价"对应 `close` × `factor`），这些就是本因子的 `{cols}`
   - 继续 Step 1 写代码，`--cols` 用这些真实列名
-- **因子需要的字段在当次输出里找不到 → 判断缺列**：
-  - 允许做的唯一推导：用**当次清单里已有的列**做四则运算 / 差分 / 滚动。例如收益率 `close.pct_change()`、昨日收盘 `close.shift(1)`、复权价 `close * factor`
-  - 如果连推导所需的原料列都不在当次清单里 → **判缺列，停止**
-  - **不要为了找这个字段去翻任何其他地方**——字段清单只由当次 show-columns 输出决定
+- **需要的字段不在清单里 → 看能否从清单内的列推导得到**：
+  - 能推导 → 用推导式实现，正常写代码。例如收益率 `close.pct_change()`、昨日收盘 `close.shift(1)`、复权价 `close * factor`
+  - 推不出来 → **判缺列**
+- **判缺列后：停止**
+  - **不要再去找**——字段清单只由当次 show-columns 输出决定，翻别处不会有
   - **不要写代码，不要跑 test-and-export，不要 deploy-to-full**
   - 在测试因子目录用 Write 工具写 `{name}.missing.json` 记录缺的字段（路径见下文"缺列 JSON 格式"——**用完整路径 `/mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.missing.json`**，不要写在项目根目录的 因子产出/ 下）
   - 然后直接返回 success=true，missing_fields=true

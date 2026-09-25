@@ -339,4 +339,4 @@ run: python scripts/claude_factor_helper.py archive-inbox --date {DATE}
 15. **lookback 只含核心计算天数**，不含论文末尾的截面标准化/std20/取波动率等后处理
 16. **禁用截面操作（排名/标准化/行业中性化）**：因子只输出个股原始值。如果截面是核心逻辑，额外写后处理函数对产出 .parquet 做截面变换
 17. **`df.index.date` 返回 ndarray**，没有 `.isin()` 方法。用 `np.isin(date_arr, list)` 替代
-18. **字段只认 `show-columns` 当次输出**：输出里有则用、无则判缺列。数据会持续补字段，不要凭记忆假定有哪些列，也不要去数据仓库/源码/memory 翻找
+18. **字段只认 `show-columns` 当次输出**：看过完整清单、且确认想要的列既不在清单里、也不能由清单内的列推导得到 → 判缺列。数据会持续补字段，不要凭记忆假定有哪些列，也不要去数据仓库/源码/memory 翻找
