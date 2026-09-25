@@ -497,9 +497,11 @@ if not _D or not (_D/"stock_data"/"minute_by_date").exists():
             _D = Path(".")
 DATA_DIR = _D
 MINUTE_BY_DATE_DIR = DATA_DIR / "stock_data" / "minute_by_date"
-# 分钟因子预分片 chunk 缓存目录。默认共享 MINUTE_BY_DATE_DIR/_minute_chunks；
-# 但多个分钟因子并发 test-and-export 会互相写坏该目录。可用环境变量
-# FACTOR_MINUTE_CHUNK_DIR 指定独立目录（如每次运行一个临时目录），避免并发冲突。
+# 分钟因子预分片 chunk 缓存目录：每个数据集固定一份，跨因子复用。
+#   - 测试集 / 全量集各有自己的 MINUTE_BY_DATE_DIR，天然隔离，各留一份缓存
+#   - 数据未变时后续因子直接复用，跳过预分片（省 ~15s）
+#   - 并发写由 _presplit_lock 串行化（见下）
+# 环境变量 FACTOR_MINUTE_CHUNK_DIR 仍可覆盖（用于临时隔离调试）。
 _CHUNK_DIR = Path(os.environ.get("FACTOR_MINUTE_CHUNK_DIR") or str(MINUTE_BY_DATE_DIR / "_minute_chunks"))
 STOCK_LIST = json.load(open(MINUTE_BY_DATE_DIR / "stock_list.json"))
 TRADE_DATES = json.load(open(MINUTE_BY_DATE_DIR / "trade_dates.json"))
@@ -583,7 +585,7 @@ _ALL_COLS = sorted(set(_pq.read_schema(next(MINUTE_BY_DATE_DIR.glob("*.parquet")
 _FILES = sorted([MINUTE_BY_DATE_DIR / f"{d}.parquet" for d in TRADE_DATES if (MINUTE_BY_DATE_DIR / f"{d}.parquet").exists()])
 
 # ── 按 Chunk 并行计算（各 worker 从预分片文件加载，无 I/O 冗余）──
-def _compute_chunk(chunk_stocks, chunk_idx, chunk_file, read_cols):
+def _compute_chunk(chunk_stocks, chunk_idx, chunk_file, read_cols, run_tag):
     if not chunk_file.exists():
         return None, chunk_idx
     _WDATA = pd.read_parquet(chunk_file, columns=read_cols)
@@ -723,9 +725,11 @@ def _compute_chunk(chunk_stocks, chunk_idx, chunk_file, read_cols):
         _r = _proc_one(stock)
         if _r:
             records.extend(_r)
-    # 写中间结果到文件，避免 spawn pipe deadlock
+    # 写中间结果到文件，避免 spawn pipe deadlock。
+    # 文件名带 run_tag：多个因子进程共享同一 _CHUNK_DIR，同名会互相覆盖。
+    # run_tag 由主进程生成并传入（子进程的 os.getpid() 与主进程不同，不能用）。
     if records:
-        pd.DataFrame(records).to_parquet(_CHUNK_DIR / f"_result_{chunk_idx}.pq")
+        pd.DataFrame(records).to_parquet(_CHUNK_DIR / f"_result_{chunk_idx}_{run_tag}.pq")
     return chunk_idx
 
 
@@ -746,6 +750,13 @@ if __name__ == '__main__':
     _CHUNKS_LIST = [_ALL_STOCKS[i:i+_CHUNK_SIZE] for i in range(0, _N, _CHUNK_SIZE)]
     _CHUNK_DIR.mkdir(parents=True, exist_ok=True)
     _CHUNK_FILES = [_CHUNK_DIR / f"_chunk_{{ci}}.pq" for ci in range(len(_CHUNKS_LIST))]
+
+    # 并发保护：多个分钟因子同时 test-and-export 时，只让第一个做预分片，
+    # 其余在此等待；拿到锁后重新检查缓存，通常直接命中跳过。
+    # _fl 只在 get_jq_data 内部 import，这里需自行导入
+    import filelock as _fl_lock
+    _presplit_lock = _fl_lock.FileLock(str(_CHUNK_DIR / ".presplit.lock"), timeout=1800)
+    _presplit_lock.acquire()
 
     _MANIFEST = _CHUNK_DIR / "_manifest.json"
     _STOCKS_KEY = sorted(STOCK_LIST)
@@ -865,6 +876,12 @@ if __name__ == '__main__':
             json.dump({{"stocks": _STOCKS_KEY, "chunk_size": _CHUNK_SIZE, "n_chunks": len(_CHUNKS_LIST),
                        "data_sig": _DATASIG, "done_files": [f.name for f in _FILES]}}, _mf)
 
+    # 预分片完成（或确认缓存有效）→ 释放锁，允许其他因子进程进入
+    try:
+        _presplit_lock.release()
+    except Exception:
+        pass
+
     # ── 清理大对象，腾出 fork 内存 ──
     try:
         del _writers
@@ -886,7 +903,8 @@ if __name__ == '__main__':
     _n_futs = len(_active_chunks)
     _done = 0
     with ProcessPoolExecutor(max_workers=N_WORKERS, mp_context=_mp.get_context("spawn")) as _pool:
-        _futs = {{_pool.submit(_compute_chunk, _CHUNKS_LIST[ci], ci, cf, _READ_COLS): ci for ci, cf in _active_chunks}}
+        _RUN_TAG = f"{{os.getpid()}}_{{int(time.time())}}"  # 本次运行唯一，主/子进程一致
+        _futs = {{_pool.submit(_compute_chunk, _CHUNKS_LIST[ci], ci, cf, _READ_COLS, _RUN_TAG): ci for ci, cf in _active_chunks}}
         for _fut in as_completed(_futs):
             try:
                 _fut.result(timeout=600)  # 单chunk超时10分钟
@@ -903,7 +921,7 @@ if __name__ == '__main__':
     wide = None
     _rec_cnt = 0
     for _ci in range(len(_CHUNKS_LIST)):
-        _rf = _CHUNK_DIR / f"_result_{_ci}.pq"
+        _rf = _CHUNK_DIR / f"_result_{{_ci}}_{{_RUN_TAG}}.pq"
         if _rf.exists():
             try:
                 _rd = pd.read_parquet(_rf)
@@ -918,7 +936,16 @@ if __name__ == '__main__':
                 _rf.unlink()
                 del _rd, _w
             except Exception as _exc:
-                print(f"  ⚠️ 结果文件读取失败 _result_{_ci}.pq: {{_exc}}", flush=True)
+                print(f"  ⚠️ 结果文件读取失败 _result_{{_ci}}.pq: {{_exc}}", flush=True)
+    # 清理其他进程遗留的孤儿 result 文件（超过 1 小时未被动过），避免共享目录堆积。
+    # 本次自己的 result 已在上面的循环里逐个 unlink。
+    try:
+        _now = time.time()
+        for _stale in _CHUNK_DIR.glob("_result_*.pq"):
+            if _now - _stale.stat().st_mtime > 3600:
+                _stale.unlink()
+    except Exception:
+        pass
     print(f"  计算完成: {{time.time()-_t1:.0f}}s, {{_rec_cnt}} 条记录", flush=True)
 
     if wide is None or wide.empty:

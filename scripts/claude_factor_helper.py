@@ -477,10 +477,12 @@ def _run_test_in_tmpdir(code_path: Path, timeout: int = 3600, type_key: str = "d
             env["FACTOR_DATA_DIR"] = str(minute_test_dir)
         else:
             env["FACTOR_DATA_DIR"] = str(TEST_DATA_DIR)
-        # 每个 test-and-export 用独立 minute chunk 目录，避免多因子并发写坏共享 _minute_chunks
-        env["FACTOR_MINUTE_CHUNK_DIR"] = str(
-            Path(tempfile.gettempdir()) / f"factor_minute_chunks_{os.getpid()}"
-        )
+        # 分钟 chunk 缓存用模板默认的共享目录（{分钟数据目录}/stock_data/minute_by_date/_minute_chunks）：
+        #   - 每个数据集固定一份，跨因子复用，数据未变时跳过预分片（省 ~15s）
+        #   - 测试/全量各有自己的目录，天然隔离
+        #   - 并发写由模板内的 filelock 串行化；结果文件带 pid 后缀
+        # 故此处不再指定 FACTOR_MINUTE_CHUNK_DIR（此前每进程建一个 /tmp 目录，从不清理，
+        # 累积到 115 个 / 35GB）。
     else:
         env["FACTOR_DATA_DIR"] = str(TEST_DATA_DIR)
     env["FACTOR_N_WORKERS"] = os.environ.get("FACTOR_N_WORKERS", "2")
