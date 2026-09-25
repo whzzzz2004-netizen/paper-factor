@@ -41,7 +41,7 @@ python scripts/claude_factor_helper.py archive-inbox --date {DATE}
 9. **所有分钟因子必须用 `minute` 类型模板，严禁用 `minute_cs`**：
    - `minute_cs` 太慢（测试 6~8 分钟/个，全量可能数小时），且截面标准化对单因子无意义
    - 如果因子需要全市场数据（市场收益率、总成交量等），先用 `ls` 检查 `minute_by_date/` 下是否有预计算文件，没有就让 LLM **在代码中自己计算**（模块级预加载，一次性计算）
-   - 如果因子逻辑本质依赖全市场截面（如排名、市值分组等），**用简单近似代替**（如用个股自身过去 N 天分位数代替截面排名）
+   - **截面后处理**（排名/标准化/中性化）不是因子本体，跳过即可、只输出个股原始值——这类处理最后统一做。**注意：这条只适用于"截面后处理"，不适用于缺字段**
 10. **minute 模板内 `df.index` 是 DatetimeIndex（非 MultiIndex）**：`calc_factors_one_day(df, stock)` 收到的 `df.index` 是模板转换后的 `DatetimeIndex`，不要调用 `get_level_values("datetime")`。直接用 `df.index` 即可。
 11. **lookback 只取决于核心计算需要多少天**：
    - 论文末尾的"截面标准化 + 取std20/取波动率"是高频因子低频化的**后处理步骤**，不作为日频因子的 lookback 依据
@@ -339,4 +339,4 @@ run: python scripts/claude_factor_helper.py archive-inbox --date {DATE}
 15. **lookback 只含核心计算天数**，不含论文末尾的截面标准化/std20/取波动率等后处理
 16. **禁用截面操作（排名/标准化/行业中性化）**：因子只输出个股原始值。如果截面是核心逻辑，额外写后处理函数对产出 .parquet 做截面变换
 17. **`df.index.date` 返回 ndarray**，没有 `.isin()` 方法。用 `np.isin(date_arr, list)` 替代
-18. **字段只认 `show-columns` 当次输出**：看过完整清单、且确认想要的列既不在清单里、也不能由清单内的列推导得到 → 判缺列。数据会持续补字段，不要凭记忆假定有哪些列，也不要去数据仓库/源码/memory 翻找
+18. **字段只认 `show-columns` 当次输出**：清单里有 → 用；无但能**精确**推导 → 推导着用；其余 → 判缺列。**缺字段不能近似、不能代理**（不许假设成常数，不许用相近列代替）。数据会持续补字段，不要凭记忆假定有哪些列，也不要去数据仓库/源码/memory 翻找

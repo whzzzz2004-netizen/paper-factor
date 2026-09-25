@@ -28,7 +28,7 @@ def calc_factors_one_day(df, stock):
 3. 日内涨跌用 `return` 列（不含隔夜跳空）
 4. 无复权概念，直接用 `close * factor`
 5. **禁止读日线数据**（分钟模板只提供分钟列）
-6. **字段只认 `show-columns --type minute` 输出**：有则用、无则判缺列，不要去别处找
+6. **字段只认 `show-columns --type minute` 输出**：有则用；无但能由清单内的列精确推导则推导着用；其余判缺列。**缺字段不能近似、不能代理**（不许把缺的列假设成常数，不许用相近的列代替），也不要去别处找
 
 ## lookback
 

@@ -28,7 +28,9 @@ def calc_factor_single_stock(df, trade_date, stock):
 
 **字段只认 `show-columns --type daily_single` 的输出。**
 - 输出里有 → 直接用（列名照抄，不要臆造）
-- 输出里没有 → 判缺列，写 `{name}.missing.json` 后返回
+- 输出里没有，但能由清单内的列**精确**推导 → 推导着用（如 `close.pct_change()`、`close * factor`）
+- 其余情况 → **判缺列**，写 `{name}.missing.json` 后返回
+- **缺字段不能近似、不能代理**：不许把缺的列假设成常数，不许用语义相近的列代替
 - **不要**为了找某个字段去翻数据仓库 / 源码 / memory / barra / 备份——字段清单只由 show-columns 决定，翻别处纯浪费 token
 
 ## 特殊约束
