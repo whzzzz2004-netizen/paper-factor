@@ -7,6 +7,19 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PROJECT_DIR:-$(pwd)}/.claude/hooks/block_datascan.py\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR:-$(pwd)}/.claude/hooks/block_explore.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR:-$(pwd)}/.claude/hooks/block_explore.py\""
           }
         ]
       }

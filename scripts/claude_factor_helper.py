@@ -36,6 +36,10 @@ PROJECT_ROOT = Path(__file__).parent.parent
 DATA_ROOT = Path("/mnt/d/paper-factor-data")
 LITERATURE_REPORTS_DIR = DATA_ROOT / "数据仓库" / "因子产出" / "测试"
 SCHEMA_FILE = DATA_ROOT / "schema.json"
+# 研报目录：inbox 是投放/处理区，done 是已处理归档（用户手动控制投放数量）
+PAPERS_DIR = DATA_ROOT / "papers"
+INBOX_DIR = PAPERS_DIR / "inbox"
+DONE_DIR = PAPERS_DIR / "done"
 
 def _load_schema() -> dict:
     """读 /mnt/d/paper-factor-data/schema.json（getdata 导入新字段后由 import_new_data.py 自动维护）。"""
@@ -1031,21 +1035,30 @@ def cmd_write_repro_report(args):
             extracted = json.loads(extracted_path.read_text(encoding="utf-8"))
         except Exception:
             extracted = {}
+    # extracted JSON 有两种历史格式：{"factors": [...]} 与裸 [...]，统一成 dict
+    if isinstance(extracted, list):
+        extracted = {"factors": extracted}
+    elif not isinstance(extracted, dict):
+        extracted = {}
     def_by_name = {f.get("name", ""): f for f in extracted.get("factors", []) if f.get("name")}
 
     success = []
     missing = []
     no_output = []
+    ignored = []  # 目录里存在、但不属于本批定义的历史残留
 
-    for sub in sorted(report_dir.iterdir()):
-        if not sub.is_dir():
-            continue  # 跳过 复现报告.md 等非因子文件
-        factor = sub.name
+    # ⚠️ 以「本批 extracted 定义的因子」为准逐个查，而不是扫目录。
+    # 扫目录会把更早运行残留的因子目录也算进来（因子数虚高、孤儿被当成功复现）。
+    if not def_by_name:
+        print(f"ERROR: 未找到本批因子定义（extracted_reports/{date_str}/{report_name}.extracted.json 缺失或为空），"
+              f"无法确定本批范围，拒绝按目录猜测。", file=sys.stderr)
+        return 1
+
+    for factor, definition in sorted(def_by_name.items()):
+        sub = report_dir / factor
         parquet = sub / f"{factor}.parquet"
         code = sub / f"{factor}.code.py"
         miss = sub / f"{factor}.missing.json"
-
-        definition = def_by_name.get(factor, {})
         if parquet.exists() and code.exists():
             success.append({"name": factor, **definition})
         elif miss.exists():
@@ -1079,6 +1092,11 @@ def cmd_write_repro_report(args):
         else:
             no_output.append({"name": factor, "reason": "未生成代码（无 parquet / missing.json）", **definition})
 
+    # 记录被忽略的目录（仅提示，不计入报告）
+    for sub in sorted(report_dir.iterdir()):
+        if sub.is_dir() and sub.name not in def_by_name:
+            ignored.append(sub.name)
+
     def _trunc(s, n=60):
         s = (s or "").strip().replace("\n", " ")
         return s if len(s) <= n else s[: n - 1] + "…"
@@ -1089,6 +1107,9 @@ def cmd_write_repro_report(args):
     lines.append(f"- 日期: {date_str}")
     lines.append(f"- 因子总数: {len(success) + len(missing) + len(no_output)} | "
                  f"成功复现: {len(success)} | 未复现: {len(missing) + len(no_output)}")
+    if ignored:
+        lines.append(f"- ⚠️ 已忽略 {len(ignored)} 个不属于本批的残留因子目录（未计入上表）: "
+                     f"{', '.join(ignored)}")
     lines.append("")
 
     lines.append("## 成功复现")
@@ -1124,6 +1145,7 @@ def cmd_write_repro_report(args):
         "success": len(success),
         "missing": len(missing),
         "no_output": len(no_output),
+        "ignored_stale": ignored,
         "report_path": str(out_path),
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -1178,6 +1200,43 @@ def cmd_show_columns(args):
     print("可用列及含义（日线数据 + 非行情数据）：")
     for c in cols:
         print(f"  {c:30s} {_desc_for_col(c)}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: archive-inbox — 把 inbox 里已处理的研报移到 done/
+# ---------------------------------------------------------------------------
+def cmd_archive_inbox(args):
+    """把 papers/inbox/ 下的研报移入 papers/done/{DATE}/，避免 inbox 越堆越多。
+
+    只移动本次实际处理过的（--names 指定），或全部（不传 --names）。
+    同时打印移动明细，便于核对。
+    """
+    date_str = args.date or __import__("datetime").datetime.now().strftime("%Y-%m-%d")
+    dst = DONE_DIR / date_str
+    dst.mkdir(parents=True, exist_ok=True)
+
+    if not INBOX_DIR.exists():
+        print(json.dumps({"moved": 0, "dst": str(dst), "note": "inbox 不存在"}, ensure_ascii=False))
+        return 0
+
+    wanted = set(args.names or [])
+    moved = []
+    overwritten = []
+    for p in sorted(list(INBOX_DIR.glob("*.pdf")) + list(INBOX_DIR.glob("*.md"))):
+        if wanted and p.name not in wanted and p.stem not in wanted:
+            continue
+        target = dst / p.name
+        # 同名=同一份研报（可能是重跑）→ 直接覆盖旧档，保持 done 一篇一个文件
+        if target.exists():
+            target.unlink()
+            overwritten.append(p.name)
+        shutil.move(str(p), str(target))
+        moved.append(p.name)
+
+    print(json.dumps({"moved": len(moved), "overwritten": overwritten,
+                      "dst": str(dst), "files": moved},
+                     ensure_ascii=False, indent=2))
     return 0
 
 
@@ -1277,6 +1336,13 @@ def main():
     p_showcols = sub.add_parser("show-columns", help="Show available columns in stock data (--type minute 显示分钟线列)")
     p_showcols.add_argument("--type", default=None, help="Factor type: daily/minute/cross_section/deep_learning（决定展示日线+非行情列 还是 分钟线列）")
 
+    # archive-inbox
+    p_arch = sub.add_parser("archive-inbox",
+                            help="把 papers/inbox/ 下已处理的研报移入 papers/done/{DATE}/（避免 inbox 越堆越多）")
+    p_arch.add_argument("--date", default=None, help="归档子目录名 (YYYY-MM-DD)，默认当天")
+    p_arch.add_argument("--names", nargs="*", default=None,
+                        help="只归档这些文件名/报告名（默认归档 inbox 全部）")
+
     # wait-full
     p_wait = sub.add_parser("wait-full", help="Wait for all submitted full pipeline tasks to complete")
 
@@ -1304,6 +1370,7 @@ def main():
         "save-extracted": cmd_save_extracted,
         "write-repro-report": cmd_write_repro_report,
         "show-columns": cmd_show_columns,
+        "archive-inbox": cmd_archive_inbox,
     }
     fn = cmd_map[args.command]
     return fn(args)

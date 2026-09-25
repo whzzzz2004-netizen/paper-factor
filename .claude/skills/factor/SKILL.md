@@ -5,6 +5,28 @@
 - `/factor` — 扫描 `/mnt/d/paper-factor-data/papers/inbox/`，处理所有未处理项
 - `/factor /mnt/d/paper-factor-data/papers/inbox/某篇.pdf` — 处理单个 PDF
 
+### 研报目录：inbox（处理区） / done（归档区）
+
+| 目录 | 用途 |
+|---|---|
+| `papers/inbox/` | **投放 + 处理区**。放进去就会被处理 |
+| `papers/done/{DATE}/` | **归档区**。处理完由 `/factor` 自动移过去，避免 inbox 越堆越多 |
+
+**规则：inbox 里的文件一律重新处理**——不看历史、不做去重。
+所以**每次投放前请先确认 inbox 已清空**（处理完会自动清），避免把已完成的重跑一遍。
+
+> 想控制单次规模时：**只往 inbox 放你这次想跑的几篇**（建议 ≤15 篇）。
+> 理由：`/factor` 的 Phase 1/Phase 2 派发都在同一个主会话里，每个因子在主上下文留下约 180 token 且永久驻留。
+> 实测外推：10 篇 ≈ 27k（安全）、30 篇 ≈ 81k（勉强）、50 篇 ≈ 135k（会爆）。
+
+**`/factor` 结束时自动归档**（无需手动）：
+```bash
+python scripts/claude_factor_helper.py archive-inbox --date {DATE}
+```
+把 inbox 里本次处理的研报移到 `papers/done/{DATE}/`。也可单独跑（不带 `--names` 就是归档 inbox 全部）。
+
+**只做 `/factor`**（定义+测试+部署代码）。全量数值（parquet/IC/图表）需另跑 `python3 scripts/run_all.py {DATE}`。
+
 ## 核心规则
 
 0. **必须用 `claude_factor_helper.py` 的命令**，不得自己写爬虫、装库、手动处理数据
@@ -261,6 +283,10 @@ while active:
 for each report_name in 当天所有报告的集合:
     run: python scripts/claude_factor_helper.py write-repro-report --date {DATE} --report "{report_name}"
 # 每份报告输出 因子产出/测试/{DATE}/{report_name}/复现报告.md
+
+# ── 最后：归档 inbox，避免越堆越多 ──
+run: python scripts/claude_factor_helper.py archive-inbox --date {DATE}
+# 把 papers/inbox/ 本次处理的研报移到 papers/done/{DATE}/
 ```
 
 ---

@@ -128,6 +128,85 @@ def load_minute_stock(stock, columns=None):
     return df
 '''
 
+_COLLECT_COLS_SRC = r'''
+# ── 列推断：递归扫描「用户函数（含辅助函数）」引用的列，并与 --cols 注入值取并集 ──
+# 背景：旧实现只扫入口函数（calc_factors_one_day / calc_factor_series /
+# calc_factor_single_stock），列名若只出现在辅助函数里就扫不到 → 该列不加载
+# → 运行期 KeyError 被 except 吞掉 → 输出「0 条记录」且无任何错误提示。
+import re as _re, ast as _ast, inspect as _inspect, pyarrow.parquet as _pq
+try:
+    _COLS_DIR = MINUTE_BY_DATE_DIR if "MINUTE_BY_DATE_DIR" in globals() else STOCK_DATA_DIR
+    _SAMPLE_FILE = next(_COLS_DIR.glob("*.parquet"))
+    _AVAILABLE_COLS = set(_pq.read_schema(_SAMPLE_FILE).names)
+    _AVAILABLE_COLS -= {"datetime", "instrument", "trade_date", "__index_level_0__"}
+    if "FUNDAMENTAL_STOCK_DATA_DIR" in globals():
+        try:
+            if FUNDAMENTAL_STOCK_DATA_DIR.exists():
+                _FUND_SAMPLE = next(FUNDAMENTAL_STOCK_DATA_DIR.glob("*.parquet"))
+                _AVAILABLE_COLS |= set(_pq.read_schema(_FUND_SAMPLE).names)
+                _AVAILABLE_COLS -= {"datetime", "instrument", "trade_date", "__index_level_0__"}
+        except Exception:
+            pass
+
+    # 用户函数名：读本文件，取 USER_CODE 标记之间的顶层函数定义（含辅助函数）
+    _USER_FNS = []
+    try:
+        _self_src = Path(__file__).read_text(encoding="utf-8")
+        # 标记用拼接构造：本段源码会被注入到 .code.py，若写字面量，
+        # 注入位置在 USER_CODE 之前时 index() 会先命中这里的字面量（deep_learning 模板即如此）
+        _MK_S = "# <<<USER_CODE_" + "START>>>"
+        _MK_E = "# <<<USER_CODE_" + "END>>>"
+        _s = _self_src.index(_MK_S)
+        _e = _self_src.index(_MK_E)
+        _utree = _ast.parse(_self_src[_s:_e])
+        _USER_FNS = [n.name for n in _utree.body
+                     if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))]
+    except Exception:
+        pass
+    # 标记缺失时退回已知入口函数名
+    if not _USER_FNS:
+        _USER_FNS = [n for n in ("calc_factors_one_day", "calc_factor_series",
+                                 "calc_factor_single_stock", "calc_factor_cross_section",
+                                 "calc_factor_minute_raw", "cross_section_transform",
+                                 "train_model", "predict", "predict_batch")
+                     if callable(globals().get(n))]
+
+    _USER_SOURCE = ""
+    for _fn in _USER_FNS:
+        _f = globals().get(_fn)
+        if callable(_f):
+            try:
+                _USER_SOURCE += _inspect.getsource(_f) + "\n"
+            except Exception:
+                pass
+    _ALL_QUOTED = set(_re.findall(r"""['"](\w+)['"]""", _USER_SOURCE))
+    _DETECTED = sorted(_ALL_QUOTED & _AVAILABLE_COLS) if _ALL_QUOTED else []
+    # 注入值（--cols，Phase 2 agent 按因子定义挑出）∪ 扫描值：只增不减
+    _LOAD_COLS = sorted(set((_LOAD_COLS or []) + _DETECTED)) or None
+except Exception as _e:
+    print("  ⚠️ 列推断失败，回退到注入值: " + str(_e), flush=True)
+print("检测到因子使用的列: " + str(_LOAD_COLS), flush=True)
+'''
+
+_USER_ERR_REPORT_SRC = r'''
+# ── 用户代码异常诊断（限量打印，避免刷屏）──
+# 旧实现把这些异常 `except Exception: pass/continue` 静默吞掉，用户只能看到
+# 「0 条记录」，无法定位（曾导致一个因子盲猜 40 分钟）。现在打印前 N 次堆栈。
+import traceback as _tb
+_ERR_SEEN = []
+_ERR_MAX = int(os.environ.get("FACTOR_ERR_MAX", "3"))
+
+
+def _report_user_error(_where):
+    if len(_ERR_SEEN) >= _ERR_MAX:
+        return
+    _ERR_SEEN.append(1)
+    print("  ⚠️ 用户代码异常 @" + str(_where) + "（最多显示前 " + str(_ERR_MAX) + " 次）:", flush=True)
+    _tb.print_exc()
+    if len(_ERR_SEEN) >= _ERR_MAX:
+        print("  ⚠️ 后续同类异常不再打印（FACTOR_ERR_MAX 可调）", flush=True)
+'''
+
 # ========== 类定义开始 ==========
 
 class FactorFBWorkspace(FBWorkspace):
@@ -264,7 +343,14 @@ def get_jq_data(symbol, data_type='price', start_date='2018-01-01', end_date='20
         finally:
             jq.logout()
 
+# <<<USER_CODE_START>>>
 {user_code}
+# <<<USER_CODE_END>>>
+
+# 列过滤（由LLM自动推断）
+{_LOAD_COLS_DEF}
+{_USER_ERR_REPORT}
+{_COLLECT_COLS}
 
 # ── 默认 calc_factor_series（用户自定义版本会覆盖此默认） ──
 # 用户应定义 calc_factor_series(df, stock) 返回 pd.Series(index=日期, name="因子名")。
@@ -287,6 +373,7 @@ except NameError:
             try:
                 r = calc_factor_single_stock(sub, td, stock)
             except Exception:
+                _report_user_error("calc_factor_single_stock stock=" + str(stock))
                 r = None
             if r is not None:
                 if isinstance(r, dict):
@@ -335,38 +422,11 @@ def _compute_stock(stock, _LOAD_COLS=None):
             return results
         return results
     except Exception:
+        _report_user_error("calc_factor_series stock=" + str(stock))
         return []  # 单只股票异常不阻塞整批，避免 joblib 线程卡死
 
 if __name__ == '__main__':
     try:
-        # ── 自动列推断：分析用户函数，只加载需要的列 ──
-        import re as _re, inspect as _inspect, pyarrow.parquet as _pq
-        _SAMPLE_FILE = next(STOCK_DATA_DIR.glob("*.parquet"))
-        _AVAILABLE_COLS = set(_pq.read_schema(_SAMPLE_FILE).names) - {'trade_date', 'instrument'}
-        # 行情 parquet 只含价量，非行情列从非行情数据目录读取（同样纳入可用列推断）
-        if FUNDAMENTAL_STOCK_DATA_DIR.exists():
-            try:
-                _FUND_SAMPLE = next(FUNDAMENTAL_STOCK_DATA_DIR.glob("*.parquet"))
-                _AVAILABLE_COLS |= (set(_pq.read_schema(_FUND_SAMPLE).names) - {'trade_date', 'instrument'})
-            except Exception:
-                pass
-        _USER_SOURCE = ""
-        try:
-            _USER_SOURCE += _inspect.getsource(calc_factor_single_stock)
-        except Exception:
-            pass
-        try:
-            _USER_SOURCE += "\\n" + _inspect.getsource(calc_factor_series)
-        except Exception:
-            pass
-        # 提取代码中所有引号字符串，与可用列取交集（覆盖 df['col']、.get_group()['col']、.columns 等所有模式）
-        _ALL_QUOTED = set(_re.findall(r'''['\"](\w+)['\"]''', _USER_SOURCE))
-        _LOAD_COLS = sorted(_ALL_QUOTED & _AVAILABLE_COLS) if _ALL_QUOTED else None
-        if not _LOAD_COLS:
-            _LOAD_COLS = None
-        print(f"检测到因子使用的列: {_LOAD_COLS}", flush=True)
-        # ──
-
         N_JOBS = int(os.environ.get("FACTOR_N_WORKERS", "4"))  # 日线因子4核足够，避免多因子并行时OOM
         print(f"计算因子 (n_jobs={N_JOBS}), {len(STOCK_LIST)} stocks...", flush=True)
         all_records = []
@@ -457,6 +517,7 @@ _CHUNK_SIZE = int(os.environ.get("FACTOR_CHUNK_SIZE", "25"))
 
 # 列过滤（由LLM自动推断）
 {_LOAD_COLS_DEF}
+{_USER_ERR_REPORT}
 
 def load_day(td):
     return pd.read_parquet(MINUTE_BY_DATE_DIR / f"{{td}}.parquet", columns=_LOAD_COLS)
@@ -509,26 +570,12 @@ def get_jq_data(symbol, data_type='price', start_date='2018-01-01', end_date='20
         finally:
             jq.logout()
 
+# <<<USER_CODE_START>>>
 {user_code}
+# <<<USER_CODE_END>>>
 
 
-# ── 自动列推断 ──
-import re as _re, inspect as _inspect, pyarrow.parquet as _pq
-try:
-    _SAMPLE_FILE = next(MINUTE_BY_DATE_DIR.glob("*.parquet"))
-    _AVAILABLE_COLS = set(_pq.read_schema(_SAMPLE_FILE).names) - {{'datetime', 'instrument'}}
-    _USER_SOURCE = _inspect.getsource(calc_factors_one_day)
-    try:
-        _USER_SOURCE += _inspect.getsource(calc_factor_series)
-    except Exception:
-        pass
-    _ALL_QUOTED = set(_re.findall(r'''['\"](\w+)['\"]''', _USER_SOURCE))
-    _DETECTED = sorted(_ALL_QUOTED & _AVAILABLE_COLS) if _ALL_QUOTED else None
-    if _DETECTED:
-        _LOAD_COLS = _DETECTED
-except Exception:
-    pass
-print(f"检测到因子使用的列: {{_LOAD_COLS}}", flush=True)
+{_COLLECT_COLS}
 
 # ── 列配置 + 文件列表 ──
 _READ_COLS = sorted(set((_LOAD_COLS or []) + ['close']))
@@ -583,6 +630,7 @@ def _compute_chunk(chunk_stocks, chunk_idx, chunk_file, read_cols):
                     if stock_records:
                         return stock_records
         except Exception:
+            _report_user_error("calc_factor_series(向量化) stock=" + str(stock))
             pass
 
         # ── 非向量化路径：calc_factors_one_day 逐日滑动窗口 ──
@@ -612,6 +660,7 @@ def _compute_chunk(chunk_stocks, chunk_idx, chunk_file, read_cols):
             try:
                 _dr = calc_factors_one_day(_sub, stock)
             except Exception:
+                _report_user_error("calc_factors_one_day stock=" + str(stock))
                 continue
             if _dr is None:
                 continue
@@ -874,6 +923,9 @@ if __name__ == '__main__':
 
     if wide is None or wide.empty:
         print("警告：没有产生任何因子值！", flush=True)
+        print("  排查：1) 上方是否有「用户代码异常」堆栈（FACTOR_ERR_MAX 调大可看更多）；"
+              " 2) 列是否齐全（看「检测到因子使用的列」）；"
+              " 3) 返回的 Series 是否带 name 且 index 为 date。", flush=True)
         wide = pd.DataFrame(index=pd.Index(TRADE_DATES, name="trade_date"),
                            columns=pd.Index(STOCK_LIST, name="stock_code"), dtype=float)
     else:
@@ -1036,7 +1088,14 @@ def get_jq_data(symbol, data_type='price', start_date='2018-01-01', end_date='20
         finally:
             jq.logout()
 
+# <<<USER_CODE_START>>>
 {user_code}
+# <<<USER_CODE_END>>>
+
+# 列过滤（由LLM自动推断）
+{_LOAD_COLS_DEF}
+{_USER_ERR_REPORT}
+{_COLLECT_COLS}
 
 # ── 进程缓存（spawn 模式下各进程独立加载） ──
 _WCACHE = {}
@@ -1119,6 +1178,7 @@ def _worker_days(day_indices):
             try:
                 r = calc_factor_cross_section(ad, td)
             except Exception:
+                _report_user_error("calc_factor_cross_section " + str(td))
                 r = {}
             for s, fd in r.items():
                 if not isinstance(fd, dict):
@@ -1130,28 +1190,6 @@ def _worker_days(day_indices):
     return results
 if __name__ == '__main__':
     try:
-        # ---- Auto-detect needed columns from user code ----
-        import re, inspect, pyarrow.parquet as pq
-        _SAMPLE_FILE = next(STOCK_DATA_DIR.glob("*.parquet"))
-        _AVAILABLE_COLS = set(pq.read_schema(_SAMPLE_FILE).names) - {'trade_date', 'instrument'}
-        # 行情 parquet 只含价量，非行情列从非行情数据目录读取（同样纳入可用列推断）
-        if FUNDAMENTAL_STOCK_DATA_DIR.exists():
-            try:
-                _FUND_SAMPLE = next(FUNDAMENTAL_STOCK_DATA_DIR.glob("*.parquet"))
-                _AVAILABLE_COLS |= (set(pq.read_schema(_FUND_SAMPLE).names) - {'trade_date', 'instrument'})
-            except Exception:
-                pass
-        _USER_SOURCE = inspect.getsource(calc_factor_cross_section)
-        # 提取代码中所有引号字符串，与可用列取交集
-        _ALL_QUOTED = set(re.findall(r'''['\"](\w+)['\"]''', _USER_SOURCE))
-        _LOAD_COLS = sorted(_ALL_QUOTED & _AVAILABLE_COLS) if _ALL_QUOTED else None
-        # 排除索引列名（trade_date/datetime 是 index 而非数据列，pandas 读 parquet 自动恢复 index）
-        if _LOAD_COLS is not None:
-            _LOAD_COLS = [c for c in _LOAD_COLS if c not in ('trade_date', 'datetime', '__index_level_0__')]
-        if not _LOAD_COLS:
-            _LOAD_COLS = None
-        print(f"检测到因子使用的列: {_LOAD_COLS}", flush=True)
-        # ----
 
         # cross_section 模板的 chunk checkpoint 目录：用独立目录（含进程号），
         # 避免多因子并发 test-and-export 共享同一 checkpoints 互相删除导致
@@ -1277,30 +1315,14 @@ _CODE_DIR = Path(__file__).parent
 
 N_WORKERS = int(os.environ.get("FACTOR_N_WORKERS", "2"))  # 多进程并行，默认2防OOM
 
+# <<<USER_CODE_START>>>
 {user_code}
+# <<<USER_CODE_END>>>
 
-# ── 自动列推断：分析用户函数，只加载需要的列 ──
-import re as _re, inspect as _inspect, pyarrow.parquet as _pq
-_LOAD_COLS = None
-try:
-    _SAMPLE_FILE = next(MINUTE_BY_DATE_DIR.glob("*.parquet"))
-    _AVAILABLE_COLS = set(_pq.read_schema(_SAMPLE_FILE).names) - {{'datetime', 'instrument'}}
-    _USER_SOURCE = ""
-    try:
-        _USER_SOURCE += _inspect.getsource(calc_factor_minute_raw)
-    except Exception:
-        pass
-    try:
-        _USER_SOURCE += "\\n" + _inspect.getsource(cross_section_transform)
-    except Exception:
-        pass
-    _ALL_QUOTED = set(_re.findall(r'''['\"](\\w+)['\"]''', _USER_SOURCE))
-    _LOAD_COLS = sorted(_ALL_QUOTED & _AVAILABLE_COLS) if _ALL_QUOTED else None
-    if not _LOAD_COLS:
-        _LOAD_COLS = None
-except Exception:
-    pass
-print(f"检测到因子使用的列: {{_LOAD_COLS}}", flush=True)
+# 列过滤（由LLM自动推断）
+{_LOAD_COLS_DEF}
+{_USER_ERR_REPORT}
+{_COLLECT_COLS}
 # ──
 
 # ── LRU Parquet Cache（每个 worker 独立，限制内存）──
@@ -1351,9 +1373,11 @@ def _compute_day(td):
                 else:
                     raw[stk] = val
         except (pd.errors.OutOfBoundsDatetime, OverflowError, ValueError):
+            _report_user_error("calc_factor_minute_raw stock=" + str(stk))
             pass
 
     if not raw:
+        print("警告：minute_cs 未产生任何原始值（上方是否有「用户代码异常」堆栈？）", flush=True)
         return []
     del all_data
 
@@ -1639,36 +1663,15 @@ def get_jq_data(symbol, data_type='price', start_date='2018-01-01', end_date='20
 
 # 列过滤（由LLM自动推断）
 {_LOAD_COLS_DEF}
+{_USER_ERR_REPORT}
+{_COLLECT_COLS}
 
+# <<<USER_CODE_START>>>
 {user_code}
+# <<<USER_CODE_END>>>
 
 if __name__ == '__main__':
     try:
-        # ── 自动列推断：分析用户函数，只加载需要的列 ──
-        import re as _re, inspect as _inspect, pyarrow.parquet as _pq
-        _SAMPLE_FILE = next(STOCK_DATA_DIR.glob("*.parquet"))
-        _AVAILABLE_COLS = set(_pq.read_schema(_SAMPLE_FILE).names) - {'trade_date', 'instrument'}
-        # 行情 parquet 只含价量，非行情列从非行情数据目录读取（同样纳入可用列推断）
-        if FUNDAMENTAL_STOCK_DATA_DIR.exists():
-            try:
-                _FUND_SAMPLE = next(FUNDAMENTAL_STOCK_DATA_DIR.glob("*.parquet"))
-                _AVAILABLE_COLS |= (set(_pq.read_schema(_FUND_SAMPLE).names) - {'trade_date', 'instrument'})
-            except Exception:
-                pass
-        _USER_SOURCE = ""
-        for _fn in ("train_model", "predict", "predict_batch"):
-            try:
-                _USER_SOURCE += _inspect.getsource(globals()[_fn]) + "\\n"
-            except Exception:
-                pass
-        # 只扫描用户函数引用的列，避免模板中 FUNDAMENTAL_COLS 字面量把全部非行情列算进 _LOAD_COLS
-        _ALL_QUOTED = set(_re.findall(r'''['"]([A-Za-z_][A-Za-z0-9_]*)['"]''', _USER_SOURCE))
-        _DETECTED = sorted(_ALL_QUOTED & _AVAILABLE_COLS)
-        _LOAD_COLS = sorted(set((_LOAD_COLS or []) + _DETECTED))  # 注入值 ∪ 扫描值
-        if not _LOAD_COLS:
-            _LOAD_COLS = None
-        print(f"检测到因子使用的列: {_LOAD_COLS}", flush=True)
-        # ──
 
         print("计算深度学习因子...")
         # 预加载所有股票数据
@@ -1855,7 +1858,8 @@ if __name__ == '__main__':
     @staticmethod
     def _template_cache_key(template: str, lookback_days: int, cols_def: str) -> str:
         """基于模板内容+参数算 hash，保证不同进程 key 一致且可缓存到磁盘。"""
-        raw = template + "\x00" + str(lookback_days) + "\x00" + cols_def
+        raw = (template + "\x00" + str(lookback_days) + "\x00" + cols_def
+               + "\x00" + _COLLECT_COLS_SRC + "\x00" + _USER_ERR_REPORT_SRC)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     @staticmethod
@@ -1895,6 +1899,8 @@ if __name__ == '__main__':
         base = (template
                 .replace('{_LOAD_COLS_DEF}', cols_def)
                 .replace('{_LOAD_MINUTE_STOCK}', _LOAD_MINUTE_STOCK_SRC)
+                .replace('{_COLLECT_COLS}', _COLLECT_COLS_SRC)
+                .replace('{_USER_ERR_REPORT}', _USER_ERR_REPORT_SRC)
                 .replace('{lookback_days}', str(lookback_days)))
         if '{{' in base:
             base = base.replace('{{', '{').replace('}}', '}')

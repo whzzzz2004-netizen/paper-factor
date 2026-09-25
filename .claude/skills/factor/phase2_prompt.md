@@ -21,14 +21,28 @@
 - 需要的字段: 由你从 formulation/description 推导（Phase 1 不提供列名，见下方 Step 0）
 
 ### Step 0：看全部列 → 推导字段 → 判断缺列 / 挑出真实列名（最重要的一步）
-**自己跑 show-columns 拿最新、真实的完整列清单（列随数据仓库变化——新增列如"分析师预期"会自动出现，绝不能靠记忆或别人转述）：**
+
+**`show-columns --type` 只有两个合法取值，没有别的：**
+
+| 你的因子类型 | 跑哪个命令 |
+|---|---|
+| `minute` | `--type minute` |
+| `daily` | `--type daily_single` |
+| **`cross_section`** | **`--type daily_single`** ← 不是 `--type cross_section`（不存在） |
+| **`deep_learning`** | **`--type daily_single`** ← 不是 `--type deep_learning`（不存在） |
+
 ```bash
 # minute 类型
 python scripts/claude_factor_helper.py show-columns --type minute
-# daily / cross_section / deep_learning
+# daily / cross_section / deep_learning（三者都用这个）
 python scripts/claude_factor_helper.py show-columns --type daily_single
 ```
-**以自己运行的输出为唯一字段核对依据。**
+
+> ⚠️ **不要尝试 `--type cross_section` 或 `--type deep_learning`**——参数值不存在，试了只会浪费一轮往返。
+> 列清单只有两套：**分钟线列**（`--type minute`）和**日线+非行情列**（`--type daily_single`）。
+> `cross_section` / `deep_learning` 用的就是日线+非行情那套。
+
+**以这次运行的输出为唯一字段核对依据。**
 
 > 🚫 **绝对禁止：对数据仓库做全仓递归扫描**
 > `/mnt/d/paper-factor-data` 有 **66 GB / 143,797 个文件**。以下命令会读 66GB 二进制 parquet、
@@ -39,6 +53,25 @@ python scripts/claude_factor_helper.py show-columns --type daily_single
 >
 > **判断列是否存在，只看 `show-columns` 的输出，不要去磁盘上找证据。**
 > 这些命令已被 `PreToolUse` 钩子硬拦截（`.claude/hooks/block_datascan.py`），执行会直接报错。
+
+### 🚫 禁止探索清单（每条都实测浪费 5-15 分钟）
+
+**每次工具调用 = 一次完整 API 往返 ≈ 20 秒。** 计算本身只要 20-60 秒。
+曾有一个截面因子 agent 花了 **990 秒**，其中 **39 次调用在探索、只有 3 次在干活**，计算仅占 17 秒。
+
+**以下操作一律禁止：**
+
+| ❌ 禁止 | 为什么 |
+|---|---|
+| 读**其他因子**的 `.code.py` / `.meta.json` / `.parquet` | 你不需要参考别人的实现，本文档已给全接口 |
+| `Read` / `grep` **`claude_factor_helper.py`** 或 **`factor.py`** 的源码 | 命令用法和函数签名本文档已给全，**不要去找源码验证** |
+| 用 `pyarrow` / `pd.read_parquet` **直接读 parquet 看 schema** | 字段核对**只用** `show-columns` |
+| `ls` 反复翻 `因子产出/` 目录 | 与你的任务无关 |
+| 试 `--type cross_section` 等不存在的参数值 | 见上方表格，只有两个合法值 |
+
+**本文档给出的事实就是权威。** 直接照做，不要"眼见为实"式地翻源码/翻数据。
+
+> 这些探索已被 `PreToolUse` 钩子（`.claude/hooks/block_explore.py`）硬拦截，执行会直接报错。
 
 **从因子 definition/formulation/description 推导它需要的字段（语义，如"当日分钟收益率"→return、"市盈率"→pe_ttm），再对照你自己跑 show-columns 得到的完整列名逐一核对（这是唯一的字段核对方式）：**
 
