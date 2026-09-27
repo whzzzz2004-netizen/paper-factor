@@ -18,11 +18,22 @@ def calc_factor_single_stock(df, trade_date, stock):
 - 字段可能随数据更新而变化（新字段会由 getdata 导入并自动出现在 show-columns 里），**不要凭记忆假定有哪些列**
 - 收益率：优先用 `close.pct_change()`（复权价口径 `close * factor`）
 
-## 额外工具
+## 额外可用数据（框架已注入，不是 parquet 列，**不算缺字段**）
 
-- `INDUSTRY_DICT[stock]` → 申万一级行业名（如 "银行I"）
-- `INDUSTRY_MEMBERS` 行业成分股字典
-- `get_jq_data(symbol, data_type)` → 指数行情/成分股
+> `INDUSTRY_DICT` 由模板自动加载，函数内直接可用。它**不出现在 `show-columns` 输出里**，
+> 但属于合法可用数据——需要行业分类时**不要判缺列**。
+> `show-columns` 命令的输出末尾也会重复打印这一段，以那次输出为准。
+
+### `INDUSTRY_DICT` — 申万一级行业分类
+
+- 字典：`INDUSTRY_DICT[股票代码] = 行业名`（如 `INDUSTRY_DICT["000001"] == "银行I"`）
+- 数据源：`{日线数据目录}/industry.json`，申万一级行业标准，共 31 个行业
+  （银行I、房地产I、医药生物I、电子I、计算机I、食品饮料I …，带 `I` 后缀表示一级行业）
+- 用法：`industry = INDUSTRY_DICT.get(stock, "未知")`
+- 用途：行业中性化、行业分组统计、行业内排名、行业动量、行业轮动
+- 覆盖：测试集 292/300 只、全量 5207 只；缺失的股票用 `.get(stock, "未知")` 兜底
+
+**指数行情、指数成分股等其他在线数据本地不可用**，需要时按缺字段处理（写 `{name}.missing.json`），不要用相近数据代理。
 
 ## 字段纪律
 
@@ -37,9 +48,12 @@ def calc_factor_single_stock(df, trade_date, stock):
 
 - T 日 = df.iloc[-1]，df 共 lookback_days 行，最后一行是 T 日
 - 日频窗口必须是整数交易日数
+- 日线收益率用 `close.pct_change()`（复权价口径 `close * factor`）
+- **`df.index.date` 返回 ndarray**，没有 `.isin()` 方法，要判断日期是否属于某集合用 `np.isin(date_arr, list)`
 - `df.index.date` 不放循环内（每次访问重建整个数组）
 - 布尔序列 shift() 后必须 fillna(False)
 - np.inf/-np.inf → np.nan
+- 禁止未来数据
 
 ## 模板代码特点
 

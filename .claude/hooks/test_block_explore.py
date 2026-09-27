@@ -62,7 +62,8 @@ READ_CASES = [
     ("/home/dministrator/paper-factor/rdagent/components/coder/factor_coder/factor.py", "拦"),
     # 应放行
     ("/tmp/factor_X.py", "放"),
-    ("/home/dministrator/paper-factor/.claude/skills/factor/phase2_prompt.md", "放"),
+    ("/home/dministrator/paper-factor/.claude/skills/factor/phase2_check.md", "放"),
+    ("/home/dministrator/paper-factor/.claude/skills/factor/phase2_code.md", "放"),
     ("/home/dministrator/paper-factor/.claude/skills/factor/knowledge/daily.md", "放"),
     ("/mnt/d/paper-factor-data/papers/inbox/a.pdf", "放"),
 ]

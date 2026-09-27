@@ -76,6 +76,16 @@ def _desc_for_col(col: str) -> str:
         return ff[col]["short_name"]
     return ""
 
+EXTRA_DATA_TEXT = """\
+额外可用数据（框架已注入，函数内可直接使用，不属于 parquet 列）：
+  INDUSTRY_DICT                   申万一级行业字典，INDUSTRY_DICT[股票代码] = 行业名（如 "银行I"）。
+                                  数据文件 industry.json，31 个申万一级行业，覆盖本地全部股票。
+                                  用途：行业中性化、行业分组统计、行业内排名、行业动量/轮动。
+                                  用法：industry = INDUSTRY_DICT.get(stock, "未知")
+
+注：需要指数行情 / 指数成分股等其他在线数据时，本地不可用；按缺字段处理即可。
+"""
+
 def _detect_data_dir() -> Path:
     """Detect best available data directory."""
     candidates = [
@@ -1182,6 +1192,8 @@ def cmd_show_columns(args):
         print("可用列及含义（分钟线数据）：")
         for c in cols:
             print(f"  {c:30s} {_desc_for_col(c)}")
+        print()
+        print(EXTRA_DATA_TEXT, end="")
         return 0
 
     # 日线行情列 + 非行情列
@@ -1202,6 +1214,8 @@ def cmd_show_columns(args):
     print("可用列及含义（日线数据 + 非行情数据）：")
     for c in cols:
         print(f"  {c:30s} {_desc_for_col(c)}")
+    print()
+    print(EXTRA_DATA_TEXT, end="")
     return 0
 
 

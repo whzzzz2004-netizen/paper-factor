@@ -524,8 +524,22 @@ _CHUNK_SIZE = int(os.environ.get("FACTOR_CHUNK_SIZE", "25"))
 def load_day(td):
     return pd.read_parquet(MINUTE_BY_DATE_DIR / f"{{td}}.parquet", columns=_LOAD_COLS)
 
-# 行业分类
-_DAILY_DATA_DIR = DATA_DIR / "stock_data" / "daily"
+# 行业分类 / 聚宽缓存目录
+# 分钟线数据目录下没有 industry.json，需回退到同级的「日线」目录：
+#   DATA_DIR = .../行情数据/分钟线/{测试|全量}  →  .../行情数据/日线/{测试|全量}/stock_data/daily/
+def _resolve_daily_dir():
+    _cands = [
+        DATA_DIR / "stock_data" / "daily",
+        DATA_DIR.parent.parent / "日线" / DATA_DIR.name / "stock_data" / "daily",
+        Path("/mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量/stock_data/daily"),
+        Path("/mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试/stock_data/daily"),
+    ]
+    for _c in _cands:
+        if _c.exists():
+            return _c
+    return _cands[0]
+
+_DAILY_DATA_DIR = _resolve_daily_dir()
 _INDUSTRY_FILE = _DAILY_DATA_DIR / "industry.json"
 INDUSTRY_DICT = json.load(open(_INDUSTRY_FILE, encoding="utf-8")) if _INDUSTRY_FILE.exists() else {{}}
 

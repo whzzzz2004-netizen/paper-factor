@@ -13,10 +13,40 @@ def calc_factor_cross_section(all_data, trade_date):
 > 完整列名及含义由主进程通过 `show-columns --type daily_single` 预跑后内联进 Phase 2 prompt（`{DAILY_COLS_TEXT}`），此处不再重复列出。
 > （cross_section 用的就是日线+非行情那套列，**没有** `--type cross_section` 这个参数值。）
 
-## 额外工具
+## 额外可用数据（框架已注入，不是 parquet 列，**不算缺字段**）
 
-- `INDUSTRY_DICT[stock]` → 申万一级行业名
-- `get_jq_data(symbol, data_type)` → 指数行情/成分股
+> `INDUSTRY_DICT` 由模板自动加载，函数内直接可用。它**不出现在 `show-columns` 输出里**，
+> 但属于合法可用数据——需要行业分类时**不要判缺列**。
+> `show-columns` 命令的输出末尾也会重复打印这一段，以那次输出为准。
+
+### `INDUSTRY_DICT` — 申万一级行业分类
+
+- 字典：`INDUSTRY_DICT[股票代码] = 行业名`（如 `INDUSTRY_DICT["000001"] == "银行I"`）
+- 数据源：`{日线数据目录}/industry.json`，申万一级行业标准，共 31 个行业
+  （银行I、房地产I、医药生物I、电子I、计算机I、食品饮料I …，带 `I` 后缀表示一级行业）
+- 用法：`industry = INDUSTRY_DICT.get(stock, "未知")`
+- 用途：行业中性化、行业分组统计、行业内排名、行业动量、行业轮动
+- 覆盖：测试集 292/300 只、全量 5207 只；缺失的股票用 `.get(stock, "未知")` 兜底
+
+**用法示例**（行业分组是核心逻辑时，正常实现）：
+
+```python
+def calc_factor_cross_section(all_data, trade_date):
+    vals = {}
+    for stock, df in all_data.items():
+        vals[stock] = _my_raw_value(df)
+    s = pd.Series(vals)
+    ind = pd.Series({k: INDUSTRY_DICT.get(k, "未知") for k in s.index})
+    # 行业内排名（行业轮动/行业内选股类因子的核心逻辑）
+    rank_in_ind = s.groupby(ind).rank(pct=True)
+    return {k: {"因子名": v} for k, v in rank_in_ind.items()}
+```
+
+> ⚠️ **纯「后处理」性质的截面操作（排名/标准化/行业中性化）跳过**——
+> 只输出个股原始值，最后统一做。这里写示例是因为**行业分组本身是因子核心逻辑**
+> （如行业动量、行业轮动、行业偏离度）时需要用到 `INDUSTRY_DICT`，而非鼓励做后处理。
+
+**指数行情、指数成分股等其他在线数据本地不可用**，需要时按缺字段处理（写 `{name}.missing.json`），不要用相近数据代理。
 
 ## 特殊约束
 

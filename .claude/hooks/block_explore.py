@@ -50,7 +50,8 @@ ALLOW_HINT = (
     "本次调用被拦截：Phase 2 只做「写核心函数 → test-and-export → deploy-to-full」三件事。"
     "每次工具调用约 20 秒，探索会浪费 5-15 分钟。"
     "字段核对只用 `python scripts/claude_factor_helper.py show-columns --type daily_single`"
-    "（或 --type minute）；命令用法与函数签名以 .claude/skills/factor/phase2_prompt.md 为准，"
+    "（或 --type minute）；命令用法与函数签名以 .claude/skills/factor/phase2_check.md 和 "
+    ".claude/skills/factor/phase2_code.md 为准，"
     "不要去翻源码或别的因子实现。"
 )
 
