@@ -32,13 +32,29 @@ def load_trade_dates(data_dir: Path) -> list[str]:
 
 
 def detect_factor_type(code_text: str) -> str:
-    """从代码文本判断因子类型"""
-    if any(k in code_text for k in ('MINUTE_BY_DATE_DIR', 'minute_pv', 'calc_factors_one_day')):
-        if 'cross_section' in code_text.lower() or 'calc_factor_minute_raw' in code_text:
-            return "minute_cross_section"
-        return "minute"
-    if 'cross_section' in code_text.lower() or 'calc_factor_cross_section' in code_text:
+    """从代码文本判断因子类型。
+
+    必须用 `def ` 锚定的正则：模板注入的 _COLLECT_COLS_SRC 样板里含
+    `calc_factors_one_day` / `MINUTE_BY_DATE_DIR` 等**字面量**（注释 + 元组），
+    裸子串会把 daily / cross_section 因子误判成 minute（实测 985/1155 误判），
+    进而用分钟数据目录跑日线因子 → FileNotFoundError: stock_data/daily/stock_list.json。
+    判定顺序与 claude_factor_helper.detect_type_from_code / factor_full_pipeline
+    的 detect_factor_type_from_code 保持一致。
+    """
+    if re.search(r"\bdef\s+calc_factor_minute_raw\s*\(", code_text) or \
+       re.search(r"\bdef\s+cross_section_transform\s*\(", code_text):
+        return "minute_cross_section"
+    if re.search(r"\bdef\s+calc_factor_cross_section\s*\(", code_text):
         return "cross_section"
+    if re.search(r"\bdef\s+train_model\s*\(", code_text) or re.search(r"\bdef\s+predict\s*\(", code_text):
+        return "deep_learning"
+    if re.search(r"\bdef\s+calc_factors_one_day\s*\(", code_text):
+        return "minute"
+    if re.search(r"\bdef\s+calc_factor_series\s*\(", code_text) or \
+       re.search(r"\bdef\s+calc_factor_single_stock\s*\(", code_text):
+        return "daily"
+    if re.search(r"^MINUTE_BY_DATE_DIR\s*=\s*DATA_DIR", code_text, re.M):
+        return "minute"
     return "daily"
 
 

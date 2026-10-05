@@ -54,19 +54,26 @@ DEFAULT_N_WORKERS = 4  # 日线/截面因子4核
 
 
 def detect_factor_type_from_code(code: str) -> str:
-    """检测因子类型: minute / daily / cross_section / minute_cs / deep_learning"""
-    if "calc_factors_one_day" in code:
-        return "minute"
-    if "calc_factor_minute_raw" in code and "cross_section_transform" in code:
-        return "minute_cs"
-    if "calc_factor_cross_section" in code:
+    """检测因子类型: minute / daily / cross_section / minute_cs / deep_learning
+
+    必须用 `def ` 锚定的正则，不能用裸子串：模板注入的 _COLLECT_COLS_SRC 样板里
+    含有 `calc_factors_one_day` 字面量（注释 + fallback 元组），裸子串会把
+    所有 daily / cross_section 因子误判成 minute（实测 927/1155 误判），
+    进而用分钟数据目录跑日线因子 → FileNotFoundError: stock_data/daily/stock_list.json。
+    判定顺序与 scripts/claude_factor_helper.py 的 detect_type_from_code 保持一致。
+    """
+    if re.search(r"\bdef\s+calc_factor_cross_section\s*\(", code):
         return "cross_section"
-    if "calc_factor_single_stock" in code:
-        return "daily"
-    if "train_model" in code and "predict" in code:
-        return "deep_learning"
-    if "def calc_factors_one_day" in code:
+    if re.search(r"\bdef\s+calc_factor_minute_raw\s*\(", code) or \
+       re.search(r"\bdef\s+cross_section_transform\s*\(", code):
+        return "minute_cs"
+    if re.search(r"\bdef\s+calc_factors_one_day\s*\(", code):
         return "minute"
+    if re.search(r"\bdef\s+train_model\s*\(", code) or re.search(r"\bdef\s+predict\s*\(", code):
+        return "deep_learning"
+    if re.search(r"\bdef\s+calc_factor_single_stock\s*\(", code) or \
+       re.search(r"\bdef\s+calc_factor_series\s*\(", code):
+        return "daily"
     if "def _compute_day_raw" in code or "_compute_chunk_full" in code:
         return "minute_cs"
     return "unknown"
