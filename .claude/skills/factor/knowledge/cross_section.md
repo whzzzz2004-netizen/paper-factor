@@ -8,6 +8,12 @@ def calc_factor_cross_section(all_data, trade_date):
     # 返回: dict {股票代码: {"因子名": 值}}
 ```
 
+**窗口行数**：每只股票的 DataFrame 共 `lookback + 1` 行，**最后一行 = T 日**。
+所以 `close.pct_change(lookback)` / `close.shift(lookback)` 在末尾恰好有值，
+`iloc[0]` 是 T-lookback 日、`iloc[-1]` 是 T 日。**不要**写 `len(df) < lookback + 1` 之类的
+行数过滤去跳过股票——行数天然够，多写过滤会把所有股票滤空、产出全 NaN。
+（与 `daily` / `deep_learning` 模板口径一致。）
+
 ## 可用数据列（同日线）
 
 > 完整列名及含义由主进程通过 `show-columns --type daily_single` 预跑后内联进 Phase 2 prompt（`{DAILY_COLS_TEXT}`），此处不再重复列出。

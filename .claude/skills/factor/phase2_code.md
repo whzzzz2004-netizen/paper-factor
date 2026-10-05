@@ -1,22 +1,30 @@
 # Phase 2 · 第二步：写核心函数 + 跑测试（字段已确认齐全）
 
-> **进入本文件的前提**：你已按 `phase2_check.md` 跑过 `show-columns`，确认字段齐全，
-> 并已挑出本因子的 `{cols}` 真实列名。**不要重复跑 show-columns。**
+> **前提**：你已按 `phase2_check.md` 跑过 `show-columns`，确认字段齐全，并挑出了本因子的 `{cols}`。
+> **不要重复跑 show-columns。**
 
 ### 你的因子
 
 - 因子名: `{name}`
 - 类型: `{type}`（minute/daily/cross_section/deep_learning）
 - 函数名: 见下方对照表
-- lookback: `{lookback}`  **（⚠️ 只含核心计算天数，不含论文末尾的截面标准化/std20后处理）**
+- lookback: `{lookback}`  **（只含核心计算天数，不含论文末尾的截面标准化/std20 后处理）**
 - 报告名: `{report_name}`
 - 因子定义: 见主 agent prompt 给的提取命令（`formulation` / `description` / `source_excerpt`）
+
+> ⚠️ **类型不符时自己改，不要翻源码。**
+> 若上面给的 `{type}` 是 `daily` / `minute`，但 `formulation` 里出现了需要**同行股票**才能算的量
+> （行业均值 / 行业内排名 / 行业分位 / 行业偏离 / 全市场分组…），**直接把模板换成
+> `cross_section`**（函数签名 `calc_factor_cross_section(all_data, trade_date)`，
+> 见 `knowledge/cross_section.md`），并在 `test-and-export` 上用 `--type cross_section`。
+> 单股模板的入参只有这一只股票，**定义表达不了就是类型标错了，不是模板缺功能**。
+> 不要去 grep/读 `rdagent/.../factor.py` 或 helper 源码找答案 —— 那是被硬拦截的无效探索。
 
 ---
 
 ## 1. 写核心函数到 /tmp/factor_{name}.py
 
-**写代码前，用 Read 工具读**恰好一个**知识文件——只读与你自己 type 对应的那一个（不要读其他类型，省 token）：**
+**写代码前，用 Read 工具读**恰好一个**知识文件——只读与你自己 type 对应的那一个（不要读其他类型）：**
 
 ```
 #   daily          → .claude/skills/factor/knowledge/daily.md
@@ -60,18 +68,16 @@ def calc_factor_series(df, stock):
 - 禁止 `transform('count')` → 用 `transform('size')`；禁止 `rolling.apply(lambda)`
 - 布尔序列 `shift()` 后必须 `fillna(False)`；`np.inf` / `-np.inf` → `np.nan`
 - **禁止分钟级 for 循环**（用向量化操作）
-- **字段只认 `show-columns` 当次输出**：有 → 用；无但能精确推导 → 推导着用；其余判缺列
-- **`INDUSTRY_DICT[股票代码]` = 申万一级行业名**，需要「行业分类」时用它、不算缺字段（不写进 `--cols`）。**其他在线数据（指数行情/成分股/市场收益率）本地不可用**，按缺字段处理
-- **lookback 只含核心计算天数**，不含论文末尾的截面标准化/std20/取波动率等后处理
+- **`INDUSTRY_DICT[股票代码]` = 申万一级行业名**，需要「行业分类」时用它（不写进 `--cols`）
 
 ---
 
 ## 2. 立即跑 test-and-export + deploy-to-full（写完后立刻执行，不停顿）
 
-类型在 Phase 1 已定义，**显式传 `--type {type_key}`**（确定，不依赖自动检测）。
+**显式传 `--type {type_key}`**（确定，不依赖自动检测）。
 
 ```bash
-python scripts/claude_factor_helper.py test-and-export \
+timeout 300 python scripts/claude_factor_helper.py test-and-export \
   --code /tmp/factor_{name}.py \
   --report "{report_name}" --factor "{name}" \
   --cols "{cols}" --lookback {lookback} \
@@ -80,20 +86,39 @@ python scripts/claude_factor_helper.py test-and-export \
   --source-excerpt "{source_excerpt}" \
   --source-report-title "{report_name}" \
   --date {DATE}
+echo "exit=$?"      # 124 = 超时被杀
 ```
+
+> `timeout 300` 上限 5 分钟，**必须加**（见下方「超时熔断」）。
 > `{cols}` = 你在 phase2_check.md 里从 show-columns 挑出的**真实列名**（空格或逗号分隔均可）。
 
 > ⚠️ `--description` / `--formulation` / `--source-excerpt` 从提取命令的输出里取；
 > 含特殊字符（引号、换行、`$`）时用单引号包裹或写入临时文件传参。
 
 **test-and-export 成功后，立即部署到全量：**
-> 路径结构：test-and-export 输出为 `因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py`。
-> deploy-to-full 的 `--code` 用同一路径，**不要**多套一层 `{name}` 目录。
+
 ```bash
 python scripts/claude_factor_helper.py deploy-to-full \
   --code /mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py \
   --date {DATE}
 ```
+> deploy-to-full 的 `--code` 用上面这个路径，**不要**多套一层 `{name}` 目录。
+
+### 想验证假设？用 `--dry-run`，不要造假报告名
+
+怀疑「窗口给几行 / lookback 该填几 / 某列在不在 / 为什么全是 NaN」时，用 **`--dry-run`**：
+它照常跑测试并回传诊断（`result_shape` / `non_null_ratio` / 你的 print 输出），
+但**不写任何产物**。
+
+```bash
+timeout 300 python scripts/claude_factor_helper.py test-and-export \
+  --code /tmp/factor_{name}.py --report "{report_name}" --factor "{name}" \
+  --cols "{cols}" --lookback {lookback} --type {type_key} --dry-run
+```
+
+> 🚫 **禁止用假报告名做试错**（`--report pk1`、`--report probe`、`--report v0`、`--report dbg`…）。
+> 每跑一次就会在产出目录留下一个空壳报告，污染后续 `ls` 与统计，且这些目录**不会被清理**。
+> 需要几次诊断就 `--dry-run` 几次，最后用真报告名跑一次正式的。
 
 ### ⚠️ 绝对禁止（违反将导致流程失败）
 
@@ -101,29 +126,79 @@ python scripts/claude_factor_helper.py deploy-to-full \
 2. ❌ 不要 import FactorFBWorkspace
 3. ❌ 不要自己加载 parquet（含手动检查 schema）
 4. ❌ 不要手动 debug
+
+### 输出全空时怎么改（`result_exists:false` 或 `all_nan_warning`）
+
+`test-and-export` 返回全空 = **代码有明确的结构性错误**，不是参数不合适。
+按顺序核对，**只改命中的那一项**，改完重跑一次：
+
+1. **返回结构**：必须是 `{股票代码: {"因子名": 值}}`，值是标量。返回 `pd.Series` → 全空。
+2. **行数过滤**：窗口天然是 `lookback+1` 行（最后一行 = T 日）。**不要**写
+   `if len(df) < lookback+2: continue` 这类过滤——会把所有股票滤空。要算 `X.shift(k)` 只需 `lookback >= k`。
+3. **列名**：只能用在 `show-columns` 输出里见过的名字。写错列名 → `KeyError` 或全 NaN。
+4. **全 NaN 传播**：除零、`pct_change` 首行、对全 NaN 序列取均值。
+
+**🚫 禁止用 `for lb in 1 5 20 21 ...` 扫 lookback。** `lookback` 是提取阶段给定的定义参数，
+不是网格搜索出来的；全空几乎从不因 lookback 差 1 引起（未修模板时是唯一例外，现已修）。
+**🚫 `--dry-run` 累计最多 3 次**，超出说明没找到结构性根因，直接按失败报告。
 5. **写代码 → 跑 test-and-export，中间不做任何事**
-6. **跑通后不得再改代码**：注释措辞、变量名、格式优化等一律禁止（改了=要重跑，纯浪费）。
+6. **跑通后不得再改代码**：注释措辞、变量名、格式优化等一律禁止。
    只有 **test-and-export 失败**时才允许按下方规则修改重试。
 
 ### 如果 test-and-export 失败（含错误和超时）
 
 - **普通错误**：看错误信息，修改函数代码后重新跑，最多重试 2 次
-- **超时**（超过 300s 无结果）：修改代码优化性能（减天数、向量化等）后重试，最多 **2 次修改机会**
+- **超时（>5 分钟没产出）**：见下方「超时熔断」
 - **累计 3 次都失败** → 在结果中报告 failure，不阻塞后续因子
+
+### 超时熔断
+
+**第 2 步的命令已用 `timeout 300` 包住。** `exit=124` = 5 分钟没跑完，判定为**性能问题**。
+
+> ⚠️ **Bash 工具自身默认 120 秒**就会把命令转后台。所以 `test-and-export` 这类长命令，
+> 调用时**必须把 Bash 工具的 `timeout` 参数设为 300000（毫秒）**，让它在一次调用内跑完，
+> 不要被工具提前转后台。
+
+按下面改代码后**重跑一次**（仍用 `timeout 300` + Bash `timeout: 300000`）：
+
+- **`lookback` 大的分钟因子（≥60）必须走向量化**：写 `calc_factor_series(df, stock)`，
+  一次算完全部日期；**不要**让模板按日循环调用 `calc_factors_one_day`。
+- 常用手段：`rolling` / `ewm` / `groupby(dates).transform` / 先按日聚合再跨日 rolling。
+- **禁止 `rolling.apply(lambda)`、禁止 for 循环逐日/逐股**。
+
+**重跑仍超时（exit=124）→ 直接报告 failure**，不要继续试。
+
+### 🚫 超时后绝对禁止：丢后台 + 轮询
+
+**无论命令是自己 `timeout` 超时，还是被 Bash 工具提前转后台（返回 "moved to the background"），
+都绝对不允许用 `sleep` / 反复 `cat`·`tail` 输出文件来等它跑完。**
+
+```bash
+# ❌ 绝对禁止 —— 每一个这样的回合都要把整个上下文重发一遍
+sleep 170; tail -35 /tmp/.../tasks/xxx.output
+sleep 60;  cat  /tmp/.../tasks/xxx.output
+```
+
+**为什么**：Agent 每次工具调用，都要把「到目前为止的整段对话」重新发一遍。
+`sleep` 和 `cat` **不推进任何任务**，却各产生一个完整回合——等 10 分钟就是白烧 5~10 份
+完整上下文（实测有 worker 因此从 12 轮涨到 56 轮、token 翻 11 倍）。
+
+**正确做法**：把「被转后台」或「超时」**一律当作超时熔断**处理 ——
+
+1. **立刻**按上方熔断规则改代码（向量化），不要等、不要看后台输出；
+2. 重跑一次，Bash 调用带 `timeout: 300000`，让它在单次调用内阻塞返回；
+3. 仍失败 → **直接报告 failure**。
+
+**最多看一眼**：若确实需要判断上次是否仍在跑，只允许**一次** `cat` 输出文件（不是 `sleep`+多次），
+随后无论结果如何都按熔断处理。**禁止第二次轮询。**
 
 ---
 
 ## 返回格式
 
-**返回值只有下面这一行 JSON，前后不加任何文字。**
+**返回值只有下面这一行 JSON，前后不加任何文字**（同主 agent prompt 给的那一行）。
 禁止附加：完成说明、实现要点、判定理由、注意事项、代码摘要、验证过程。
 
-成功：
-```
-{"name": "{name}", "success": true, "missing_fields": false, "code_path": "/tmp/factor_{name}.py", "error": null}
-```
+成功：`{"name": "{name}", "success": true, "missing_fields": false, "code_path": "/tmp/factor_{name}.py", "error": null}`
 
-失败：
-```
-{"name": "{name}", "success": false, "missing_fields": false, "code_path": null, "error": "不超过 20 字的失败原因"}
-```
+失败：`{"name": "{name}", "success": false, "missing_fields": false, "code_path": null, "error": "不超过 20 字的失败原因"}`

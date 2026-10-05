@@ -1212,7 +1212,10 @@ def _worker_days(day_indices):
                 p = _WPOS[s][i]
                 if p == 0:
                     continue
-                st = max(0, p - lb) if lb > 0 else 0
+                # 与 daily / deep_learning 模板对齐：lookback 个「周期」需要 lookback+1 行，
+                # 这样 shift(lookback) / pct_change(lookback) 恰好有值。此前取 p-lb 只给
+                # lb 行，导致 lookback=20 的 20 日动量类因子全 NaN（实测单因子扫 50 次参数）。
+                st = max(0, p - lb - 1) if lb > 0 else 0
                 ad[s] = df.iloc[st:p]
             if not ad:
                 continue

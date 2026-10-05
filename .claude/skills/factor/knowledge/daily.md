@@ -46,7 +46,8 @@ def calc_factor_single_stock(df, trade_date, stock):
 
 ## 特殊约束
 
-- T 日 = df.iloc[-1]，df 共 lookback_days 行，最后一行是 T 日
+- T 日 = df.iloc[-1]，**最后一行是 T 日**。窗口共 `lookback_days + 1` 行（含 T 日与 T-lookback），
+  所以 `pct_change(lookback_days)` / `shift(lookback_days)` 恰好有值。不要写 `len(df) < lookback_days+2` 之类的过滤
 - 日频窗口必须是整数交易日数
 - 日线收益率用 `close.pct_change()`（复权价口径 `close * factor`）
 - **`df.index.date` 返回 ndarray**，没有 `.isin()` 方法，要判断日期是否属于某集合用 `np.isin(date_arr, list)`
