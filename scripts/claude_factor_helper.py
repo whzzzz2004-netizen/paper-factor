@@ -663,6 +663,32 @@ def cmd_test_and_export(args):
     # Success → export
     report_name = args.report
     factor_name = args.factor
+
+    # --dry-run：只跑测试拿诊断信息，不落盘。
+    # 供 agent 验证「窗口/lookback/字段可见性」这类假设时使用，
+    # 避免用假报告名反复 test-and-export 而在 测试/{DATE}/ 下留一堆空壳目录。
+    if getattr(args, "dry_run", False):
+        try:
+            wrapped_tmp.unlink(missing_ok=True)
+            shutil.rmtree(test_result["tmpdir"], ignore_errors=True)
+        except Exception:
+            pass
+        print(json.dumps({
+            "success": True,
+            "dry_run": True,
+            "exported": False,
+            "detected_type": type_key,
+            "detected_lookback": lookback,
+            "result_exists": test_result.get("result_exists"),
+            "result_shape": test_result.get("result_shape"),
+            "date_range": test_result.get("date_range"),
+            "non_null_ratio": test_result.get("non_null_ratio"),
+            "all_nan_warning": test_result.get("all_nan_warning"),
+            "stdout_tail": test_result.get("stdout_tail"),
+            "stderr_tail": test_result.get("stderr_tail"),
+        }, ensure_ascii=False, indent=2))
+        return 0
+
     reports_base = (LITERATURE_REPORTS_DIR / args.date) if args.date else LITERATURE_REPORTS_DIR
     factor_dir = reports_base / report_name / factor_name
     factor_dir.mkdir(parents=True, exist_ok=True)
@@ -1319,6 +1345,7 @@ def main():
     p_tae.add_argument("--source-report-path", default=None, help="Source report path (auto-fills source_report_path in meta)")
     p_tae.add_argument("--source-excerpt", default=None, help="Source excerpt text (auto-fills source_excerpt in meta)")
     p_tae.add_argument("--timeout", type=int, default=3600, help="Test timeout in seconds (default: 3600)")
+    p_tae.add_argument("--dry-run", action="store_true", help="只跑测试并回传诊断信息，不写任何产物（验证窗口/lookback/字段假设用）")
     p_tae.add_argument("--date", default=None, help="Date subdirectory (YYYY-MM-DD), e.g. --date 2026-08-09")
 
     # trigger-full

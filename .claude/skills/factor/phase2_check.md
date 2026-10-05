@@ -36,16 +36,14 @@ python scripts/claude_factor_helper.py show-columns --type minute
 python scripts/claude_factor_helper.py show-columns --type daily_single
 ```
 
-> ⚠️ **没有** `--type cross_section` / `--type deep_learning` —— 试了只会浪费一轮往返。
+> ⚠️ **没有** `--type cross_section` / `--type deep_learning`。
 > 列清单只有两套：**分钟线列** 和 **日线+非行情列**。
 
 **以这次运行的输出为唯一字段核对依据**（含输出末尾的「额外可用数据」段落）。
 数据会持续补充字段，**不要凭记忆或本文档假定有哪些列**。
 
-> 🚫 **不要探索**——`show-columns` 的输出就是权威，翻别处（数据仓库 / helper 源码 / 其他因子实现 /
-> parquet schema / memory）纯属浪费：每次工具调用 ≈20 秒完整 API 往返，而计算本身只要 20-60 秒。
-> 这些操作已被 PreToolUse 钩子（`.claude/hooks/block_explore.py`、`block_datascan.py`）**硬拦截**，
-> 执行会直接报错（全仓递归扫描还会读 66GB 二进制卡死 600 秒）。
+> 🚫 **不要探索**——`show-columns` 的输出就是权威。翻别处（数据仓库 / helper 源码 /
+> 其他因子实现 / parquet schema / memory）纯属浪费，且已被 PreToolUse 钩子硬拦截。
 
 ### 判断缺列的标准（两条都满足才算缺列）
 
@@ -96,14 +94,15 @@ python scripts/claude_factor_helper.py show-columns --type daily_single
 **除 `INDUSTRY_DICT` 外的其他在线数据（指数行情、指数成分股、市场收益率等）本地不可用**，
 按缺字段处理，不要用相近数据代理。
 
-> 注意：**截面后处理**（排名/标准化/中性化）不属于缺字段，照常跳过、只输出个股原始值。但"缺某个字段"永远不能跳过或近似。
+> 注意：**截面后处理**（排名/标准化/中性化）不属于缺字段，照常跳过、只输出个股原始值。
+> 但"缺某个字段"永远不能跳过或近似。
 
 ---
 
 ## 分支 A：字段齐全 → 继续读 phase2_code.md
 
 挑出对应的真实列名（如"复权收盘价"对应 `close` × `factor`），这些就是本因子的 `{cols}`。
-「行业分类」用 `INDUSTRY_DICT`（**不要**写进 `--cols`，它不是 parquet 列）。
+「行业分类」用 `INDUSTRY_DICT`（**不要**写进 `--cols`）。
 
 **然后 Read `.claude/skills/factor/phase2_code.md`，按它写代码并跑测试。本文件到此结束。**
 
@@ -111,7 +110,7 @@ python scripts/claude_factor_helper.py show-columns --type daily_single
 
 ## 分支 B：判缺列 → 写 missing.json 后直接返回
 
-**不要再去找**——字段清单只由当次 show-columns 输出决定，翻别处不会有。
+**不要再去找**——字段清单只由当次 show-columns 输出决定。
 **不要写代码，不要跑 test-and-export，不要 deploy-to-full。**
 
 用 Write 工具写 `{name}.missing.json`（**完整路径**，目录不存在时先创建）：
@@ -132,29 +131,18 @@ python scripts/claude_factor_helper.py show-columns --type daily_single
 ```
 
 > ⚠️ `missing_fields` **只写真正不存在的基础列**（如 `成交额`、`自由流通市值`、`指数行情`）。
-> 「历史价格」「30 日前收盘价」「市值分组」「全市场面板」这类一律删掉——见上「三种看着像缺字段、其实不是」。
+> 「历史价格」「30 日前收盘价」「市值分组」「全市场面板」这类一律删掉。
 
 然后直接返回。
 
 ---
 
-## 返回格式（两种分支通用）
+## 返回格式
 
-**返回值只有下面这一行 JSON，前后不加任何文字。**
+**返回值只有主 agent prompt 里给的那一行 JSON，前后不加任何文字。**
 禁止附加：完成说明、实现要点、判定理由、注意事项、代码摘要、验证过程、schema 普查结果。
-需要留档的说明一律写进**代码注释**或 **missing.json**，不要放进返回值。
+需要留档的说明一律写进**代码注释**或 **missing.json**。
 
-缺字段（分支 B）：
-```
-{"name": "{name}", "success": true, "missing_fields": true, "code_path": null, "error": null}
-```
-
-成功（分支 A 跑完 test-and-export 后）：
-```
-{"name": "{name}", "success": true, "missing_fields": false, "code_path": "/tmp/factor_{name}.py", "error": null}
-```
-
-失败：
-```
-{"name": "{name}", "success": false, "missing_fields": false, "code_path": null, "error": "不超过 20 字的失败原因"}
-```
+- 缺字段（分支 B）：`{"name": "{name}", "success": true, "missing_fields": true, "code_path": null, "error": null}`
+- 成功（分支 A 跑完 test-and-export 后）：`{"name": "{name}", "success": true, "missing_fields": false, "code_path": "/tmp/factor_{name}.py", "error": null}`
+- 失败：`{"name": "{name}", "success": false, "missing_fields": false, "code_path": null, "error": "不超过 20 字的失败原因"}`

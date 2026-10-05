@@ -17,6 +17,8 @@ import json
 import re
 import sys
 
+from factor_gate import active as _gate_active
+
 DATA_ROOT_MARKERS = ("paper-factor-data",)
 
 # 宽根路径：递归扫这些等于扫全盘（曾实测 grep -rn ... / 跑了 64 分钟）
@@ -74,6 +76,8 @@ def is_dangerous(cmd: str) -> str | None:
 
 
 def main() -> int:
+    if not _gate_active():
+        return 0
     try:
         payload = json.load(sys.stdin)
     except Exception:

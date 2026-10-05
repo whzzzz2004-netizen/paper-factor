@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""测试 block_datascan.py 钩子的拦截/放行行为。"""
+"""测试 block_datascan.py 钩子的拦截/放行行为。
+
+钩子只在 `/factor` 期间生效（哨兵 /tmp/factor_hooks_on），
+所以本测试先启用哨兵、跑完再关掉。
+"""
 import json
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+import factor_gate
 
 HOOK = Path(__file__).parent / "block_datascan.py"
 DR = "/mnt/d/" + "paper-factor-data"  # 拼接，避免本文件内容被钩子误判
@@ -53,11 +60,24 @@ CASES = [
 ]
 
 if __name__ == "__main__":
-    ok = True
-    for cmd, want in CASES:
-        got = run(cmd)
-        good = got.startswith(want)
-        ok = ok and good
-        print(f"{'✅' if good else '❌'} [{got:<26}] {cmd[:60]}")
-    print()
-    print("钩子行为符合预期" if ok else "⚠️ 有用例不符合预期")
+    factor_gate.enable()
+    try:
+        ok = True
+        for cmd, want in CASES:
+            got = run(cmd)
+            good = got.startswith(want)
+            ok = ok and good
+            print(f"{'✅' if good else '❌'} [{got:<26}] {cmd[:60]}")
+
+        print("\n── 哨兵关闭后应一律放行 ──")
+        factor_gate.disable()
+        for cmd in ("grep -rn foo /mnt/d/paper-factor-data/", "find / -name x", "ls -R /"):
+            got = run(cmd)
+            good = got == "放行"
+            ok = ok and good
+            print(f"{'✅' if good else '❌'} [{got:<26}] {cmd[:60]}")
+
+        print()
+        print("钩子行为符合预期" if ok else "⚠️ 有用例不符合预期")
+    finally:
+        factor_gate.disable()
