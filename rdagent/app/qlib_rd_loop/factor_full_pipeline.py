@@ -83,6 +83,19 @@ def detect_factor_type(code_path: Path) -> str:
     return detect_factor_type_from_code(code_path.read_text())
 
 
+def _read_log_tail(log_path: Path, n: int = 10) -> list[str]:
+    """读子进程日志末尾 n 行（供失败时打印原因）。
+
+    子进程完整日志留在 log_path，绝不逐行回显到 stdout —— 一个分钟因子实测
+    可刷 2843 行（RankWarning 刷屏），全部回显会灌进 agent 上下文，是 token 黑洞。
+    """
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    return lines[-n:]
+
+
 def cleanup_workers(factor_name: str | None = None):
     """清除可能残留的worker进程"""
     subprocess.run(["pkill", "-9", "-f", "python3 -c  import os"], capture_output=True, timeout=5)
@@ -174,7 +187,7 @@ def run_other_factor(factor_name: str, factor_dir: Path, code_path: Path) -> boo
 
             t0 = time.time()
             log_path = Path(f"/tmp/{factor_name}.run.log")
-            last_lines = []
+            # 日志只写文件，不逐行回显（完整日志留 log_path，失败时读末尾）。
             with open(log_path, "w") as log_f:
                 proc = subprocess.Popen(
                     [sys.executable, str(code_tmp)],
@@ -182,34 +195,14 @@ def run_other_factor(factor_name: str, factor_dir: Path, code_path: Path) -> boo
                     text=True, env=env, cwd=str(tmpdir),
                     preexec_fn=os.setpgrp,
                 )
-                last_pos = 0
                 while proc.poll() is None:
-                    time.sleep(0.5)
-                    with open(log_path, encoding="utf-8", errors="replace") as rf:
-                        rf.seek(last_pos)
-                        for line in rf:
-                            print(line, end="", flush=True)
-                            last_lines.append(line)
-                            if len(last_lines) > 20:
-                                last_lines.pop(0)
-                        last_pos = rf.tell()
-            try:
-                with open(log_path, encoding="utf-8", errors="replace") as rf:
-                    rf.seek(last_pos)
-                    for line in rf:
-                        print(line, end="", flush=True)
-                        last_lines.append(line)
-                        if len(last_lines) > 20:
-                            last_lines.pop(0)
-            except OSError:
-                pass
+                    time.sleep(1.0)
             elapsed = time.time() - t0
-            print(f"  subprocess returncode={proc.returncode}, elapsed={elapsed:.0f}s", flush=True)
 
             if proc.returncode != 0:
-                print(f"  ⚠️ 运行退出码非零 (code={proc.returncode})", flush=True)
-                for line in last_lines[-10:]:
-                    print(f"    {line}", end="", flush=True)
+                print(f"  ⚠️ 运行退出码非零 (code={proc.returncode}), elapsed={elapsed:.0f}s", flush=True)
+                for line in _read_log_tail(log_path, 15):
+                    print(f"    {line}", flush=True)
 
             # 从 temp 目录找结果 → 拷到 factor_dir
             result_parquet = tmpdir / f"{factor_name}.parquet"
@@ -283,7 +276,7 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
 
         t0 = time.time()
         log_path = Path(f"/tmp/{factor_name}.run.log")
-        last_lines = []
+        # 日志只写文件，不逐行回显（完整日志留 log_path，失败时读末尾）。
         with open(log_path, "w") as log_f:
             proc = subprocess.Popen(
                 [sys.executable, str(code_dst)],
@@ -291,32 +284,12 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
                 text=True, env=env, cwd=str(factor_dir),
                 preexec_fn=os.setpgrp,
             )
-            last_pos = 0
             while proc.poll() is None:
-                time.sleep(0.5)
-                with open(log_path, encoding="utf-8", errors="replace") as rf:
-                    rf.seek(last_pos)
-                    for line in rf:
-                        print(line, end="", flush=True)
-                        last_lines.append(line)
-                        if len(last_lines) > 20:
-                            last_lines.pop(0)
-                    last_pos = rf.tell()
-        # 读退出前的剩余输出（cleanup 之前，避免 pkill 干扰）
-        try:
-            with open(log_path, encoding="utf-8", errors="replace") as rf:
-                rf.seek(last_pos)
-                for line in rf:
-                    print(line, end="", flush=True)
-                    last_lines.append(line)
-                    if len(last_lines) > 20:
-                        last_lines.pop(0)
-        except OSError:
-            pass  # 子进程可能删了日志，不影响
+                time.sleep(1.0)
         elapsed = time.time() - t0
 
         if proc.returncode != 0:
-            print(f"  ⚠️ 运行异常退出 (code={proc.returncode})", flush=True)
+            print(f"  ⚠️ 运行异常退出 (code={proc.returncode}), elapsed={elapsed:.0f}s", flush=True)
             chk_files = sorted(chk_dir.glob("chk_*.parquet")) if chk_dir.exists() else []
             if chk_files:
                 n_chk = len(chk_files)
@@ -329,8 +302,8 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
                 except Exception:
                     pass
             else:
-                for line in last_lines[-10:]:
-                    print(f"    {line}", end="", flush=True)
+                for line in _read_log_tail(log_path, 15):
+                    print(f"    {line}", flush=True)
             if attempt == 0:
                 print(f"  🔄 准备重试...", flush=True)
                 continue

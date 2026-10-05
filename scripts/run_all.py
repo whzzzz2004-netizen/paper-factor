@@ -24,6 +24,7 @@
 """
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -277,6 +278,27 @@ def run_incremental_for_factor(item: dict) -> dict:
     return result
 
 
+# ── 进度/失败落盘（供 agent 或人用 tail 看，不占对话上下文） ──
+PROGRESS_PATH = Path("/tmp/run_all_progress.json")
+
+
+def _write_progress(round_num, done, total, success, fail, skip, failures, elapsed):
+    """每个因子结束后覆盖写进度文件。只保留摘要 + 失败清单，不含因子日志。"""
+    try:
+        PROGRESS_PATH.write_text(json.dumps({
+            "updated_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+            "round": round_num,
+            "round_progress": f"{done}/{total}",
+            "success": success,
+            "fail": fail,
+            "skip": skip,
+            "elapsed_min": round(elapsed / 60, 1),
+            "failures": failures,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
 # ── 主流程（串行，自动重扫直到队列清空） ──
 
 def main():
@@ -324,6 +346,7 @@ def main():
     total_success = 0
     total_fail = 0
     total_skip = 0
+    failures = []
 
     while True:
         round_num += 1
@@ -359,6 +382,7 @@ def main():
             return 0
 
         # 串行执行本轮因子
+        _round_done = 0
         for item in pending_list:
             if item["status"] == "pending":
                 r = run_full_pipeline_for_factor(item)
@@ -370,17 +394,41 @@ def main():
                 total_skip += 1
             else:
                 total_fail += 1
+                failures.append({
+                    "report": r.get("report", ""),
+                    "factor": r.get("factor", ""),
+                    "status": r.get("status"),
+                    "error": r.get("error", ""),
+                })
+            _round_done += 1
+            _write_progress(
+                round_num, _round_done, len(pending_list),
+                total_success, total_fail, total_skip,
+                failures, time.time() - t_start,
+            )
+            print(f"  📈 进度 {_round_done}/{len(pending_list)}"
+                  f"（累计 成功 {total_success} / 失败 {total_fail} / 跳过 {total_skip}）",
+                  flush=True)
 
         # 本轮完成 → 自动重扫（看 /factor 是否 deploy 了新因子）
         elapsed = time.time() - t_start
+        _write_progress(round_num, len(pending_list), len(pending_list),
+                        total_success, total_fail, total_skip, failures, elapsed)
         print(f"\n{'='*60}")
         print(f"🏁 第 {round_num} 轮完成 (累计耗时 {elapsed/60:.1f}min)，即将重扫检查新因子…")
         print(f"{'='*60}")
 
     # ── 汇总 ──
     elapsed = time.time() - t_start
+    _write_progress(round_num, 0, 0, total_success, total_fail, total_skip, failures, elapsed)
     print(f"\n{'='*60}")
     print(f"🏁 全部完成: {total_success} 成功, {total_fail} 失败, {total_skip} 跳过 (耗时 {elapsed/60:.1f}min)")
+    if failures:
+        print(f"❌ 失败清单（{len(failures)} 个）：")
+        for f in failures:
+            print(f"   [{f['status']}] {f['report']}/{f['factor']}"
+                  f"{' — ' + f['error'] if f['error'] else ''}")
+    print(f"📄 进度明细: {PROGRESS_PATH}")
     print(f"{'='*60}")
 
     return 0 if total_fail == 0 else 1

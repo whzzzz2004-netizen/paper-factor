@@ -109,10 +109,13 @@ def run_factor_subprocess(
                 capture_output=True, text=True, timeout=timeout,
                 env=env,
             )
-            for line in proc.stdout.split("\n"):
-                line = line.strip()
-                if line:
-                    print(f"    {line}")
+            # 子进程完整日志留在 /tmp/{factor}.incr.log，不全量回显：
+            # 分钟因子日志实测可刷到数千行，逐行回显会灌进 agent 上下文。
+            try:
+                Path(f"/tmp/{factor_name}.incr.log").write_text(
+                    (proc.stdout or "") + "\n" + (proc.stderr or ""), encoding="utf-8")
+            except OSError:
+                pass
             if proc.returncode != 0:
                 stderr = proc.stderr[-500:] if len(proc.stderr) > 500 else proc.stderr
                 print(f"  ❌ 执行失败: {stderr.strip()}")

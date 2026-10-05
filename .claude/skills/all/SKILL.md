@@ -37,18 +37,24 @@ python3 scripts/run_all.py --dry-run
 
 ## 执行
 
+**必须重定向到日志文件**，不要把 run_all 的 stdout 直接留在对话里（长跑、且个别分钟因子日志可达数千行）：
+
 ```bash
-python3 scripts/run_all.py {args}
+setsid python3 scripts/run_all.py {args} > /tmp/run_all.log 2>&1 < /dev/null &
 ```
+
+- run_all 自身只打印**每个因子的摘要行**（`📈 进度 N/M`）+ 最终汇总，子进程日志只写 `/tmp/{因子}.run.log`，不回显。
+- **实时进度**：`cat /tmp/run_all_progress.json`（每个因子结束覆盖写一次：轮次/进度/成功/失败/跳过/失败清单/耗时）。
+- **失败原因**：进度文件里的 `failures[]`，或看该因子的 `/tmp/{因子}.run.log` 末尾。
+- **判断是否卡死**（而非慢）：对比进度文件 `updated_at` 是否长期不变；有些因子本来就要跑很久，**不要因为慢就杀它**。
 
 ## ⚠️ 失败因子处理（重要）
 
-**全量跑完（所有其他因子都完成后）**，若发现有因子失败或产出异常（parquet 全空/非空率过低/无图像），**必须派 agent 介入修复**，不能直接接受：
+**单个因子失败不会中断整条队列**，会记入 `total_fail` 与进度文件的 `failures[]`，然后继续下一个。
 
-1. **等 run_all 完全结束**（`🏁 全部完成` 且 `队列已清空`）
-2. 逐因子检查全量产出：parquet 是否存在、非空率是否正常（minute/daily 应 >60%，cross_section 应 >50%）、是否有 decile.png
-3. **失败的因子 → 派 agent 分析根因**（数据问题 / 模板问题 / 因子算法问题）→ 修复核心函数 → 重新 `test-and-export` + `deploy-to-full` → 重跑该因子全量（`run_factor_full.py`）
-4. 修复后重新验证非空率正常，全部通过才算完成
+**断点续跑**：`find_pending_factors` 用「有没有 parquet」判状态——已成功的因子重跑时直接跳过。所以修复失败的因子后，**直接再跑一次 `run_all.py` 同一天**即可，不会重算已完成的。
+
+全量跑完（`🏁 全部完成` 且 `队列已清空`）后，逐因子检查全量产出：parquet 是否存在、非空率是否正常（minute/daily 应 >60%，cross_section 应 >50%）、是否有 decile.png。失败的因子 → 派 agent 分析根因 → 修核心函数 → 重新 `test-and-export` + `deploy-to-full` → 重跑该因子全量。
 
 常见失败模式：
 - **数据 NaN**（如非行情列空）→ 检查 `非行情数据/` 是否有效
