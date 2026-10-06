@@ -103,11 +103,12 @@ def _detect_data_dir() -> Path:
 TEST_DATA_DIR = _detect_data_dir()
 
 # Template type → attribute name on FactorFBWorkspace
+# 分钟截面（行业分位等）不再有独立模板：MINUTE 模板已内置可选的
+# cross_section_transform 钩子，与纯 per-stock 分钟因子共用同一引擎。
 TYPE_MAP = {
     "daily_single": "DAILY_FRAMEWORK_TEMPLATE",
     "cross_section": "CROSS_SECTION_FRAMEWORK_TEMPLATE",
     "minute": "MINUTE_FRAMEWORK_TEMPLATE",
-    "minute_cross_section": "MINUTE_CROSS_SECTION_FRAMEWORK_TEMPLATE",
     "deep_learning": "DEEP_LEARNING_FRAMEWORK_TEMPLATE",
 }
 
@@ -438,15 +439,18 @@ def detect_type_from_code(code: str) -> str | None:
     if re.search(r"\bdef\s+calc_factor_cross_section\s*\(", code):
         return "cross_section"
     if re.search(r"\bdef\s+calc_factor_minute_raw\s*\(", code) or re.search(r"\bdef\s+cross_section_transform\s*\(", code):
-        return "minute_cross_section"
+        return "minute"
     if re.search(r"\bdef\s+calc_factors_one_day\s*\(", code):
         return "minute"
     if re.search(r"\bdef\s+train_model\s*\(", code) or re.search(r"\bdef\s+predict\s*\(", code):
         return "deep_learning"
+    # 分钟标记先于 series 分支：分钟因子常只写向量化的 calc_factor_series
+    # （phase2_code.md 要求 lookback 大的分钟因子走向量化），若 series 分支先返回
+    # daily_single 就会被误判。先看模板无条件注入的 marker，再看历史启发式。
+    if re.search(r"^MINUTE_BY_DATE_DIR\s*=\s*DATA_DIR", code, re.M):
+        return "minute"
     if re.search(r"\bdef\s+calc_factor_series\s*\(", code):
-        if _looks_like_minute(code):
-            return "minute"
-        return "daily_single"
+        return "minute" if _looks_like_minute(code) else "daily_single"
     if re.search(r"\bdef\s+calc_factor_single_stock\s*\(", code):
         return "daily_single"
     return None
@@ -481,7 +485,7 @@ def _run_test_in_tmpdir(code_path: Path, timeout: int = 3600, type_key: str = "d
     """Run a .code.py in a temp dir and return result dict + temp dir path."""
     env = os.environ.copy()
     # 根据因子类型设置正确的数据目录
-    if type_key in ("minute", "minute_cross_section"):
+    if type_key == "minute":
         minute_test_dir = DATA_ROOT / "数据仓库" / "行情数据" / "分钟线" / "测试"
         if minute_test_dir.exists():
             env["FACTOR_DATA_DIR"] = str(minute_test_dir)
@@ -546,7 +550,7 @@ def _run_test_in_tmpdir(code_path: Path, timeout: int = 3600, type_key: str = "d
         # 模板把 parquet 写到 _CODE_DIR（即 code_path 的父目录），文件名由 stem 决定
         _PARQUET_STEM = Path(code_path).stem.removesuffix('.code')
         _alt_path = Path(code_path).parent / f"{_PARQUET_STEM}.parquet"
-        # minute_cs 模板将因子名追加到文件名：{stem}_{factor_name}.parquet
+        # 兼容旧产物：个别旧模板把因子名追加到文件名（{stem}_{factor_name}.parquet）
         if not _alt_path.exists():
             _glob = sorted(Path(code_path).parent.glob(f"{_PARQUET_STEM}_*.parquet"))
             if _glob:
@@ -607,7 +611,7 @@ def cmd_test_and_export(args):
     if not type_key:
         print(json.dumps({"success": False, "error": (
             "Cannot auto-detect type from function names. "
-            "Please specify --type (daily_single, cross_section, minute, minute_cross_section, deep_learning)"
+            "Please specify --type (daily_single, cross_section, minute, deep_learning)"
         )}))
         return 1
 
@@ -715,6 +719,10 @@ def cmd_test_and_export(args):
         "source_report_title": args.source_report_title or report_name,
         "source_report_path": args.source_report_path or "",
         "source_excerpt": args.source_excerpt or f"因子 {factor_name}，来自 {report_name}",
+        # 测试阶段验证时使用的类型（显式 --type 或自动检测结果）。
+        # 全量阶段的 run_all 会优先读它，避免再从代码文本重新猜（曾致 17 个分钟因子
+        # 被猜成 daily、用日线目录跑而失败）。
+        "factor_type": type_key,
     }
     if args.meta_json:
         extra = json.loads(args.meta_json)
@@ -1197,7 +1205,7 @@ def cmd_show_columns(args):
     """Show available columns in stock data parquet files with descriptions.
 
     --type 决定展示哪套数据的列：
-      minute / minute_cross_section → 分钟线列（open/high/low/close/volume/return/factor）
+      minute → 分钟线列（open/high/low/close/volume/return/factor）
       其他（daily / cross_section / deep_learning / 不传）→ 日线行情列 + 非行情列
 
     列含义来源（getdata 导入新字段后自动带出新列含义）：
@@ -1205,7 +1213,7 @@ def cmd_show_columns(args):
     """
     import pyarrow.parquet as _pq
 
-    if args.type in ("minute", "minute_cross_section"):
+    if args.type == "minute":
         minute_dir = DATA_ROOT / "数据仓库" / "行情数据" / "分钟线" / "测试" / "stock_data" / "minute_by_date"
         if not minute_dir.exists():
             print("ERROR: 分钟线测试数据不存在", file=sys.stderr)
@@ -1307,7 +1315,7 @@ def main():
     # wrap-template
     p_wrap = sub.add_parser("wrap-template", help="Wrap user code into framework .code.py")
     p_wrap.add_argument("--code", required=True, help="User function code file")
-    p_wrap.add_argument("--type", required=True, help="Template type: daily_single, cross_section, minute, minute_cross_section, deep_learning")
+    p_wrap.add_argument("--type", required=True, help="Template type: daily_single, cross_section, minute, deep_learning")
     p_wrap.add_argument("--lookback", type=int, default=250, help="Lookback days (default: 250)")
     p_wrap.add_argument("--cols", default=None, help="Comma-separated columns to load")
     p_wrap.add_argument("--output", default=None, help="Output .code.py path (default: stdout)")
@@ -1358,7 +1366,7 @@ def main():
     p_run.add_argument("--factor-name", required=True, help="Factor name")
     p_run.add_argument("--report-name", required=True, help="Report name (used for output directory structure)")
     p_run.add_argument("--output", default=None, help="Output directory (default: 因子产出/全量/<report>/<factor>/)")
-    p_run.add_argument("--type", default=None, help="Factor type (auto-detected if omitted): daily, minute, cross_section, minute_cs, deep_learning")
+    p_run.add_argument("--type", default=None, help="Factor type (auto-detected if omitted): daily, minute, cross_section, deep_learning")
     p_run.add_argument("--description", default=None, help="Factor description")
     p_run.add_argument("--formulation", default=None, help="Factor formulation")
     p_run.add_argument("--source-excerpt", default=None, help="Source excerpt text")
@@ -1392,7 +1400,7 @@ def main():
     # deploy-to-full
     p_deploy = sub.add_parser("deploy-to-full", help="Deploy tested factor to full-scale directory (copy code + patch DATA_DIR + inherit meta, no computation)")
     p_deploy.add_argument("--code", required=True, help="Factor .code.py file (in literature_reports/<date>/<report>/<factor>/)")
-    p_deploy.add_argument("--type", default=None, help="Factor type (daily, minute, cross_section, minute_cs, deep_learning)")
+    p_deploy.add_argument("--type", default=None, help="Factor type (daily, minute, cross_section, deep_learning)")
     p_deploy.add_argument("--date", default=None, help="Date subdirectory (YYYY-MM-DD), e.g. --date 2026-08-09")
 
     # (sync-full 已移除)

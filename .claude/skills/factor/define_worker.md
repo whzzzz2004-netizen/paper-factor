@@ -26,7 +26,8 @@
 - `description`: 中文
 - `formulation`: 完整数学表达式，**从原始数据字段出发，禁止 `f(·)` 占位符**
 - `type`: `daily` / `minute` / `cross_section` / `deep_learning`
-  - 分钟频 → **一律 `minute`**（禁用 `minute_cs`）
+  - 分钟频 → **一律 `minute`**（没有任何例外；分钟数据上的行业分位/排名也写 `minute`，
+    编码时用 minute 模板的可选截面钩子实现）
   - 其他 per-stock → `daily` 或 `minute`
 
   **判定方法：看 `formulation` 里有没有「跨股票」的量。** 只要出现下面任何一项，

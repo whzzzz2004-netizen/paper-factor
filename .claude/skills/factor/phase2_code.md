@@ -12,13 +12,21 @@
 - 报告名: `{report_name}`
 - 因子定义: 见主 agent prompt 给的提取命令（`formulation` / `description` / `source_excerpt`）
 
-> ⚠️ **类型不符时自己改，不要翻源码。**
-> 若上面给的 `{type}` 是 `daily` / `minute`，但 `formulation` 里出现了需要**同行股票**才能算的量
-> （行业均值 / 行业内排名 / 行业分位 / 行业偏离 / 全市场分组…），**直接把模板换成
-> `cross_section`**（函数签名 `calc_factor_cross_section(all_data, trade_date)`，
-> 见 `knowledge/cross_section.md`），并在 `test-and-export` 上用 `--type cross_section`。
-> 单股模板的入参只有这一只股票，**定义表达不了就是类型标错了，不是模板缺功能**。
-> 不要去 grep/读 `rdagent/.../factor.py` 或 helper 源码找答案 —— 那是被硬拦截的无效探索。
+> ⚠️ **严格按分配的类型实现，不要私自改类型、不要改模板。**
+> `{type}` 是定义阶段判定的权威类型，也是全量阶段实际使用的类型；你改不动它，
+> 改了只会让测试与全量不一致。遇到"看起来装不下"的情况，按下面判断：
+>
+> **① 分钟因子要行业分位 / 排名 / 全市场分组？** 类型仍是 `minute`，
+> 用 `minute` 模板的**可选截面钩子**——除 per-stock 函数外，额外定义
+> `cross_section_transform(all_values)`（签名与示例见 `knowledge/minute.md`）。
+> **不要**换成 `cross_section` 或任何"分钟截面"模板，那种模板已删除。
+>
+> **② 日线因子要行业分位 / 排名？** 类型应是 `cross_section`，用
+> `calc_factor_cross_section(all_data, trade_date)`。若分配的是 `daily` 却确实需要同行数据，
+> **不要自己改模板**——在返回值里报 failure，说明"类型与定义不符"，由上游纠正。
+>
+> 拿不准就往上报，不要靠翻源码猜。**去 grep/读 `rdagent/.../factor.py` 或 helper 源码
+> 找答案是被硬拦截的无效探索。**
 
 ---
 
@@ -63,7 +71,10 @@ def calc_factor_series(df, stock):
 - 条件不满足时返回 `{"因子名": np.nan}`，**不返回 `None`**
 - **禁止未来数据**：任何用到的值在 T 日及之前必须已知
 - **禁止合成因子**（一个因子只算一件事）
-- **禁用截面操作**（排名/标准化/行业中性化）：只输出个股原始值。若截面是核心逻辑，额外写后处理函数对产出 `.parquet` 做截面变换
+- **禁用截面操作**（排名/标准化/行业中性化）：只输出个股原始值。
+  截面是核心逻辑时**按类型走对应入口**——`cross_section` 用 `calc_factor_cross_section`；
+  `minute` 用可选的 `cross_section_transform` 钩子（见 `knowledge/minute.md`）。
+  **不存在**「对产出 `.parquet` 做后处理」这条路，写了不会被调用。
 - 禁止月末判断、禁止用 `len(df) < X` 做上市天数筛选
 - 禁止 `transform('count')` → 用 `transform('size')`；禁止 `rolling.apply(lambda)`
 - 布尔序列 `shift()` 后必须 `fillna(False)`；`np.inf` / `-np.inf` → `np.nan`

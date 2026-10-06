@@ -54,7 +54,7 @@ DEFAULT_N_WORKERS = 4  # 日线/截面因子4核
 
 
 def detect_factor_type_from_code(code: str) -> str:
-    """检测因子类型: minute / daily / cross_section / minute_cs / deep_learning
+    """检测因子类型: minute / daily / cross_section / deep_learning
 
     必须用 `def ` 锚定的正则，不能用裸子串：模板注入的 _COLLECT_COLS_SRC 样板里
     含有 `calc_factors_one_day` 字面量（注释 + fallback 元组），裸子串会把
@@ -64,18 +64,22 @@ def detect_factor_type_from_code(code: str) -> str:
     """
     if re.search(r"\bdef\s+calc_factor_cross_section\s*\(", code):
         return "cross_section"
-    if re.search(r"\bdef\s+calc_factor_minute_raw\s*\(", code) or \
-       re.search(r"\bdef\s+cross_section_transform\s*\(", code):
-        return "minute_cs"
     if re.search(r"\bdef\s+calc_factors_one_day\s*\(", code):
         return "minute"
     if re.search(r"\bdef\s+train_model\s*\(", code) or re.search(r"\bdef\s+predict\s*\(", code):
         return "deep_learning"
+    # ⚠️ 分钟标记必须排在 calc_factor_series 之前：分钟因子常只写向量化的
+    # calc_factor_series（不写 calc_factors_one_day），若 series 分支先返回 daily，
+    # 这类分钟因子会被误判成 daily → 用日线目录跑 → FileNotFoundError。
+    # 分钟内联截面（行业分位等）由 MINUTE 模板的可选 cross_section_transform 钩子
+    # 承担，不再是独立类型。
+    if re.search(r"^MINUTE_BY_DATE_DIR\s*=\s*DATA_DIR", code, re.M) or \
+       re.search(r"\bdef\s+cross_section_transform\s*\(", code) or \
+       re.search(r"\bdef\s+calc_factor_minute_raw\s*\(", code):
+        return "minute"
     if re.search(r"\bdef\s+calc_factor_single_stock\s*\(", code) or \
        re.search(r"\bdef\s+calc_factor_series\s*\(", code):
         return "daily"
-    if "def _compute_day_raw" in code or "_compute_chunk_full" in code:
-        return "minute_cs"
     return "unknown"
 
 
@@ -739,7 +743,7 @@ def regenerate_and_rerun(factor_name: str, factor_dir: Path, factor_type: str,
     # 重跑全量 — 失败则恢复备份
     print(f"  🔄 重新运行全量...", flush=True)
     try:
-        if factor_type in ("minute", "minute_cs"):
+        if factor_type == "minute":
             ok = run_minute_factor(factor_name, factor_dir, code_path)
         else:
             ok = run_other_factor(factor_name, factor_dir, code_path)
@@ -805,7 +809,7 @@ def run_full_pipeline(
 
     try:
         # 4. 计算全量
-        if factor_type in ("minute", "minute_cs"):
+        if factor_type == "minute":
             ok = run_minute_factor(factor_name, output_dir, code_path)
         else:
             ok = run_other_factor(factor_name, output_dir, code_path)

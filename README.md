@@ -209,10 +209,13 @@ python scripts/run_all.py --dry-run          # 仅查看计划
 | 类型 | 模板 | 核心函数 | 并行策略 |
 |------|------|----------|----------|
 | `daily` | DAILY_FRAMEWORK_TEMPLATE | `calc_factor_single_stock(df, trade_date, stock)` | ThreadPoolExecutor |
-| `minute` | MINUTE_FRAMEWORK_TEMPLATE | `calc_factors_one_day(df, stock)` | ThreadPoolExecutor |
+| `minute` | MINUTE_FRAMEWORK_TEMPLATE | `calc_factor_series` / `calc_factors_one_day(df, stock)`；需要行业分位等截面时额外定义可选的 `cross_section_transform(all_values)` | stock-chunk 多进程 |
 | `cross_section` | CROSS_SECTION_FRAMEWORK_TEMPLATE | `calc_factor_cross_section(trade_date)` | ProcessPoolExecutor(loky) |
-| `minute_cs` | MINUTE_CROSS_SECTION_FRAMEWORK_TEMPLATE | `calc_factor_minute_raw` + `cross_section_transform` | joblib(threading) |
 | `deep_learning` | DEEP_LEARNING_FRAMEWORK_TEMPLATE | `train_model()` + `predict()` | GPU batch |
+
+> 分钟截面（行业分位/排名等）**不再有独立模板**：`minute` 模板在拼出全市场宽表后，
+> 若用户定义了 `cross_section_transform(all_values)` 就逐日调用它，与纯 per-stock
+> 分钟因子共用同一 stock-chunk 引擎（省内存）。
 
 所有模板在 `rdagent/components/coder/factor_coder/factor.py` 的 `FactorFBWorkspace` 类中。
 

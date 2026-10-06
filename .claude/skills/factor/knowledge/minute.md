@@ -1,7 +1,7 @@
 # 分钟因子模板
 
-**所有分钟因子一律用 minute 模板，禁用 `minute_cs`**——`minute_cs` 太慢（测试 6~8 分钟/个，
-全量可能数小时），且截面标准化对单因子无意义。
+**所有分钟因子一律用 minute 模板**——包括分钟数据上的行业分位/排名等截面操作
+（模板内置可选的 `cross_section_transform` 钩子，见下）。没有第二个分钟模板。
 
 ## 函数签名
 
@@ -12,6 +12,34 @@
 
 **判断原则**：能拆成"先算每日值、再跨日 rolling" → `calc_factor_series`；依赖窗口内全量数据 → `calc_factors_one_day`。
 不确定时两种都写（模板会自动优先走向量化）。
+
+## 可选截面钩子：`cross_section_transform`（分钟 + 行业分位/排名时用）
+
+需要在**同一天的股票之间**做运算（行业内分位、全市场排名、行业中性化）时，
+**不要换模板、不要改类型**——仍然用 `minute`，额外定义这个函数：
+
+```python
+def cross_section_transform(all_values):
+    # all_values: {股票代码: 当日原始值}（只含非 NaN）
+    # 返回:      {股票代码: 变换后值 或 {"因子名": 值}}
+```
+
+模板在拼出「日期 × 全股票」宽表后**逐日**调用它，因此**不额外占内存**
+（每天只处理一行，不是把分钟数据全量载入）。
+
+```python
+def calc_factor_series(df, stock):
+    # 先算 per-stock 原始值
+    ...
+
+def cross_section_transform(all_values):
+    s = pd.Series(all_values, dtype=float).dropna()
+    ind = pd.Series({k: INDUSTRY_DICT.get(k, "未知") for k in s.index})
+    rank = s.groupby(ind).rank(pct=True)     # 行业内百分位
+    return rank.to_dict()
+```
+
+不定义这个函数 → 整段跳过，零开销。
 
 ```python
 def calc_factors_one_day(df, stock):

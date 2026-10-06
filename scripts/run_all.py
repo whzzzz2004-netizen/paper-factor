@@ -45,6 +45,8 @@ from scripts.factor_utils import (
     update_factor_meta,
     evaluate_factor,
     detect_factor_type,
+    load_authoritative_types,
+    resolve_factor_type,
 )
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -166,6 +168,43 @@ def find_pending_factors(report_filter: str | None, force: bool, base_dir: Path 
 
 # ── 执行（仅串行） ──
 
+_AUTH_TYPES_CACHE: dict[str, dict] = {}
+
+
+def _resolve_type(item: dict, code_text: str | None = None) -> str:
+    """解析因子权威类型：meta.factor_type → extracted.json → 代码兜底。
+
+    不再单纯依赖代码文本猜测 —— 测试阶段由 worker 显式传的 `--type` 会被
+    deploy-to-full 记进 meta.json，那是最可信的来源；定义阶段的 extracted.json
+    次之；代码检测只作最后兜底。
+    """
+    date_str = item["output_dir"].parent.parent.name  # 全量/{date}/{report}/{factor}
+    if date_str not in _AUTH_TYPES_CACHE:
+        try:
+            _AUTH_TYPES_CACHE[date_str] = load_authoritative_types(date_str)
+        except Exception:
+            _AUTH_TYPES_CACHE[date_str] = {}
+    if code_text is None:
+        try:
+            code_text = item["code_path"].read_text(encoding="utf-8")
+        except OSError:
+            code_text = ""
+    meta = None
+    mp = item.get("meta_path")
+    if mp and Path(mp).exists():
+        try:
+            meta = json.loads(Path(mp).read_text(encoding="utf-8"))
+        except Exception:
+            meta = None
+    return resolve_factor_type(
+        code_text,
+        factor_name=item["factor"],
+        report_name=item["report"],
+        meta=meta,
+        auth_types=_AUTH_TYPES_CACHE[date_str],
+    )
+
+
 def run_full_pipeline_for_factor(item: dict) -> dict:
     """跑单个因子的全量流水线（调用 factor_full_pipeline）"""
     factor_name = item["factor"]
@@ -177,11 +216,14 @@ def run_full_pipeline_for_factor(item: dict) -> dict:
         sys.path.insert(0, str(PROJECT_ROOT))
         from rdagent.app.qlib_rd_loop.factor_full_pipeline import run_full_pipeline
 
+        factor_type = _resolve_type(item)
+        print(f"  权威类型: {factor_type}", flush=True)
+
         ok = run_full_pipeline(
             factor_name=factor_name,
             code_path=code_path,
             output_dir=output_dir,
-            factor_type=None,
+            factor_type=factor_type,
             test_meta=None,
             source_excerpt="",
         )
@@ -219,9 +261,9 @@ def run_incremental_for_factor(item: dict) -> dict:
 
     # 2. 判断因子类型，确定数据目录
     code_text = code_path.read_text(encoding="utf-8")
-    factor_type = detect_factor_type(code_text)
+    factor_type = _resolve_type(item, code_text)
     market_data_dir = (DATA_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量"
-                       if factor_type in ("minute", "minute_cross_section") else FULL_DATA_DIR)
+                       if factor_type == "minute" else FULL_DATA_DIR)
     start_date_str = last_date.strftime("%Y-%m-%d")
     result_parquet = run_factor_subprocess(
         code_text, factor_name, market_data_dir,

@@ -31,31 +31,133 @@ def load_trade_dates(data_dir: Path) -> list[str]:
     raise FileNotFoundError(f"trade_dates.json not found (search: {data_dir})")
 
 
-def detect_factor_type(code_text: str) -> str:
-    """从代码文本判断因子类型。
+# 分钟模板无条件注入的标记行。实测 61 个分钟因子 61 命中、日线/截面因子 0 命中，
+# 是唯一零误判的分钟判据（cross_section 模板含 "minute_by_date" 字面量但**不含**这行赋值）。
+_MINUTE_MARKER = re.compile(r"^MINUTE_BY_DATE_DIR\s*=\s*DATA_DIR", re.M)
 
-    必须用 `def ` 锚定的正则：模板注入的 _COLLECT_COLS_SRC 样板里含
-    `calc_factors_one_day` / `MINUTE_BY_DATE_DIR` 等**字面量**（注释 + 元组），
-    裸子串会把 daily / cross_section 因子误判成 minute（实测 985/1155 误判），
-    进而用分钟数据目录跑日线因子 → FileNotFoundError: stock_data/daily/stock_list.json。
-    判定顺序与 claude_factor_helper.detect_type_from_code / factor_full_pipeline
-    的 detect_factor_type_from_code 保持一致。
+
+def detect_factor_type(code_text: str) -> str:
+    """从代码文本判断因子类型（仅作兜底，权威类型见 resolve_factor_type）。
+
+    两条铁律：
+    1. 必须用 `def ` 锚定的正则：模板注入的 _COLLECT_COLS_SRC 样板里含
+       `calc_factors_one_day` / `MINUTE_BY_DATE_DIR` 等**字面量**（注释 + 元组），
+       裸子串会把 daily / cross_section 因子误判成 minute（实测 985/1155 误判）。
+    2. **分钟标记必须排在 `calc_factor_series` 分支之前**。分钟因子常只写向量化的
+       `calc_factor_series`（phase2_code.md 明确要求 lookback 大的分钟因子走向量化），
+       不写 `calc_factors_one_day`；若 series 分支先返回 daily，这类分钟因子会被
+       误判成 daily，run_all 于是用日线目录跑分钟因子 →
+       FileNotFoundError: stock_data/minute_by_date/stock_list.json。
+       曾实测 17 个因子因此失败（2026-10-02 / 2026-10-03）。
     """
-    if re.search(r"\bdef\s+calc_factor_minute_raw\s*\(", code_text) or \
-       re.search(r"\bdef\s+cross_section_transform\s*\(", code_text):
-        return "minute_cross_section"
     if re.search(r"\bdef\s+calc_factor_cross_section\s*\(", code_text):
         return "cross_section"
     if re.search(r"\bdef\s+train_model\s*\(", code_text) or re.search(r"\bdef\s+predict\s*\(", code_text):
         return "deep_learning"
+    # ── 分钟标记先于 series 分支 ──
+    # 分钟截面钩子（cross_section_transform）与旧入口 calc_factor_minute_raw 都是分钟信号：
+    # 它们只在分钟模板里有意义，且向量化分钟因子可能不带 MINUTE_BY_DATE_DIR 字面量。
+    if (_MINUTE_MARKER.search(code_text)
+            or re.search(r"\bdef\s+cross_section_transform\s*\(", code_text)
+            or re.search(r"\bdef\s+calc_factor_minute_raw\s*\(", code_text)):
+        return "minute"
     if re.search(r"\bdef\s+calc_factors_one_day\s*\(", code_text):
         return "minute"
     if re.search(r"\bdef\s+calc_factor_series\s*\(", code_text) or \
        re.search(r"\bdef\s+calc_factor_single_stock\s*\(", code_text):
         return "daily"
-    if re.search(r"^MINUTE_BY_DATE_DIR\s*=\s*DATA_DIR", code_text, re.M):
-        return "minute"
     return "daily"
+
+
+# ── 权威类型解析：定义阶段 → 部署 meta → 代码兜底 ──
+
+EXTRACTED_REPORTS_DIR = (
+    Path("/mnt/d/paper-factor-data") / "数据仓库" / "因子产出" / "extracted_reports"
+)
+
+# 类型取值 → 内部类型。
+# ⚠️ minute_cs / minute_cross_section 是**历史遗留值**，只用于兼容旧 meta.json：
+# 该类型已废除（分钟截面统一由 minute 模板的可选 cross_section_transform 钩子承担），
+# 定义阶段不会再产出这两个值，仅解析历史产物时映射回 minute。
+_TYPE_ALIASES = {
+    "daily": "daily",
+    "daily_single": "daily",
+    "minute": "minute",
+    "minute_cs": "minute",
+    "minute_cross_section": "minute",
+    "cross_section": "cross_section",
+    "deep_learning": "deep_learning",
+}
+
+
+def load_authoritative_types(date_str: str) -> dict:
+    """读 extracted_reports/{date}/*.extracted.json，返回 {报告名: {因子名: 类型}}。
+
+    这是定义 agent 判定的权威类型。测试与全量阶段都应以它为准，
+    而不是各自从代码文本重新猜（曾因此出现「测试用参数、全量靠猜」的分裂）。
+    """
+    out: dict[str, dict[str, str]] = {}
+    base = EXTRACTED_REPORTS_DIR / date_str
+    if not base.is_dir():
+        return out
+    for p in base.glob("*.extracted.json"):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        report = d.get("report_name") or p.name[: -len(".extracted.json")]
+        per = {}
+        for f in d.get("factors", []):
+            name, t = f.get("name"), f.get("type")
+            if name and t:
+                per[name] = t
+        out[report] = per
+    return out
+
+
+def resolve_factor_type(
+    code_text: str,
+    factor_name: str = "",
+    report_name: str = "",
+    meta: dict | None = None,
+    auth_types: dict | None = None,
+) -> str:
+    """解析因子的权威类型，优先级从高到低：
+
+      1. 部署 meta.json 里的 `factor_type`（测试阶段验证时记录的类型，最可信）
+      2. 代码文本检测（反映 worker **最终采用**的实现）
+      3. extracted_reports 的定义阶段类型（最初的语义判断）
+
+    ⚠️ 第 2、3 的顺序很关键：encode 阶段的 worker 可能修正定义阶段的类型
+    （例如维度上的定义被实现成分钟截面）。历史 extracted.json 里这类修正**没有回写**，
+    于是 extracted 与代码分叉（实测 IndRankLateVol：extracted=cross_section，
+    代码/实际=minute）。代码反映的是真正跑出来的东西，因此排在 extracted 之前；
+    两者冲突时打印告警，便于回查定义阶段是否需要纠正。
+
+    返回内部类型（daily / minute / cross_section / deep_learning）。
+    """
+    code_t = detect_factor_type(code_text)
+
+    # 1. meta
+    if meta:
+        mt = (meta.get("factor_type") or "").strip()
+        if mt in _TYPE_ALIASES:
+            m = _TYPE_ALIASES[mt]
+            if m != code_t:
+                print(f"  ⚠️ 类型分歧 [{report_name}/{factor_name}]："
+                      f"meta={m} 但代码检测={code_t}（以 meta 为准）", flush=True)
+            return m
+
+    # 2. 代码
+    if auth_types and report_name:
+        ext = (auth_types.get(report_name) or {}).get(factor_name, "")
+        if ext in _TYPE_ALIASES:
+            e = _TYPE_ALIASES[ext]
+            if e != code_t:
+                print(f"  ⚠️ 类型分歧 [{report_name}/{factor_name}]："
+                      f"extracted={e} 但代码检测={code_t}（以代码为准；"
+                      f"若定义阶段判错，请回写 extracted.json）", flush=True)
+    return code_t
 
 
 def run_factor_subprocess(
