@@ -1,66 +1,73 @@
 ---
 name: all
-description: 全量/增量运行所有因子（串联，自动重扫直到队列清空）
+description: 全量运行指定日期下所有因子（一次扫描跑完，逐个计算+评估+绘图）
 ---
 
-# /all — 全量/增量运行所有因子（自动重扫）
+# /all — 全量运行某日期下的所有因子
 
-启动 `run_all.py` 批量运行所有因子（全量计算 + 评估 + 绘图 + Barra）。
-**自动重扫**：处理完一轮后自动重扫目录，如果 `/factor` 在此期间 deploy 了新因子，继续处理；队列清空后自动退出。
+启动 `run_all.py`，**一次扫描**该日期目录下所有因子，逐个跑（全量计算 + 评估 +
+绘图 + Barra），跑完汇总结束。**不做自动重扫**——要补跑失败的因子直接再执行一次
+（已有 parquet 的会自动跳过）。
 
 ## 用法
 
 ```bash
-# 默认当天日期子目录
-python3 scripts/run_all.py
-
-# 指定日期子目录
-python3 scripts/run_all.py 2026-08-09
-
-# 指定研报
-python3 scripts/run_all.py --report 研报名
-
-# 强制重跑
-python3 scripts/run_all.py --force
-
-# 仅查看计划
-python3 scripts/run_all.py --dry-run
+python3 scripts/run_all.py                 # 最近日期目录
+python3 scripts/run_all.py 2026-10-04      # 指定日期
+python3 scripts/run_all.py --report 研报名  # 只跑匹配的研报
+python3 scripts/run_all.py --force         # 强制重跑（无视已有 parquet）
+python3 scripts/run_all.py --dry-run       # 只看计划
 ```
+
+## 执行（关键：让 harness 管住进程，跑完能唤醒你）
+
+**不要**用 `nohup ... &` / `setsid ... &` / 末尾加 `&`。那样进程会脱离 harness，
+跑完**不会有任何通知**，你会一声不吭地漏报。
+
+**正确做法**：用 Bash 工具的 `run_in_background=true` 跑，命令本身**不加**任何
+后台符号（不要 `&`、`nohup`、`setsid`）：
+
+```bash
+python3 -u scripts/run_all.py {args}
+```
+
+这样 harness 把进程当受管后台任务，**它真正结束时唤醒你一次**，你就能汇报。
+（`-u` 保证无缓冲，输出及时落盘到 harness 的任务输出文件。）
+
+**然后必须再排一次定时自醒**做中途汇报——否则只有结束时才汇报一次：
+
+```
+ScheduleWakeup(delaySeconds=1200, prompt="/all {args} 继续", noop=false)
+```
+
+每被唤醒一次就：读 `/tmp/run_all_progress.json` 汇报一行进度 → 若未完再排下一次
+`ScheduleWakeup`；若 `progress` 已到 `N/N`（进程已退出）则汇报最终结果、
+**不再排下一次**（结束）。
+
+### 进度与失败怎么看
+
+- 每完成一个因子打印一行到日志：`✅ [3/18] 报告/因子  (累计 成功3 失败0 跳过0, 12.3min)`。
+- **实时进度**：`cat /tmp/run_all_progress.json`（进度/成功/失败/跳过/失败清单/耗时）。
+- **失败原因**：进度文件 `failures[]`，或该因子的 `/tmp/{因子}.run.log` 末尾。
+- **慢 ≠ 卡死**：有些因子本来要跑几分钟到几十分钟（实测有个分钟因子跑了近 2 小时），
+  别因为慢就杀它。判卡死看进度文件 `updated_at` 是否长期不变。
 
 ## 说明
 
-- 扫描 `/mnt/d/paper-factor-data/数据仓库/因子产出/全量/{DATE}/` 下所有因子，逐个运行 `run_factor_full.py`
-- 含评估（IC/IR）、十分组收益图、Barra 风险分析、LLM 审查
-- 自动检测新交易日做增量更新
-- `FACTOR_LOOKBACK_CAP=99999` 已内置，约等于无上限
-- **自动重扫**：处理完一轮后自动重扫，捡新因子 → 继续处理 → 队列清空后退出
+- 扫描 `因子产出/全量/{DATE}/` 下每个「有 .code.py」的因子子目录。
+- 状态判定：无 parquet → 全量计算；有 parquet 但日期落后 → 增量补算；已最新 → 跳过。
+- 单个因子失败**不中断队列**，记入失败清单后继续下一个。**天然断点续跑**：
+  成功的因子会跳过，所以修复失败因子后直接重跑同一天即可。
+- `run_factor_full.py`：单因子版本（`python scripts/run_factor_full.py <code.py>`），
+  用于修完某个因子后快速验证非空率，不必等全量跑完。
 
-## 执行
+## ⚠️ 失败因子处理
 
-**必须重定向到日志文件**，不要把 run_all 的 stdout 直接留在对话里（长跑、且个别分钟因子日志可达数千行）：
-
-```bash
-setsid python3 scripts/run_all.py {args} > /tmp/run_all.log 2>&1 < /dev/null &
-```
-
-- run_all 自身只打印**每个因子的摘要行**（`📈 进度 N/M`）+ 最终汇总，子进程日志只写 `/tmp/{因子}.run.log`，不回显。
-- **实时进度**：`cat /tmp/run_all_progress.json`（每个因子结束覆盖写一次：轮次/进度/成功/失败/跳过/失败清单/耗时）。
-- **失败原因**：进度文件里的 `failures[]`，或看该因子的 `/tmp/{因子}.run.log` 末尾。
-- **判断是否卡死**（而非慢）：对比进度文件 `updated_at` 是否长期不变；有些因子本来就要跑很久，**不要因为慢就杀它**。
-
-## ⚠️ 失败因子处理（重要）
-
-**单个因子失败不会中断整条队列**，会记入 `total_fail` 与进度文件的 `failures[]`，然后继续下一个。
-
-**断点续跑**：`find_pending_factors` 用「有没有 parquet」判状态——已成功的因子重跑时直接跳过。所以修复失败的因子后，**直接再跑一次 `run_all.py` 同一天**即可，不会重算已完成的。
-
-全量跑完（`🏁 全部完成` 且 `队列已清空`）后，逐因子检查全量产出：parquet 是否存在、非空率是否正常（minute/daily 应 >60%，cross_section 应 >50%）、是否有 decile.png。失败的因子 → 派 agent 分析根因 → 修核心函数 → 重新 `test-and-export` + `deploy-to-full` → 重跑该因子全量。
+跑完后逐因子检查产出：parquet 存在、非空率正常（minute/daily >60%、cross_section >50%）、
+有 decile.png。失败因子 → 派 agent 分析根因 → 修核心函数 → `test-and-export` +
+`deploy-to-full` → 重跑该因子（重跑 `run_all.py` 或单跑 `run_factor_full.py`）。
 
 常见失败模式：
 - **数据 NaN**（如非行情列空）→ 检查 `非行情数据/` 是否有效
-- **模板 bug**（如 cross_section 索引列读取）→ 修模板后清 `_template_cache`
+- **模板 bug**（如 cross_section 索引列）→ 修模板后清 `_template_cache`
 - **因子算法**（全量规模退化、日期对齐、O(N³) 过慢）→ 改核心函数
-
-## 不跑全量时
-
-用户可能只要求"确保全量能正常产出"（不实际跑完）：此时修复因子后跑 `run_factor_full.py` 单因子验证非空率正常即可，不必等全量完整结束。

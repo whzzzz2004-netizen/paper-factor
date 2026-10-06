@@ -212,7 +212,6 @@ def run_other_factor(factor_name: str, factor_dir: Path, code_path: Path) -> boo
             dst = factor_dir / f"{factor_name}.parquet"
             if dst.exists():
                 df = pd_read_parquet(dst)
-                print(f"  ✅ 完成: {df.shape[0]}天 x {df.shape[1]}只, {elapsed:.0f}s", flush=True)
                 cleanup_workers(factor_name)
                 return True
 
@@ -315,7 +314,6 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
 
         if result_parquet.exists():
             df = pd_read_parquet(result_parquet)
-            print(f"  ✅ 完成: {df.shape[0]}天 x {df.shape[1]}只, {elapsed:.0f}s", flush=True)
 
             cleanup_workers(factor_name)
             return True
@@ -428,7 +426,6 @@ def post_process(factor_name: str, factor_dir: Path, factor_type: str,
     import numpy as np
 
     df = pd_read_parquet(dst_parquet)
-    print(f"  因子: {df.shape[0]}天 x {df.shape[1]}只, 非空={int(df.notna().sum().sum())}", flush=True)
 
     # 转换宽表（日期=行，股票=列）为评估函数可识别的格式
     _eval_df = df.copy()
@@ -458,7 +455,6 @@ def post_process(factor_name: str, factor_dir: Path, factor_type: str,
     label_df = None
     _plot_fn = None
     if not skip_eval:
-        print(f"  评估中...", flush=True)
         # 确保 scripts/ 可导入
         sys.path.insert(0, str(PROJECT_ROOT))
         try:
@@ -474,24 +470,13 @@ def post_process(factor_name: str, factor_dir: Path, factor_type: str,
             try:
                 label_df = load_full_data_label(FULL_DATA_DIR)
                 eval_result = _eval_fn(_eval_df, FULL_DATA_DIR, label_df=label_df)
-                if eval_result and "error" not in eval_result:
-                    ic = eval_result.get("ic_mean", float("nan"))
-                    ir = eval_result.get("ic_ir", "N/A")
-                    ric = eval_result.get("rank_ic_mean", float("nan"))
-                    ls = eval_result.get("long_short_mean", None)
-                    sharpe = eval_result.get("long_short_sharpe", None)
-                    print(f"    IC={ic:.6f}  IR={ir}  RankIC={ric:.6f}"
-                          f"{f'  多空={ls:.4%}' if isinstance(ls, float) else ''}"
-                          f"{f'  Sharpe={sharpe:.2f}' if isinstance(sharpe, float) else ''}",
-                          flush=True)
-                elif eval_result and "error" in eval_result:
+                if eval_result and "error" in eval_result:
                     print(f"    ⚠️ {eval_result['error']}", flush=True)
             except Exception as e:
                 print(f"  ⚠️ 评估失败: {e}", flush=True)
                 eval_result = None
 
         if _plot_fn is not None and label_df is not None:
-            print(f"  生成图表...", flush=True)
             try:
                 _plot_fn(_eval_df, label_df, factor_name, str(factor_dir / f"{factor_name}.decile.png"))
             except Exception as e:
@@ -501,24 +486,13 @@ def post_process(factor_name: str, factor_dir: Path, factor_type: str,
     _barra_result = None
     barra_factor_returns = BARRA_DIR / "因子收益率表(Long-Term Model).csv"
     if barra_factor_returns.exists() and not skip_eval:
-        print(f"  Barra 暴露分析...", flush=True)
         try:
             from scripts.barra_evaluate import evaluate_barra
             barra_result = evaluate_barra(_eval_df, FULL_DATA_DIR, BARRA_DIR, model="Long-Term Model")
-            if "error" not in barra_result:
-                alpha = barra_result["exposures"]["alpha"]
-                sig_factors = [
-                    f"{n}({e['coef']:+.4f})"
-                    for n, e in barra_result["exposures"].items()
-                    if n != "alpha" and abs(e["tstat"]) > 2
-                ]
-                print(f"    Alpha: {alpha['coef']:.6f} (t={alpha['tstat']:.2f})  "
-                      f"R²={barra_result['r_squared']:.4f}  "
-                      f"显著因子: {', '.join(sig_factors[:5])}{'...' if len(sig_factors) > 5 else ''}",
-                      flush=True)
-                _barra_result = barra_result
-            else:
+            if "error" in barra_result:
                 print(f"    ⚠️ {barra_result['error']}", flush=True)
+            else:
+                _barra_result = barra_result
         except Exception as e:
             print(f"    ⚠️ Barra 分析失败: {e}", flush=True)
 
@@ -565,7 +539,6 @@ def post_process(factor_name: str, factor_dir: Path, factor_type: str,
         except Exception:
             pass
     meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
-    print(f"  ✅ meta: {meta_path.name}", flush=True)
 
     # 复制原始报告
     src_report = factor_dir.parent.parent / "literature_reports" / factor_dir.parent.name / factor_name / f"{factor_name}.report.md"
@@ -577,7 +550,6 @@ def post_process(factor_name: str, factor_dir: Path, factor_type: str,
             src_report = alt
     if src_report.exists():
         shutil.copy(src_report, factor_dir / f"{factor_name}.report.md")
-        print(f"  ✅ report: {factor_name}.report.md", flush=True)
 
     return True
 
@@ -816,17 +788,12 @@ def run_full_pipeline(
     Returns:
         True=流水线成功完成；False=任一阶段失败
     """
-    print(f"\n{'=' * 60}", flush=True)
-    print(f"[FullPipeline] {output_dir.parent.name}/{factor_name}", flush=True)
-    print(f"{'=' * 60}", flush=True)
-
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. 确定因子类型
     if factor_type is None:
         factor_type = detect_factor_type(code_path)
-    print(f"  类型: {factor_type}", flush=True)
 
     # 2. 读取 test_meta
     test_meta = test_meta or {}
@@ -834,50 +801,31 @@ def run_full_pipeline(
     # 3. 清理 checkpoints
     ckpt_dir = output_dir / "checkpoints"
     if ckpt_dir.exists():
-        shutil.rmtree(ckpt_dir)
-        print(f"  🧹 清理遗留 checkpoints", flush=True)
+        shutil.rmtree(ckpt_dir, ignore_errors=True)
 
     try:
         # 4. 计算全量
-        print(f"  计算全量...", flush=True)
         if factor_type in ("minute", "minute_cs"):
             ok = run_minute_factor(factor_name, output_dir, code_path)
         else:
             ok = run_other_factor(factor_name, output_dir, code_path)
 
         if not ok:
-            print(f"  ❌ 全量计算失败", flush=True)
             return False
 
-        # 5. 后处理
-        print(f"  后处理...", flush=True)
-        src_excerpt = source_excerpt or test_meta.get("source_excerpt", "")
+        # 5. 后处理（评估 + 绘图 + Barra + meta）
         ok = post_process(factor_name, output_dir, factor_type, test_meta=test_meta)
         if not ok:
-            print(f"  ❌ 后处理失败", flush=True)
             return False
 
-        # 6. 重新读取 meta（post_process 可能已更新）
+        # 6. 标记完成（LLM 审查已取消，直接接受）
         meta_path_full = output_dir / f"{factor_name}.meta.json"
         try:
             meta = json.loads(meta_path_full.read_text())
         except Exception:
             meta = {}
-
-        # 7. 跳过 LLM 审查，直接接受（用户要求保留所有因子）
-        print(f"  ✅ 跳过 LLM 审查，直接接受因子", flush=True)
-
-        # 8. 标记完成
-        if meta_path_full.exists():
-            try:
-                meta = json.loads(meta_path_full.read_text())
-            except Exception:
-                meta = {}
-            meta["pipeline_status"] = "completed"
-            meta_path_full.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
-        print(f"  ✅ pipeline_status: completed", flush=True)
-
-        print(f"  ✅ [FullPipeline] {factor_name} 全量流水线完成", flush=True)
+        meta["pipeline_status"] = "completed"
+        meta_path_full.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
         return True
 
     except Exception as e:
