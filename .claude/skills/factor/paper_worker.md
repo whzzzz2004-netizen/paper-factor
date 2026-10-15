@@ -4,6 +4,21 @@
 
 ---
 
+## ⛔ 回合纪律（优先于下面每一步）
+
+**派发子 agent 之后，本回合不得再调用任何工具 —— 连一次 `ls` 都不要。**
+直接结束回合，等系统唤醒；核对一律留到**被唤醒后的下一回合**做。
+
+> **为什么**：每次工具调用都要把「到目前为止的整段对话」重发一遍。派发后空转等结果，
+> 每个回合白烧一份完整上下文 —— 实测有论文 agent 在一个回合里连打 40 次 `ls`
+> 等一个还没落盘的 `extracted.json`，烧掉 58 万 token（占当次全部子 agent 的 9%），
+> 而它等的东西 3 分钟后才出现。
+>
+> **唤醒机制是通的**（子 agent 完成会唤醒你），不需要你自己盯着。
+> 同一个回合内连打工具 = 纯浪费，一点也没让结果来得更快。
+
+---
+
 ## 输入
 
 主 agent 的 prompt 给了你：`报告名` / `原文 txt 路径` / `DATE`。
@@ -11,6 +26,9 @@
 ---
 
 ## Step 1：派定义 agent
+
+**用 Agent 工具，`subagent_type: "factor-define"`**（工具被收窄到 Read/Write/Edit/Bash），
+prompt 用下面这段：
 
 ```
 你是定义 agent，只做「读原文 → 挖定义 → 写 extracted.json → 返回」。
@@ -25,7 +43,7 @@ Read `.claude/skills/factor/define_worker.md` 并严格照做，不做文件之�
 {"report": "{报告名}", "total": 0, "error": null}
 ```
 
-派发后**立刻结束回合**，等系统唤醒。被唤醒后核对定义是否落盘：
+派发后**立刻结束回合**（本回合不再调用任何工具），等系统唤醒。被唤醒后核对定义是否落盘：
 
 ```bash
 ls /mnt/d/paper-factor-data/数据仓库/因子产出/extracted_reports/{DATE}/{报告名}.extracted.json
@@ -67,7 +85,7 @@ N=$(ls /mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{报告�
 echo "$N"; [ "$N" -ge {因子总数} ] && echo DONE || echo NOT-DONE
 ```
 
-- `NOT-DONE` → 从队列补派，结束回合
+- `NOT-DONE` → 从队列补派，**结束回合**（这条命令每次唤醒只跑一次，不要连续重跑）
 - `DONE` → **立即执行 Step 4**，不要再多等一轮
 
 > ⚠️ **通知会丢**：若某个因子 worker 完成的瞬间正好有另一个 worker 的通知在触发回合，
@@ -81,9 +99,13 @@ echo "$N"; [ "$N" -ge {因子总数} ] && echo DONE || echo NOT-DONE
 > ⚠️ **只数 `*.code.py` / `*.missing.json` 产物文件，不要用 `ls {报告名}/` 数目录** ——
 > 目录是因子 worker 一启动就创建的，目录存在 ≠ 因子已完成。
 >
-> ⚠️ **派发后立刻结束回合**。不要 `sleep`、不要轮询、不要 `TaskOutput`（你没有这个工具）。
+> ⚠️ **派发后立刻结束回合，本回合不得再调用任何工具**（包括"再核对一次"）。
+> 不要 `sleep`、不要轮询、不要 `TaskOutput`（你没有这个工具）。
 
 factor worker 的 prompt：
+
+**用 Agent 工具，`subagent_type: "factor-coder"`**（工具被收窄到 Bash/Read/Edit/Write —— 写因子不需要别的，
+实测旧配置里有 worker 偷偷去 WebSearch），prompt 用下面这段：
 
 ```
 你是因子编码 agent，做两步：先判字段，字段齐全才写码。

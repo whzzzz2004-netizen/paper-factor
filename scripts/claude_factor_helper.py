@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -40,6 +41,15 @@ SCHEMA_FILE = DATA_ROOT / "schema.json"
 PAPERS_DIR = DATA_ROOT / "papers"
 INBOX_DIR = PAPERS_DIR / "inbox"
 DONE_DIR = PAPERS_DIR / "done"
+
+# ── test-and-export 探测上限（每个因子、每次运行）──────────────────────────
+# 实测：不受限的 worker 会把 test-and-export 当网格搜索用 —— 单个因子跑 32 次，
+# 烧 4.5M token（正常 worker 的 13 倍），其中大半是 `for lb in ...` 扫 lookback。
+# phase2_code.md 里写的「最多 3 次 dry-run」没有代码兜底，agent 照样超。
+# 这里按「DATE + 报告名 + 因子名」计数，超限直接返回失败 JSON、连计算都不跑。
+MAX_DRY_RUN = 3          # dry-run 诊断次数上限
+MAX_TEST_EXPORT = 6      # 含 dry-run 的总调用上限
+PROBE_TTL_SECONDS = 6 * 3600   # 计数文件超过 6 小时视为上一轮遗留，自动清零
 
 def _load_schema() -> dict:
     """读 /mnt/d/paper-factor-data/schema.json（getdata 导入新字段后由 import_new_data.py 自动维护）。"""
@@ -595,11 +605,53 @@ def _run_test_in_tmpdir(code_path: Path, timeout: int = 3600, type_key: str = "d
     }
 
 
+def _probe_gate(args, code_path: Path) -> str | None:
+    """探测硬闸：同一因子重复 test-and-export 超限 → 返回错误文案（调用方直接判失败）。
+
+    计数键 = 报告名 + 因子名（**不含 DATE** —— 同一次运行里 `--dry-run` 与正式调用
+    必须共用一个计数，否则 agent 忘传 `--date` 就绕开了上限），文件落在
+    /tmp/.factor_probe_*.json。超过 6 小时的遗留计数自动清零（同一报告重跑时不会误伤）；
+    `/factor` 的 Step 0 也会主动 rm 掉这些文件。
+    """
+    key = "_".join(str(x) for x in (args.report or "noreport",
+                                    args.factor or code_path.stem))
+    key = re.sub(r"[^\w.\-]+", "_", key)[:120]
+    probe_path = Path(tempfile.gettempdir()) / f".factor_probe_{key}.json"
+
+    probe = {"dry": 0, "total": 0}
+    try:
+        if time.time() - probe_path.stat().st_mtime < PROBE_TTL_SECONDS:
+            probe.update(json.loads(probe_path.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+
+    probe["total"] += 1
+    if getattr(args, "dry_run", False):
+        probe["dry"] += 1
+    try:
+        probe_path.write_text(json.dumps(probe), encoding="utf-8")
+    except OSError:
+        pass
+
+    if probe["dry"] > MAX_DRY_RUN or probe["total"] > MAX_TEST_EXPORT:
+        return (f"探测次数超限（dry-run {probe['dry']}/{MAX_DRY_RUN}，"
+                f"test-and-export {probe['total']}/{MAX_TEST_EXPORT}）。"
+                "这个因子已经试够了 —— 按 phase2_code.md「失败」分支直接报告 failure，"
+                "不要换参数再试（lookback 是定义阶段给定的，不是搜出来的）。")
+    return None
+
+
 def cmd_test_and_export(args):
     """One-shot: wrap template → test → export. Auto-detect type and lookback."""
     code_path = Path(args.code).resolve()
     if not code_path.exists():
         print(json.dumps({"success": False, "error": f"code file not found: {code_path}"}))
+        return 1
+
+    over_limit = _probe_gate(args, code_path)
+    if over_limit:
+        print(json.dumps({"success": False, "judged": "failure", "error": over_limit},
+                         ensure_ascii=False, indent=2))
         return 1
 
     user_code = code_path.read_text(encoding="utf-8")

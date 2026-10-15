@@ -86,7 +86,7 @@ ALLOW_HINT = (
     "**不要**用假报告名（pk*/probe*/v*）反复 test-and-export —— 那会在产出目录留下空壳，"
     "也**不要**用 python 的 open/read_text 去读 helper 或模板源码绕过本钩子。"
     "长命令（test-and-export）请把 Bash 工具的 timeout 参数设为 300000 毫秒一次跑完；"
-    "命令被转后台或超时后，按 phase2_code.md「超时熔断」改代码重跑，"
+    "命令被转后台或超时后，按 .claude/skills/factor/phase2_troubleshoot.md 的熔断规则改代码重跑，"
     "严禁 sleep / 反复读 .output 等待。"
 )
 

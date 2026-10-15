@@ -67,13 +67,17 @@
 
 | 文件 | 字节 | 读取次数 | 一次成本 | 真实成本（×回合数） |
 |---|---|---|---|---|
-| `SKILL.md` | 13.5k | 1（主 agent 每回合重发） | 4,220 tok | — |
-| `paper_worker.md` | 7.3k | 28 | 2,293 tok | ~0.2M |
-| `phase2_check.md` | 7.5k | **309** | 2,334 tok | **~13.7M** |
-| `phase2_code.md` | 6.3k | 110 | 1,958 tok | ~4.1M |
+| `SKILL.md` | 12.3k | 1（主 agent 每回合重发） | 3,843 tok | — |
+| `paper_worker.md` | 6.2k | 1 / 篇 | 1,934 tok | ~0.3M |
+| `phase2_check.md` | 7.0k | **1 / 因子 worker** | 2,200 tok | **~13M** |
+| `phase2_code.md` | 10.1k | 1 / 因子 worker | 3,153 tok | ~13M |
+| `phase2_troubleshoot.md` | 2.5k | 仅超时/转后台才读 | 790 tok | ~0（正常路径不读） |
 
-`phase2_check.md` 被每个因子 worker 读一次、且留在上下文里重发 19 回合，
-是四个文件里最贵的。**削它收益最大。**
+`phase2_check.md` 被每个因子 worker 读一次、且留在上下文里重发十几个回合，
+是这些文件里最贵的。**削它收益最大。**
+
+> **2026-10-15 更新**：`phase2_code.md` 拆出 `phase2_troubleshoot.md`（超时熔断 + 轮询禁令），
+> 正常路径少读 2.5k；表内字节/token 已按当前文件重测。拆分前 `phase2_code.md` 是 11.4k。
 
 ---
 
@@ -130,3 +134,60 @@
 2. **探针误导**：先前用 3 个子 agent 做的探针得出"结束回合等唤醒"可行，
    但探针每次唤醒都跑 `date` 命令、恰好总有工具调用，掩盖了问题。
    真实机制不是"纯文字回合会终止"，而是**回合结束时若已无存活子 agent 就被判定完成**。
+
+---
+
+## 7. 2026-10-15 全项目 token 审计：最贵的三处
+
+数据来源：`~/.claude/projects/-home-dministrator-paper-factor/<session>/subagents/*.jsonl`。
+⚠️ 每条 usage 在 JSONL 里重复记 2~3 行，**必须按 `message.id` 去重取最后一次**，否则虚高 2 倍。
+
+| 位置 | 占比 | 实测 |
+|---|---|---|
+| 因子编码 worker | 干净跑里占子 agent 的 **73~88%** | 长尾极端：`44232315` 里 5 个 worker（12.5%）吃掉 50%；>20 次探测的 worker 人均 2.64M raw，正常 worker 只有 190k（**13×**） |
+| 主 agent 上下文 | 开发型会话 **47~82%** | 453~536 回合 × 平均 225~232k 上下文；纯净跑批会话只占 6~14% |
+| 编排层（论文/批调度） | **20~27%** | 每篇一个论文 agent ≈ 337k raw（18.7 回合 × ~20k），纯派发+轮询 |
+
+**病根**：成本 ≈ 回合数 × 当轮上下文，与计算量无关。三个放大机制分别是
+①探测循环（把 test-and-export 当网格搜索）、②同会话混开发（图片/PDF 读进来后每回合重发，
+单次 24k~154k tok）、③每个子 agent 完成都唤醒父级一次，每次唤醒全量重发。
+
+**本轮改动**：
+1. `claude_factor_helper.py` 给 test-and-export 装**探测硬闸**（dry-run ≤3、总量 ≤6，
+   超限直接判失败且不跑计算），计数按「报告名+因子名」（见第 8 节：原按 DATE+报告+因子，
+   会被不带 `--date` 的 dry-run 绕开），6 小时 TTL 自动清零；
+   测试见 `scripts/test_claude_factor_helper.py`。
+2. 新增受限工具集的 agent 定义：`factor-coder`（Bash/Read/Edit/Write）、
+   `factor-define`、`factor-paper` —— 旧配置下 worker 走 `general-purpose` 全套工具，
+   实测混进 33 次 WebSearch + 6 次 WebFetch。
+3. `SKILL.md` 主 agent 规则：禁读图片/PDF/大文件（>50KB）、跑批会话不混开发；
+   单批直连改为**派论文 agent**而不是主 agent 亲自编排。
+4. `phase2_code.md` 拆出 `phase2_troubleshoot.md`（正常路径不读）。
+
+---
+
+## 8. 2026-10-15 验证跑（13 篇 / 36 因子）后的第二处浪费
+
+跑完用 `scripts/audit_session_tokens.py` 审计，改动 1~4 的结果：受限 agent ✅（65 个子 agent
+全是 `factor-*`，worker 零 WebSearch）、文档拆分 ✅（20 个缺字段 worker 无一去读
+`phase2_code.md`）、探测硬闸未触发（计数 `total=1~2`，正常路径没误伤）、主 agent 隔热未验证
+（本次走批调度层，且会话本身混着开发）。
+
+**新发现：编排层「同一回合内忙等」。** 最贵的论文 agent 42 次工具调用里 39 次间隔 <3 秒 ——
+它在**一个回合内**连打了 40 次 `ls`，等一个还没落盘的 `extracted.json`（3 分钟后才出现），
+光这一个 agent 就烧 588k token。按角色统计「同回合内连打 ≥8 次」：
+
+| 角色 | 占比 |
+|---|---|
+| 批次调度 | 81% of 该角色 token |
+| 单篇研报处理 | 51% |
+| 因子编码 worker | **0%**（worker 层没有这个问题） |
+
+根因：文档只写了「派发后立刻结束回合」，没说死「本回合不得再调用任何工具」，agent 就
+理解成"顺便看一眼落盘没"。**修法**（已落）：`paper_worker.md` / `batch_worker.md` / `SKILL.md`
+各加一条置顶的「回合纪律」框，并写明机制（子 agent 完成会唤醒你，不需要自己盯）。
+
+**顺带修掉探测计数的洞**：原先计数键含 `DATE`，而 `phase2_code.md` 的 dry-run 示例没带
+`--date`，于是 dry-run 落进另一个计数文件 —— 3 次 dry-run + 6 次正式 = 9 次，上限被绕开
+（本次跑真出现 2 个 `nodate_*` 计数文件）。**修法**：计数键改为「报告名 + 因子名」，
+两种调用形式共用；示例补上 `--date`。测试见 `scripts/test_claude_factor_helper.py`。

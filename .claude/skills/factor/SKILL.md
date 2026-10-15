@@ -28,6 +28,11 @@ python scripts/claude_factor_helper.py archive-inbox --date {DATE}
 2. **`{DATE}` 在开始前取一次**（`datetime.now().strftime("%Y-%m-%d")`），**全程复用同一个值**。
    不用研报原始日期。**不要在每篇重新计算** —— 跨午夜会算成第二天，产物分裂到两个目录。
 3. **每次全量处理**：直接扫 inbox 里所有文件，全部处理。
+4. **禁止 Read 图片 / PDF / 大文件（>50KB）**。一次读入就是 24k~154k token，且此后
+   **每一轮都重发一遍**。要看图/看长文 → 派子 agent 去看，只要一行结论。
+5. **跑批会话只跑批**。开发、调试、看图、读架构文档一律另开会话 ——
+   同一会话里混着开发，主上下文会被撑到 200k+ 并在随后几百轮里反复重发
+   （实测一次会话主 agent 因此烧掉 123M token，占全会话 82%）。
 
 ## 三层派发架构
 
@@ -53,7 +58,7 @@ BATCH = 10
 batches = [papers[i:i+BATCH] for i in range(0, len(papers), BATCH)]
 ```
 
-- **不足 10 篇不加批调度层**：只有 1 批时，主 agent **直接按论文 agent 处理**，
+- **不足 10 篇不加批调度层**：只有 1 批时，主 agent **直接派论文 agent**（跳过批调度层），
   自己维持 2 篇在飞、滚动补位（见「单批直连」）。
 - 例：24 篇 → 3 批（10 / 10 / 4）。
 
@@ -81,6 +86,7 @@ export FACTOR_N_WORKERS=2      # 峰值 1×2×6 = 12 job × 2 进程 = 24 进程
 **先打开探索拦截**（只在本次运行期间生效；平时改代码不受影响）：
 ```bash
 python3 .claude/hooks/factor_gate.py on
+rm -f /tmp/.factor_probe_*     # 清上一轮的探测计数（每个因子超 6 次会被直接判失败）
 ```
 
 ```bash
@@ -134,7 +140,7 @@ python scripts/claude_factor_helper.py extract-pdf {全部真实 paper 路径，
 
 **一次只派 1 个批**，该批返回后再派下一个批。
 
-批调度 agent 的 prompt（**只有这几行**）：
+**用 Agent 工具，`subagent_type: "factor-batch"`**，prompt 只有这几行：
 
 ```
 你是批次调度 agent，自己不读研报、不写代码。
@@ -158,11 +164,15 @@ Read `.claude/skills/factor/batch_worker.md` 并严格照做，不做文件之�
 all_results = []
 for batch in batches:
     派发 batch（run_in_background=true）
-    **立即结束回合**，等系统唤醒（不要 sleep、不要轮询、不要 TaskOutput）
+    **立即结束回合**（本回合不得再调用任何工具）
     被唤醒 → 记下这个批的 results，继续下一个批
 ```
 
-> ⚠️ **派发后立刻结束回合**。系统会在**每个**后台子 agent 完成时唤醒你一次。
+> ⚠️ **派发后立刻结束回合，本回合不得再调用任何工具** —— 连一次 `ls` 都不要，
+> 不要"顺便看一眼进度"。每一次工具调用都要把你（主 agent）整段上下文重发一遍，
+> 是全场最贵的操作。核对留到被系统唤醒后的下一回合。
+>
+> ⚠️ 系统会在**每个**后台子 agent 完成时唤醒你一次，机制是通的，不需要自己盯着。
 > **不要 `sleep N` 轮询**；**不要用 `TaskOutput`**（子 agent 层没有这个工具）。
 >
 > ⚠️ **某批超时（>10 分钟无响应）→ 记该批为失败，继续下一个批。绝不重派**。
@@ -172,8 +182,14 @@ for batch in batches:
 
 #### 单批直连（只有 1 批时）
 
-**只有 1 批就不要派批调度 agent**，主 agent 直接用论文 agent 的 prompt、自己维持
-2 篇在飞滚动补位（把下面 `batch_worker.md` 的循环照做一遍即可）：
+**只有 1 批就不派批调度 agent**，但**仍然派论文 agent**（`subagent_type: "factor-paper"`）——
+主 agent 只维持 2 篇在飞、收到完成就补下一篇，**自己不跑论文级的核对循环**。
+
+> ⚠️ 别让主 agent 亲自当论文 agent：那会把每个因子 worker 的完成、每次磁盘核对
+> 都灌进主上下文（实测一次 52 个子 agent 的单批直连跑，主 agent 自己被唤醒 536 轮、
+> 烧 123M token）。论文 agent 的上下文是干净的，把它放在中间层最省。
+
+论文 agent 的 prompt（**只有这几行**）：
 
 ```
 你是单篇研报处理 agent，按 /factor 流程处理这一篇。

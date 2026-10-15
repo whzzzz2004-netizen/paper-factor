@@ -100,7 +100,7 @@ timeout 300 python scripts/claude_factor_helper.py test-and-export \
 echo "exit=$?"      # 124 = 超时被杀
 ```
 
-> `timeout 300` 上限 5 分钟，**必须加**（见下方「超时熔断」）。
+> `timeout 300` 上限 5 分钟，**必须加**（超时怎么办见文末「失败 / 超时」与 `phase2_troubleshoot.md`）。
 > `{cols}` = 你在 phase2_check.md 里从 show-columns 挑出的**真实列名**（空格或逗号分隔均可）。
 
 > ⚠️ `--description` / `--formulation` / `--source-excerpt` 从提取命令的输出里取；
@@ -124,7 +124,8 @@ python scripts/claude_factor_helper.py deploy-to-full \
 ```bash
 timeout 300 python scripts/claude_factor_helper.py test-and-export \
   --code /tmp/factor_{name}.py --report "{report_name}" --factor "{name}" \
-  --cols "{cols}" --lookback {lookback} --type {type_key} --dry-run
+  --cols "{cols}" --lookback {lookback} --type {type_key} \
+  --date {DATE} --dry-run
 ```
 
 > 🚫 **禁止用假报告名做试错**（`--report pk1`、`--report probe`、`--report v0`、`--report dbg`…）。
@@ -152,56 +153,27 @@ timeout 300 python scripts/claude_factor_helper.py test-and-export \
 **🚫 禁止用 `for lb in 1 5 20 21 ...` 扫 lookback。** `lookback` 是提取阶段给定的定义参数，
 不是网格搜索出来的；全空几乎从不因 lookback 差 1 引起（未修模板时是唯一例外，现已修）。
 **🚫 `--dry-run` 累计最多 3 次**，超出说明没找到结构性根因，直接按失败报告。
+
+> ⚠️ 这条**由 helper 强制**：同一个因子 `--dry-run` 超 3 次、或 test-and-export 累计超 6 次，
+> helper 直接返回 `{"success": false, ...}` 并且**连计算都不跑**。看到这个失败就是在告诉你
+> 「别再试了」——直接按 failure 报告，不要换参数重来。
 5. **写代码 → 跑 test-and-export，中间不做任何事**
 6. **跑通后不得再改代码**：注释措辞、变量名、格式优化等一律禁止。
    只有 **test-and-export 失败**时才允许按下方规则修改重试。
 
-### 如果 test-and-export 失败（含错误和超时）
+### 失败 / 超时怎么办
 
-- **普通错误**：看错误信息，修改函数代码后重新跑，最多重试 2 次
-- **超时（>5 分钟没产出）**：见下方「超时熔断」
-- **累计 3 次都失败** → 在结果中报告 failure，不阻塞后续因子
+- **普通错误**：看错误信息改代码，最多重试 2 次（helper 侧另有总量 6 次的硬上限）。
+- **累计 3 次都失败** → 在结果里报 failure，不阻塞后续因子。
+- **超时（`exit=124`）或被转后台** → 这是**性能问题**，只做一件事：改成向量化
+  （`calc_factor_series` 一次算完、rolling/ewm/groupby transform、禁逐日循环），
+  带 Bash `timeout: 300000` 重跑**一次**；仍失败直接报 failure。
 
-### 超时熔断
-
-**第 2 步的命令已用 `timeout 300` 包住。** `exit=124` = 5 分钟没跑完，判定为**性能问题**。
-
-> ⚠️ **Bash 工具自身默认 120 秒**就会把命令转后台。所以 `test-and-export` 这类长命令，
-> 调用时**必须把 Bash 工具的 `timeout` 参数设为 300000（毫秒）**，让它在一次调用内跑完，
-> 不要被工具提前转后台。
-
-按下面改代码后**重跑一次**（仍用 `timeout 300` + Bash `timeout: 300000`）：
-
-- **`lookback` 大的分钟因子（≥60）必须走向量化**：写 `calc_factor_series(df, stock)`，
-  一次算完全部日期；**不要**让模板按日循环调用 `calc_factors_one_day`。
-- 常用手段：`rolling` / `ewm` / `groupby(dates).transform` / 先按日聚合再跨日 rolling。
-- **禁止 `rolling.apply(lambda)`、禁止 for 循环逐日/逐股**。
-
-**重跑仍超时（exit=124）→ 直接报告 failure**，不要继续试。
-
-### 🚫 超时后绝对禁止：丢后台 + 轮询
-
-**无论命令是自己 `timeout` 超时，还是被 Bash 工具提前转后台（返回 "moved to the background"），
-都绝对不允许用 `sleep` / 反复 `cat`·`tail` 输出文件来等它跑完。**
-
-```bash
-# ❌ 绝对禁止 —— 每一个这样的回合都要把整个上下文重发一遍
-sleep 170; tail -35 /tmp/.../tasks/xxx.output
-sleep 60;  cat  /tmp/.../tasks/xxx.output
-```
-
-**为什么**：Agent 每次工具调用，都要把「到目前为止的整段对话」重新发一遍。
-`sleep` 和 `cat` **不推进任何任务**，却各产生一个完整回合——等 10 分钟就是白烧 5~10 份
-完整上下文（实测有 worker 因此从 12 轮涨到 56 轮、token 翻 11 倍）。
-
-**正确做法**：把「被转后台」或「超时」**一律当作超时熔断**处理 ——
-
-1. **立刻**按上方熔断规则改代码（向量化），不要等、不要看后台输出；
-2. 重跑一次，Bash 调用带 `timeout: 300000`，让它在单次调用内阻塞返回；
-3. 仍失败 → **直接报告 failure**。
-
-**最多看一眼**：若确实需要判断上次是否仍在跑，只允许**一次** `cat` 输出文件（不是 `sleep`+多次），
-随后无论结果如何都按熔断处理。**禁止第二次轮询。**
+> 🚫 **超时/转后台后严禁 `sleep` / 反复 `cat`·`tail` 等它跑完** —— 等待不推进任务，
+> 每个回合却要重发整段上下文（实测有 worker 因此 token 翻 11 倍）。
+>
+> 完整规则（熔断步骤、向量化手段、为什么）在 **`phase2_troubleshoot.md`**，
+> **只在真遇到超时/转后台时才 Read，正常路径不要读。**
 
 ---
 
