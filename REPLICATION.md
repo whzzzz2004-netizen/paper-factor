@@ -34,6 +34,10 @@ export PAPER_FACTOR_DATA_ROOT=/mnt/g/paper-factor-data      # WSL
 python scripts/claude_factor_helper.py data-root
 ```
 
+> ⚠️ 如果另一台电脑的 `.env` 里还写着 `/mnt/d/...` 的 `FACTOR_DATA_DIR` /
+> `RDAGENT_FACTOR_DATA_DIR`，请改成 `/mnt/g/...` 或直接删除这两行，
+> 否则旧路径会覆盖自动探测。
+
 ---
 
 ## 复现需要什么
@@ -41,9 +45,9 @@ python scripts/claude_factor_helper.py data-root
 | 东西 | 在哪 | 怎么获取 |
 |------|------|----------|
 | 代码（scripts/rdagent/.claude/templates） | git 仓库 | `git clone` |
-| 数据源（日线/分钟/非行情 parquet） | `/mnt/d/paper-factor-data/数据仓库/` | 从已有环境直接拷贝，或逐步导入 |
-| 因子产出（测试/全量） | `/mnt/d/paper-factor-data/数据仓库/因子产出/` | 从已有环境拷贝，或重新计算 |
-| 研报 PDF | `/mnt/d/paper-factor-data/papers/inbox/` | 手动拷贝 |
+| 数据源（日线/分钟/非行情 parquet） | `<数据根>/数据仓库/`（D 盘或 G 盘） | 从已有环境直接拷贝，或逐步导入 |
+| 因子产出（测试/全量） | `<数据根>/数据仓库/因子产出/`（D 盘或 G 盘） | 从已有环境拷贝，或重新计算 |
+| 研报 PDF | `<数据根>/papers/inbox/`（D 盘或 G 盘） | 手动拷贝 |
 | 密钥配置 | `.env` | 手动创建 |
 
 ---

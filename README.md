@@ -43,6 +43,8 @@ LLM 驱动的量化因子挖掘系统。从研报 PDF / 文章提取因子定义
 > **另一台电脑数据在 G 盘**：`/mnt/g/paper-factor-data`（Windows 为 `G:\paper-factor-data`）。
 > 在 G 盘电脑上 `git pull` 后**不需要改任何路径**，脚本会自动识别；也可强制指定：
 > `export PAPER_FACTOR_DATA_ROOT=/mnt/g/paper-factor-data`。
+> ⚠️ 如果那台电脑的 `.env` 里还写着 `/mnt/d/...` 的 `FACTOR_DATA_DIR` / `RDAGENT_FACTOR_DATA_DIR`，
+> 请改成 `/mnt/g/...` 或删掉这两行，否则旧路径会覆盖自动探测。
 
 要在一台新电脑上完全复现这个项目，需要做以下事情：
 
@@ -103,7 +105,7 @@ pip install -r requirements.txt
 
 - **JQDATA_USERNAME / JQDATA_PASSWORD**：聚宽账号，分钟因子计算需要
 - **TUSHARE_TOKEN**：Tushare token，指数行情/成分股/估值数据需要（`get_ts_index_data`）
-- **FACTOR_DATA_DIR**：数据目录，默认指向本地 `/mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量`
+- **FACTOR_DATA_DIR**：通常不需要设置；数据根由 `scripts/data_paths.py` 自动解析（G 盘优先，D 盘兜底）
 - **OPENAI_API_KEY / OPENAI_API_BASE**：LLM API，因子提取/审查用
 - **CHAT_MODEL**：使用的模型
 
@@ -149,9 +151,10 @@ python scripts/run_factor_full.py "/mnt/d/paper-factor-data/数据仓库/因子�
 脚本按以下优先级确定数据目录：
 
 ```
-1. FACTOR_DATA_DIR 环境变量（最优先）
-2. RDAGENT_FACTOR_DATA_DIR 环境变量
-3. /mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量/（相对路径）
+1. PAPER_FACTOR_DATA_ROOT 环境变量（数据根，G 盘/D 盘）
+2. FACTOR_DATA_DIR 环境变量
+3. RDAGENT_FACTOR_DATA_DIR 环境变量
+4. 自动探测数据根下的 数据仓库/行情数据/日线/全量/（G 盘优先，D 盘兜底）
 ```
 
 ---
