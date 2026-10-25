@@ -8,8 +8,17 @@ set -e
 REPO_URL="https://github.com/whzzzz2004-netizen/paper-factor.git"
 REPO_DIR="$HOME/paper-factor"
 
+# 数据根目录：另一台电脑在 G 盘；G 盘有数据仓库就优先用 G，否则用 D。
+if [ -n "${PAPER_FACTOR_DATA_ROOT:-}" ]; then
+    DATA_ROOT="$PAPER_FACTOR_DATA_ROOT"
+elif [ -d /mnt/g/paper-factor-data/数据仓库 ]; then
+    DATA_ROOT=/mnt/g/paper-factor-data
+else
+    DATA_ROOT=/mnt/d/paper-factor-data
+fi
+
 echo "=========================================="
-echo " paper-factor 复现配置"
+echo " paper-factor 复现配置（数据根: $DATA_ROOT）"
 echo "=========================================="
 
 # ---------- 1. 克隆代码 ----------
@@ -24,25 +33,25 @@ fi
 
 # ---------- 2. 创建数据目录 ----------
 echo "[2/5] 创建数据目录结构..."
-mkdir -p /mnt/d/paper-factor-data/数据仓库/行情数据/日线/{测试,全量}/stock_data/daily
-mkdir -p /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/{测试,全量}/stock_data/{minute,minute_by_date}
-mkdir -p /mnt/d/paper-factor-data/数据仓库/非行情数据/{测试,全量}/stock_data/daily
-mkdir -p /mnt/d/paper-factor-data/数据仓库/因子产出/{测试,全量}
-mkdir -p /mnt/d/paper-factor-data/数据仓库/barra_model
-mkdir -p /mnt/d/paper-factor-data/scripts /mnt/d/paper-factor-data/papers/inbox /mnt/d/paper-factor-data/papers/website
+mkdir -p "$DATA_ROOT"/数据仓库/行情数据/日线/{测试,全量}/stock_data/daily
+mkdir -p "$DATA_ROOT"/数据仓库/行情数据/分钟线/{测试,全量}/stock_data/{minute,minute_by_date}
+mkdir -p "$DATA_ROOT"/数据仓库/非行情数据/{测试,全量}/stock_data/daily
+mkdir -p "$DATA_ROOT"/数据仓库/因子产出/{测试,全量}
+mkdir -p "$DATA_ROOT"/数据仓库/barra_model
+mkdir -p "$DATA_ROOT"/scripts "$DATA_ROOT"/papers/inbox "$DATA_ROOT"/papers/website
 mkdir -p 原始数据
 mkdir -p workspace/logs workspace/ideas
-ln -sfn ..//mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量 workspace/factor_implementation_source_data
-ln -sfn ..//mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试 workspace/factor_implementation_source_data_1000
+ln -sfn "$DATA_ROOT/数据仓库/行情数据/日线/全量" workspace/factor_implementation_source_data
+ln -sfn "$DATA_ROOT/数据仓库/行情数据/日线/测试" workspace/factor_implementation_source_data_1000
 
 echo ""
-echo "  ⚠️  需要把数据仓库复制到 $REPO_DIR//mnt/d/paper-factor-data/数据仓库/"
+echo "  ⚠️  需要把数据仓库复制到 $DATA_ROOT/数据仓库/"
 echo "      从硬盘/开发机 rsync 即可:"
-echo "      rsync -avhP user@dev:$REPO_DIR//mnt/d/paper-factor-data/数据仓库/ .//mnt/d/paper-factor-data/数据仓库/"
+echo "      rsync -avhP user@dev:/path/to/paper-factor-data/数据仓库/ $DATA_ROOT/数据仓库/"
 
-# ---------- 2.5 同步交付副本（scripts/papers/schema.json → D 盘）----------
-echo "[2.5] 同步交付副本到 D 盘（数据转换脚本 + 研报 + 字段注册表）..."
-bash "$REPO_DIR/sync_drive.sh"
+# ---------- 2.5 同步交付副本（scripts/papers/schema.json → 数据根）----------
+echo "[2.5] 同步交付副本到数据根（数据转换脚本 + 研报 + 字段注册表）..."
+PAPER_FACTOR_DATA_ROOT="$DATA_ROOT" bash "$REPO_DIR/sync_drive.sh"
 
 # ---------- 3. 环境配置 ----------
 echo "[3/5] 配置 conda 环境..."
@@ -63,20 +72,21 @@ fi
 # ---------- 4. 环境变量 ----------
 echo "[4/5] 配置环境变量..."
 if [ ! -f .env ]; then
-    cat > .env <<'ENVEOF'
+    cat > .env <<ENVEOF
 JQDATA_USERNAME=your_username
 JQDATA_PASSWORD=your_password
-FACTOR_DATA_DIR=$PWD//mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量
-RDAGENT_FACTOR_DATA_DIR=$PWD//mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量
+TUSHARE_TOKEN=your_tushare_token
+FACTOR_DATA_DIR=$DATA_ROOT/数据仓库/行情数据/日线/全量
+RDAGENT_FACTOR_DATA_DIR=$DATA_ROOT/数据仓库/行情数据/日线/全量
 ENVEOF
-    echo "  ✅ .env 已创建（请填写 JQData 账号）"
+    echo "  ✅ .env 已创建（请填写 JQData 账号 / Tushare token）"
 else
     echo "  .env 已存在，跳过"
 fi
 
 # ---------- 5. 验证 ----------
 echo "[5/5] 验证..."
-STOCK_COUNT=$(ls /mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量/stock_data/daily/*.parquet 2>/dev/null | wc -l)
+STOCK_COUNT=$(ls "$DATA_ROOT"/数据仓库/行情数据/日线/全量/stock_data/daily/*.parquet 2>/dev/null | wc -l)
 if [ "$STOCK_COUNT" -gt 1000 ]; then
     echo "  ✅ 数据仓库正常: $STOCK_COUNT 只股票"
 else

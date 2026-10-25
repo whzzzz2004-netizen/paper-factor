@@ -23,7 +23,11 @@ import pandas as pd
 import numpy as np
 import sys
 from pathlib import Path
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+import os
+_env_root = os.environ.get("PAPER_FACTOR_DATA_ROOT", "").strip()
+_g_root = Path("/mnt/g/paper-factor-data")
+_d_root = Path("/mnt/d/paper-factor-data")
+DATA_ROOT = Path(_env_root) if _env_root else (_g_root if (_g_root / "数据仓库").exists() else _d_root)
 
 sys.path.insert(0, str(Path(__file__).parent))
 from factor_utils import (

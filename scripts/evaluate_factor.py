@@ -23,7 +23,10 @@ import numpy as np
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).parent.parent
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+try:
+    from scripts.data_paths import DATA_ROOT
+except ImportError:
+    from data_paths import DATA_ROOT
 FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量")))
 
 

@@ -1,5 +1,7 @@
 # 批次调度 agent 作业指导
 
+> **数据根目录**：先运行 `python3 scripts/claude_factor_helper.py data-root` 获取实际路径（本机 D 盘 `/mnt/d/paper-factor-data`；另一台电脑 G 盘自动识别）。下文所有 `/mnt/d/paper-factor-data` 均以该输出为准。
+
 处理本批 ≤10 篇研报。**自己不读原文、不写代码、不派因子 worker。**
 
 ---
@@ -78,16 +80,21 @@ python3 - <<'EOF'
 import os
 from pathlib import Path
 D = "{DATE}"
+START = float(Path("/tmp/.factor_run_start").read_text().strip())
 REPORTS = ["报告名1", "报告名2", ...]   # 本批全部篇目
-ex = Path("/mnt/d/paper-factor-data/数据仓库/因子产出/extracted_reports") / D
 ts = Path("/mnt/d/paper-factor-data/数据仓库/因子产出/测试") / D
+
+def fresh(p):
+    return p.exists() and p.stat().st_mtime >= START
+
 done, undone = [], []
 for r in REPORTS:
     d = ts / r
-    if d.is_dir() and (d / "复现报告.md").exists():
-        sub = [x for x in os.listdir(d) if os.path.isdir(d / x)]
-        ok = sum(1 for s in sub if (d / s / f"{s}.code.py").exists())
-        ms = sum(1 for s in sub if (d / s / f"{s}.missing.json").exists())
+    if fresh(d / "复现报告.md"):
+        sub = [x for x in os.listdir(d) if os.path.isdir(d / x)
+               and (fresh(d / x / f"{x}.code.py") or fresh(d / x / f"{x}.missing.json"))]
+        ok = sum(1 for s in sub if fresh(d / s / f"{s}.code.py"))
+        ms = sum(1 for s in sub if fresh(d / s / f"{s}.missing.json"))
         done.append((r, len(sub), ok, ms))
     else:
         undone.append(r)
@@ -95,6 +102,9 @@ print("DONE", len(done), "/", len(REPORTS), "  undone:", undone)
 for r, t, o, m in done: print(f"{r}\t{t}\t{o}\t{m}")
 EOF
 ```
+
+> ⚠️ **只认本次运行的产物**（`mtime ≥ /tmp/.factor_run_start`）。同日重跑时，
+> 上一次留下的 `复现报告.md` 不算完成，旧的 `code.py` / `missing.json` 也不计入统计。
 
 - **`undone` 为空 → 立即按「返回」格式返回 results**，不要再等通知、不要再补派。
   results 的 `total/ok/missing` 直接取上面输出的三列，`error` 置 null。

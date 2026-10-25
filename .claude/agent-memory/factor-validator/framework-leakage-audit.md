@@ -30,5 +30,5 @@ metadata:
 ## 易泄露场景（若将来做防护的参考）
 
 1. 向量化 `calc_factor_series`：shift(-1)、bfill、center=True、expanding/全序列 mean/std/zscore。
-2. 截面/分钟截面：用户绕过传入的 `ad[s]`/`grp`，直接调 `load_stock`/`get_jq_data` 拿全历史。
+2. 截面/分钟截面：用户绕过传入的 `ad[s]`/`grp`，直接调 `load_stock`/`get_ts_index_data` 拿全历史。
 3. DL：`predict_batch` 内部状态化更新用了 T 之后信息。

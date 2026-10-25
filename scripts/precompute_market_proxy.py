@@ -16,7 +16,17 @@ import pandas as pd
 import numpy as np
 import os
 from pathlib import Path
-DATA_ROOT = Path(os.environ.get("PAPER_FACTOR_DATA_ROOT", "/mnt/d/paper-factor-data"))
+def _default_data_root() -> Path:
+    env = os.environ.get("PAPER_FACTOR_DATA_ROOT", "").strip()
+    if env:
+        return Path(env).expanduser()
+    for candidate in (Path("/mnt/g/paper-factor-data"), Path("/mnt/d/paper-factor-data")):
+        if (candidate / "数据仓库").is_dir() or (candidate / "schema.json").is_file():
+            return candidate
+    return Path("/mnt/d/paper-factor-data")
+
+
+DATA_ROOT = _default_data_root()
 import time
 import warnings
 warnings.filterwarnings("ignore")

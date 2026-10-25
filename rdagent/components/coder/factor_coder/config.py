@@ -6,14 +6,23 @@ from pydantic_settings import SettingsConfigDict
 
 from rdagent.utils.env import CondaConf, Env, LocalEnv
 
+try:
+    from scripts.data_paths import DATA_ROOT
+except ImportError:
+    from pathlib import Path as _Path
+    _env_root = os.environ.get("PAPER_FACTOR_DATA_ROOT", "").strip()
+    _g_root = _Path("/mnt/g/paper-factor-data")
+    _d_root = _Path("/mnt/d/paper-factor-data")
+    DATA_ROOT = _Path(_env_root) if _env_root else (_g_root if (_g_root / "数据仓库").exists() else _d_root)
+
 
 class FactorCoSTEERSettings:
     model_config = SettingsConfigDict(env_prefix="FACTOR_CoSTEER_")
 
-    data_folder: str = "/mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试"
+    data_folder: str = str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "测试")
     """Path to the folder containing financial data (default is fundamental data in Qlib)"""
 
-    data_folder_debug: str = "/mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试"
+    data_folder_debug: str = str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "测试")
     """Path to the folder containing partial financial data (for debugging)"""
 
     simple_background: bool = False

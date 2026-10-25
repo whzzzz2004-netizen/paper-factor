@@ -183,7 +183,15 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--revert", action="store_true", help="撤回：删 jq 说明、加回「本地不可用」提示")
     ap.add_argument("--check", action="store_true", help="只检查状态，不修改")
+    ap.add_argument("--force", action="store_true", help="已废弃：仅历史排查时强制运行")
     args = ap.parse_args()
+
+    # 2026-10-21：指数数据已改用 Tushare（get_ts_index_data），本脚本会把过时的
+    # jq 说明写回知识库，默认拒绝执行。
+    if not args.force and not args.check:
+        print("已废弃：指数数据已改用 Tushare（get_ts_index_data），请勿运行本脚本。")
+        print("确需历史排查请加 --force。")
+        return 1
 
     if args.check:
         return apply(reverse=False, check=True)

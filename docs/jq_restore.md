@@ -1,5 +1,9 @@
 # 聚宽（JQData）文档恢复手册
 
+> **⚠️ 已废弃（2026-10-21）**：指数数据已全面改用 Tushare（`get_ts_index_data`），
+> 4 个因子模板中的 `get_jq_data` 已移除，本文与 `docs/jq_restore.py` 仅作历史记录。
+> **不要再执行 `jq_restore.py`**，否则会把过时的 jq 说明重新写回知识库。
+>
 > **本文件不是给 Phase 2 因子 agent 看的。** 放在 `docs/` 下，不在
 > `.claude/skills/factor/knowledge/` 里，所以 `/factor` 流程不会读到它。
 >

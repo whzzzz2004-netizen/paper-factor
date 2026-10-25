@@ -18,6 +18,16 @@ from pathlib import Path
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).parent.parent
+# 因子代码子进程会继承本进程环境；确保 .env 里的 TUSHARE_TOKEN 等可用
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env")
+except Exception:
+    pass
+try:
+    from scripts.data_paths import DATA_ROOT
+except ImportError:
+    from data_paths import DATA_ROOT
 
 
 def load_trade_dates(data_dir: Path) -> list[str]:
@@ -72,7 +82,7 @@ def detect_factor_type(code_text: str) -> str:
 # ── 权威类型解析：定义阶段 → 部署 meta → 代码兜底 ──
 
 EXTRACTED_REPORTS_DIR = (
-    Path("/mnt/d/paper-factor-data") / "数据仓库" / "因子产出" / "extracted_reports"
+    DATA_ROOT / "数据仓库" / "因子产出" / "extracted_reports"
 )
 
 # 类型取值 → 内部类型。

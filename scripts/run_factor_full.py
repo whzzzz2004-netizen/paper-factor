@@ -26,7 +26,16 @@ from pathlib import Path
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).parent.parent
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+# 因子代码子进程会继承本进程环境；确保 .env 里的 TUSHARE_TOKEN 等可用
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env")
+except Exception:
+    pass
+try:
+    from scripts.data_paths import DATA_ROOT
+except ImportError:
+    from data_paths import DATA_ROOT
 
 def _detect_data_dir() -> Path:
     candidates = [

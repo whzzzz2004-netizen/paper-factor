@@ -50,7 +50,10 @@ from scripts.factor_utils import (
 )
 
 PROJECT_ROOT = Path(__file__).parent.parent
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+try:
+    from scripts.data_paths import DATA_ROOT
+except ImportError:
+    from data_paths import DATA_ROOT
 
 # ── 路径（仅本地） ──
 OUTPUT_BASE = DATA_ROOT / "数据仓库" / "因子产出" / "全量"

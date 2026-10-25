@@ -21,3 +21,4 @@ psutil
 pymupdf
 python-Levenshtein
 rich
+tushare

@@ -11,14 +11,18 @@ restore_payload.py — 把 scripts/deploy_payload/ 里的元数据 json 还原�
   → 数据仓库/行情数据/日线/全量/stock_data/daily/trade_dates.json
   schema.json → 数据根/schema.json
 
-注意：目标机数据根默认 D:\paper-factor-data；若不同，请修改 DATA_ROOT。
+注意：目标机数据根自动识别 G 盘 / D 盘；也可用 PAPER_FACTOR_DATA_ROOT 覆盖。
 """
 
 import argparse
+import os
 import shutil
 from pathlib import Path
 
-DATA_ROOT = Path(r"D:\paper-factor-data")
+_env_root = os.environ.get("PAPER_FACTOR_DATA_ROOT", "").strip()
+_g_root = Path(r"G:\paper-factor-data")
+_d_root = Path(r"D:\paper-factor-data")
+DATA_ROOT = Path(_env_root) if _env_root else (_g_root if (_g_root / "数据仓库").exists() else _d_root)
 PAYLOAD = DATA_ROOT / "scripts" / "deploy_payload"
 
 

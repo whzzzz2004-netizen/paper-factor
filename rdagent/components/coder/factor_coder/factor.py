@@ -12,7 +12,13 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+try:
+    from scripts.data_paths import DATA_ROOT
+except ImportError:
+    _env_root = os.environ.get("PAPER_FACTOR_DATA_ROOT", "").strip()
+    _g_root = Path("/mnt/g/paper-factor-data")
+    _d_root = Path("/mnt/d/paper-factor-data")
+    DATA_ROOT = Path(_env_root) if _env_root else (_g_root if (_g_root / "数据仓库").exists() else _d_root)
 
 from typing import Any, Tuple, Union
 
@@ -206,6 +212,118 @@ def _report_user_error(_where):
         print("  ⚠️ 后续同类异常不再打印（FACTOR_ERR_MAX 可调）", flush=True)
 '''
 
+# 指数数据（Tushare）注入源码：4 个模板共用。
+# 依赖模板内的 _TS_CACHE_DIR（日线/截面/DL 用 STOCK_DATA_DIR，分钟用 _DAILY_DATA_DIR）与 TRADE_DATES。
+_TS_INDEX_HELPER_SRC = r'''
+_TS_DF_CACHE = {}  # 进程内缓存：全量 5000+ 只股票时避免反复读同一份指数 parquet
+
+def get_ts_index_data(symbol, data_type='price', start_date='2018-01-01', end_date=None):
+    """通过 Tushare 获取指数数据（首次调用下载并缓存为 parquet，之后读缓存）。
+    symbol 用 Tushare 代码：'000300.SH'=沪深300、'000905.SH'=中证500、
+      '000016.SH'=上证50、'000852.SH'=中证1000、'000001.SH'=上证指数、
+      '399006.SZ'=创业板指、'932000.CSI'=中证2000；data_type='global' 时用 'HSI'/'SPX'。
+    data_type:
+      'price'      指数日线：open/high/low/close/pre_close/change/pct_chg/vol/amount
+      'valuation'  指数估值：pe/pe_ttm/pb/turnover_rate/total_mv/float_mv/...
+      'components' 截至 end_date 的最近一期成分股：stock(6位代码)/weight
+      'global'     全球指数日线（symbol 如 HSI/SPX）
+    返回 DataFrame，DatetimeIndex 升序。默认 end_date = 本地数据最后交易日。
+    历史回测防未来数据：把 T 日传给 end_date，或自行截断 idx[idx.index <= trade_date]。
+    """
+    import hashlib as _hashlib
+    import filelock as _fl
+
+    _TS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _dtype = 'components' if data_type in ('components', 'index_components') else data_type
+    if _dtype not in ('price', 'valuation', 'components', 'global'):
+        raise ValueError(f"unsupported data_type: {data_type}")
+    try:
+        _last_local = pd.Timestamp(TRADE_DATES[-1])
+    except Exception:
+        _last_local = pd.Timestamp.today().normalize()
+    _end = pd.Timestamp(end_date).normalize() if end_date is not None else _last_local
+    _start = pd.Timestamp(start_date)
+    _today = pd.Timestamp.today().strftime('%Y%m%d')
+    _cache_key = f"ts_{_dtype}_{_hashlib.md5(symbol.encode()).hexdigest()[:8]}"
+    _cache_path = _TS_CACHE_DIR / f"{_cache_key}.parquet"
+
+    def _read_cache():
+        try:
+            return pd.read_parquet(_cache_path) if _cache_path.exists() else None
+        except Exception:
+            return None
+
+    def _normalize(_df):
+        if _df is None or not len(_df):
+            raise RuntimeError(f"Tushare 返回空数据：symbol={symbol}, data_type={_dtype}；请检查指数代码或权限")
+        if 'trade_date' in _df.columns:
+            _df = _df.copy()
+            _df['trade_date'] = pd.to_datetime(_df['trade_date'])
+            _df = _df.sort_values('trade_date').set_index('trade_date')
+            _df.index.name = 'datetime'
+        if 'ts_code' in _df.columns:
+            _df = _df.drop(columns=['ts_code'])
+        return _df
+
+    def _need_refresh(_df):
+        _last = _df.index.max()
+        _need = min(_end, _last_local)
+        if _dtype == 'components':
+            return _need > _last + pd.Timedelta(days=45)
+        return _need > _last
+
+    _cache_id = str(_cache_path)
+    df = _TS_DF_CACHE.get(_cache_id)
+    if df is not None and (df.empty or _need_refresh(df)):
+        df = None
+    if df is None:
+        _lock_path = _TS_CACHE_DIR / f"{_cache_key}.parquet.lock"
+        with _fl.FileLock(str(_lock_path), timeout=180):
+            df = _read_cache()
+            if df is not None and (df.empty or _need_refresh(df)):
+                df = None
+            if df is None:
+                _token = os.environ.get('TUSHARE_TOKEN', '')
+                if not _token:
+                    raise RuntimeError("TUSHARE_TOKEN 环境变量未设置，无法通过 Tushare 获取指数数据")
+                import tushare as _ts
+                _pro = _ts.pro_api(_token)
+                if _dtype == 'price':
+                    df = _pro.index_daily(ts_code=symbol, start_date='20180101', end_date=_today)
+                elif _dtype == 'valuation':
+                    df = _pro.index_dailybasic(ts_code=symbol, start_date='20180101', end_date=_today)
+                elif _dtype == 'global':
+                    df = _pro.index_global(ts_code=symbol, start_date='20180101', end_date=_today)
+                else:
+                    _parts = []
+                    for _y in range(2018, int(_today[:4]) + 1):
+                        _p = _pro.index_weight(index_code=symbol,
+                                               start_date=str(_y) + '0101',
+                                               end_date=str(_y) + '1231')
+                        if _p is not None and len(_p):
+                            _parts.append(_p)
+                    df = pd.concat(_parts, ignore_index=True) if _parts else None
+                    if df is not None and len(df):
+                        df = df.drop_duplicates(['trade_date', 'con_code'])
+                df = _normalize(df)
+                try:
+                    df.to_parquet(_cache_path)
+                except OSError:
+                    pass
+            _TS_DF_CACHE[_cache_id] = df
+
+    if _dtype == 'components':
+        _snap = df[df.index <= _end]
+        if _snap.empty:
+            raise RuntimeError(f"Tushare 无 {symbol} 在 {_end.date()} 之前的成分股快照")
+        _snap = _snap[_snap.index == _snap.index.max()]
+        _out = pd.DataFrame({'stock': _snap['con_code'].str.split('.').str[0],
+                             'weight': _snap['weight']})
+        return _out.sort_values('weight', ascending=False).reset_index(drop=True)
+    _out = df[(df.index >= _start) & (df.index <= _end)]
+    return _out.drop(columns=[c for c in ('ts_code',) if c in _out.columns])
+'''
+
 # ========== 类定义开始 ==========
 
 class FactorFBWorkspace(FBWorkspace):
@@ -291,56 +409,8 @@ def load_stock(stock, columns=None):
 _INDUSTRY_FILE = STOCK_DATA_DIR / "industry.json"
 INDUSTRY_DICT = json.load(open(_INDUSTRY_FILE, encoding="utf-8")) if _INDUSTRY_FILE.exists() else {{}}
 
-def get_jq_data(symbol, data_type='price', start_date='2018-01-01', end_date='2026-05-15'):
-    \"\"\"通用聚宽数据获取函数。优先读本地缓存，没有再通过聚宽在线下载。
-    本地数据中已有的字段（如日频价量、非行情等）直接走本地，不会调用聚宽。
-    用法:
-      idx = get_jq_data('000300.XSHG', 'price')  # 指数行情
-      stocks = get_jq_data('000905.XSHG', 'index_components')  # 中证500成分股列表
-    data_type 支持: 'price'(行情), 'index_components'(指数成分股)
-    \"\"\"
-    import hashlib as _hashlib
-    _cache_key = f"jq_{{data_type}}_{{_hashlib.md5(symbol.encode()).hexdigest()[:8]}}"
-    _cache_path = STOCK_DATA_DIR / f"{{_cache_key}}.parquet"
-    if _cache_path.exists():
-        return pd.read_parquet(_cache_path)
-    # 文件锁防止并发 JQData 连接数超限（账号最多3个连接）
-    import filelock as _fl
-    _lock_path = STOCK_DATA_DIR / f"{{_cache_key}}.parquet.lock"
-    with _fl.FileLock(str(_lock_path), timeout=120):
-        if _cache_path.exists():
-            return pd.read_parquet(_cache_path)
-        _jq_user = os.environ.get("JQ_USER", "")
-        _jq_pass = os.environ.get("JQ_PASS", "")
-        if not _jq_user or not _jq_pass:
-            raise RuntimeError("JQ_USER/JQ_PASS 环境变量未设置，无法通过聚宽获取数据")
-        import jqdatasdk as jq
-        jq.auth(_jq_user, _jq_pass)
-        try:
-            if data_type == 'price':
-                from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _TErr
-                _tp = _TPE(max_workers=1)
-                _tf = _tp.submit(jq.get_price, symbol, start_date=start_date, end_date=end_date, frequency='daily', skip_paused=False, fq='pre')
-                try:
-                    df = _tf.result(timeout=180)
-                except _TErr:
-                    print(f"JQData get_price timeout (180s), symbol={symbol}", flush=True)
-                    df = pd.DataFrame()
-                finally:
-                    _tp.shutdown(wait=False)
-            elif data_type == 'index_components':
-                stocks = jq.get_index_stocks(symbol)
-                df = pd.DataFrame({{'stock': stocks}})
-            else:
-                raise ValueError(f"unsupported data_type: {{data_type}}")
-            if df is not None and not df.empty:
-                try:
-                    df.to_parquet(_cache_path)
-                except OSError:
-                    pass
-            return df
-        finally:
-            jq.logout()
+_TS_CACHE_DIR = STOCK_DATA_DIR / "_ts_index_cache"
+{_TS_INDEX_HELPER_SRC}
 
 # <<<USER_CODE_START>>>
 {user_code}
@@ -455,14 +525,23 @@ if __name__ == '__main__':
                             columns=pd.Index(STOCK_LIST, name=wide.columns.name))
         wide.attrs["factor_name"] = factor_name
         # 涨停剔除
-        _LU_PATH = DATA_DIR / "limit_up_daily.parquet"
-        if _LU_PATH.exists():
-            _lu_df = pd.read_parquet(_LU_PATH, columns=['trade_date', 'instrument'])
-            for _lu_dt, _lu_grp in _lu_df.groupby(_lu_df['trade_date'].dt.normalize()):
+        _LU_CANDIDATES = [
+            DATA_DIR / "limit_up_daily.parquet",
+            DATA_DIR / "stock_data" / "limit_up_daily.parquet",
+        ]
+        _LU_PATH = next((p for p in _LU_CANDIDATES if p.exists()), None)
+        if _LU_PATH is not None:
+            _lu_df = pd.read_parquet(_LU_PATH)
+            _lu_date_col = "datetime" if "datetime" in _lu_df.columns else "trade_date"
+            _lu_df[_lu_date_col] = pd.to_datetime(_lu_df[_lu_date_col])
+            for _lu_dt, _lu_grp in _lu_df.groupby(_lu_df[_lu_date_col].dt.normalize()):
                 if _lu_dt in wide.index:
                     _c = [str(x) for x in _lu_grp['instrument'] if str(x) in wide.columns]
                     if _c:
                         wide.loc[_lu_dt, _c] = np.nan
+            print(f"  涨停剔除: {_LU_PATH} ({_lu_df[_lu_date_col].nunique()} 天)", flush=True)
+        else:
+            print(f"  ⚠️ 未找到 limit_up_daily.parquet (DATA_DIR={DATA_DIR})", flush=True)
         # /涨停剔除
         # 统一格式：index→string日期, columns→int股票代码
         wide.index = wide.index.strftime('%Y-%m-%d')
@@ -523,7 +602,7 @@ _CHUNK_SIZE = int(os.environ.get("FACTOR_CHUNK_SIZE", "25"))
 def load_day(td):
     return pd.read_parquet(MINUTE_BY_DATE_DIR / f"{{td}}.parquet", columns=_LOAD_COLS)
 
-# 行业分类 / 聚宽缓存目录
+# 行业分类 / 指数数据（Tushare）缓存目录
 # 分钟线数据目录下没有 industry.json，需回退到同级的「日线」目录：
 #   DATA_DIR = .../行情数据/分钟线/{测试|全量}  →  .../行情数据/日线/{测试|全量}/stock_data/daily/
 def _resolve_daily_dir():
@@ -542,48 +621,8 @@ _DAILY_DATA_DIR = _resolve_daily_dir()
 _INDUSTRY_FILE = _DAILY_DATA_DIR / "industry.json"
 INDUSTRY_DICT = json.load(open(_INDUSTRY_FILE, encoding="utf-8")) if _INDUSTRY_FILE.exists() else {{}}
 
-def get_jq_data(symbol, data_type='price', start_date='2018-01-01', end_date='2026-05-15'):
-    import hashlib as _hashlib
-    _cache_key = f"jq_{{data_type}}_{_hashlib.md5(symbol.encode()).hexdigest()[:8]}"
-    _cache_path = _DAILY_DATA_DIR / f"{{_cache_key}}.parquet"
-    if _cache_path.exists():
-        return pd.read_parquet(_cache_path)
-    import filelock as _fl
-    _lock_path = _DAILY_DATA_DIR / f"{{_cache_key}}.parquet.lock"
-    with _fl.FileLock(str(_lock_path), timeout=120):
-        if _cache_path.exists():
-            return pd.read_parquet(_cache_path)
-        _jq_user = os.environ.get("JQ_USER", "")
-        _jq_pass = os.environ.get("JQ_PASS", "")
-        if not _jq_user or not _jq_pass:
-            raise RuntimeError("JQ_USER/JQ_PASS 环境变量未设置，无法通过聚宽获取数据")
-        import jqdatasdk as jq
-        jq.auth(_jq_user, _jq_pass)
-        try:
-            if data_type == 'price':
-                from concurrent.futures import ThreadPoolExecutor as _TPE2, TimeoutError as _TErr
-                _tp = _TPE2(max_workers=1)
-                _tf = _tp.submit(jq.get_price, symbol, start_date=start_date, end_date=end_date, frequency='daily', skip_paused=False, fq='pre')
-                try:
-                    df = _tf.result(timeout=180)
-                except _TErr:
-                    print(f"JQData get_price timeout (180s), symbol={{symbol}}", flush=True)
-                    df = pd.DataFrame()
-                finally:
-                    _tp.shutdown(wait=False)
-            elif data_type == 'index_components':
-                stocks = jq.get_index_stocks(symbol)
-                df = pd.DataFrame({{'stock': stocks}})
-            else:
-                raise ValueError(f"unsupported data_type: {{data_type}}")
-            if df is not None and not df.empty:
-                try:
-                    df.to_parquet(_cache_path)
-                except OSError:
-                    pass
-            return df
-        finally:
-            jq.logout()
+_TS_CACHE_DIR = _DAILY_DATA_DIR / "_ts_index_cache"
+{_TS_INDEX_HELPER_SRC}
 
 # <<<USER_CODE_START>>>
 {user_code}
@@ -766,7 +805,7 @@ if __name__ == '__main__':
 
     # 并发保护：多个分钟因子同时 test-and-export 时，只让第一个做预分片，
     # 其余在此等待；拿到锁后重新检查缓存，通常直接命中跳过。
-    # _fl 只在 get_jq_data 内部 import，这里需自行导入
+    # _fl 在 get_ts_index_data 内部 import，这里需自行导入
     import filelock as _fl_lock
     _presplit_lock = _fl_lock.FileLock(str(_CHUNK_DIR / ".presplit.lock"), timeout=1800)
     _presplit_lock.acquire()
@@ -1010,14 +1049,23 @@ if __name__ == '__main__':
         # ── /可选截面后处理 ──
 
         # 涨停剔除(minute)
-        _LU_PATH = DATA_DIR / "limit_up_daily.parquet"
-        if _LU_PATH.exists():
-            _lu_df = pd.read_parquet(_LU_PATH, columns=['datetime', 'instrument'])
-            for _lu_dt, _lu_grp in _lu_df.groupby(_lu_df['datetime'].dt.normalize()):
+        _LU_CANDIDATES = [
+            DATA_DIR / "limit_up_daily.parquet",
+            DATA_DIR / "stock_data" / "limit_up_daily.parquet",
+        ]
+        _LU_PATH = next((p for p in _LU_CANDIDATES if p.exists()), None)
+        if _LU_PATH is not None:
+            _lu_df = pd.read_parquet(_LU_PATH)
+            _lu_date_col = "datetime" if "datetime" in _lu_df.columns else "trade_date"
+            _lu_df[_lu_date_col] = pd.to_datetime(_lu_df[_lu_date_col])
+            for _lu_dt, _lu_grp in _lu_df.groupby(_lu_df[_lu_date_col].dt.normalize()):
                 if _lu_dt in wide.index:
                     _c = [str(x) for x in _lu_grp['instrument'] if str(x) in wide.columns]
                     if _c:
                         wide.loc[_lu_dt, _c] = np.nan
+            print(f"  涨停剔除: {_LU_PATH} ({_lu_df[_lu_date_col].nunique()} 天)", flush=True)
+        else:
+            print(f"  ⚠️ 未找到 limit_up_daily.parquet (DATA_DIR={DATA_DIR})", flush=True)
         # /涨停剔除
         wide.index = wide.index.strftime('%Y-%m-%d')
         # 重索引到全量日期×全量股票，缺值用NaN（在strftime之后，因为TRADE_DATES是字符串）
@@ -1111,55 +1159,8 @@ def load_stock(stock, columns=None):
 _INDUSTRY_FILE = STOCK_DATA_DIR / "industry.json"
 INDUSTRY_DICT = json.load(open(_INDUSTRY_FILE, encoding="utf-8")) if _INDUSTRY_FILE.exists() else {}
 
-def get_jq_data(symbol, data_type='price', start_date='2018-01-01', end_date='2026-05-15'):
-    \"\"\"通用聚宽数据获取函数。优先读本地缓存，没有再通过聚宽在线下载。
-    本地数据中已有的字段（如日频价量、非行情等）直接走本地，不会调用聚宽。
-    用法:
-      idx = get_jq_data('000300.XSHG', 'price')  # 指数行情
-      stocks = get_jq_data('000905.XSHG', 'index_components')  # 中证500成分股列表
-    data_type 支持: 'price'(行情), 'index_components'(指数成分股)
-    \"\"\"
-    import hashlib as _hashlib
-    _cache_key = f"jq_{data_type}_{_hashlib.md5(symbol.encode()).hexdigest()[:8]}"
-    _cache_path = STOCK_DATA_DIR / f"{_cache_key}.parquet"
-    if _cache_path.exists():
-        return pd.read_parquet(_cache_path)
-    import filelock as _fl
-    _lock_path = STOCK_DATA_DIR / f"{_cache_key}.parquet.lock"
-    with _fl.FileLock(str(_lock_path), timeout=120):
-        if _cache_path.exists():
-            return pd.read_parquet(_cache_path)
-        _jq_user = os.environ.get("JQ_USER", "")
-        _jq_pass = os.environ.get("JQ_PASS", "")
-        if not _jq_user or not _jq_pass:
-            raise RuntimeError("JQ_USER/JQ_PASS 环境变量未设置，无法通过聚宽获取数据")
-        import jqdatasdk as jq
-        jq.auth(_jq_user, _jq_pass)
-        try:
-            if data_type == 'price':
-                from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _TErr
-                _tp = _TPE(max_workers=1)
-                _tf = _tp.submit(jq.get_price, symbol, start_date=start_date, end_date=end_date, frequency='daily', skip_paused=False, fq='pre')
-                try:
-                    df = _tf.result(timeout=180)
-                except _TErr:
-                    print(f"JQData get_price timeout (180s), symbol={symbol}", flush=True)
-                    df = pd.DataFrame()
-                finally:
-                    _tp.shutdown(wait=False)
-            elif data_type == 'index_components':
-                stocks = jq.get_index_stocks(symbol)
-                df = pd.DataFrame({'stock': stocks})
-            else:
-                raise ValueError(f"unsupported data_type: {data_type}")
-            if df is not None and not df.empty:
-                try:
-                    df.to_parquet(_cache_path)
-                except OSError:
-                    pass
-            return df
-        finally:
-            jq.logout()
+_TS_CACHE_DIR = STOCK_DATA_DIR / "_ts_index_cache"
+{_TS_INDEX_HELPER_SRC}
 
 # <<<USER_CODE_START>>>
 {user_code}
@@ -1334,14 +1335,23 @@ if __name__ == '__main__':
                             columns=pd.Index(STOCK_LIST, name=wide.columns.name))
         wide.attrs["factor_name"] = factor_name
         # 涨停剔除(cross_section)
-        _LU_PATH = DATA_DIR / "limit_up_daily.parquet"
-        if _LU_PATH.exists():
-            _lu_df = pd.read_parquet(_LU_PATH, columns=['trade_date', 'instrument'])
-            for _lu_dt, _lu_grp in _lu_df.groupby(_lu_df['trade_date'].dt.normalize()):
+        _LU_CANDIDATES = [
+            DATA_DIR / "limit_up_daily.parquet",
+            DATA_DIR / "stock_data" / "limit_up_daily.parquet",
+        ]
+        _LU_PATH = next((p for p in _LU_CANDIDATES if p.exists()), None)
+        if _LU_PATH is not None:
+            _lu_df = pd.read_parquet(_LU_PATH)
+            _lu_date_col = "datetime" if "datetime" in _lu_df.columns else "trade_date"
+            _lu_df[_lu_date_col] = pd.to_datetime(_lu_df[_lu_date_col])
+            for _lu_dt, _lu_grp in _lu_df.groupby(_lu_df[_lu_date_col].dt.normalize()):
                 if _lu_dt in wide.index:
                     _c = [str(x) for x in _lu_grp['instrument'] if str(x) in wide.columns]
                     if _c:
                         wide.loc[_lu_dt, _c] = np.nan
+            print(f"  涨停剔除: {_LU_PATH} ({_lu_df[_lu_date_col].nunique()} 天)", flush=True)
+        else:
+            print(f"  ⚠️ 未找到 limit_up_daily.parquet (DATA_DIR={DATA_DIR})", flush=True)
         # /涨停剔除
         # 统一格式：index→string日期, columns→int股票代码
         wide.index = wide.index.strftime('%Y-%m-%d')
@@ -1447,56 +1457,8 @@ def load_stock(stock, columns=None):
 _INDUSTRY_FILE = STOCK_DATA_DIR / "industry.json"
 INDUSTRY_DICT = json.load(open(_INDUSTRY_FILE, encoding="utf-8")) if _INDUSTRY_FILE.exists() else {{}}
 
-def get_jq_data(symbol, data_type='price', start_date='2018-01-01', end_date='2026-05-15'):
-    \"\"\"通用聚宽数据获取函数。优先读本地缓存，没有再通过聚宽在线下载。
-    本地数据中已有的字段（如日频价量、非行情等）直接走本地，不会调用聚宽。
-    用法:
-      idx = get_jq_data('000300.XSHG', 'price')  # 指数行情
-      stocks = get_jq_data('000905.XSHG', 'index_components')  # 中证500成分股列表
-    data_type 支持: 'price'(行情), 'index_components'(指数成分股)
-    \"\"\"
-    import hashlib as _hashlib
-    _cache_key = f"jq_{{data_type}}_{{_hashlib.md5(symbol.encode()).hexdigest()[:8]}}"
-    _cache_path = STOCK_DATA_DIR / f"{{_cache_key}}.parquet"
-    if _cache_path.exists():
-        return pd.read_parquet(_cache_path)
-    # 文件锁防止并发 JQData 连接数超限（账号最多3个连接）
-    import filelock as _fl
-    _lock_path = STOCK_DATA_DIR / f"{{_cache_key}}.parquet.lock"
-    with _fl.FileLock(str(_lock_path), timeout=120):
-        if _cache_path.exists():
-            return pd.read_parquet(_cache_path)
-        _jq_user = os.environ.get("JQ_USER", "")
-        _jq_pass = os.environ.get("JQ_PASS", "")
-        if not _jq_user or not _jq_pass:
-            raise RuntimeError("JQ_USER/JQ_PASS 环境变量未设置，无法通过聚宽获取数据")
-        import jqdatasdk as jq
-        jq.auth(_jq_user, _jq_pass)
-        try:
-            if data_type == 'price':
-                from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _TErr
-                _tp = _TPE(max_workers=1)
-                _tf = _tp.submit(jq.get_price, symbol, start_date=start_date, end_date=end_date, frequency='daily', skip_paused=False, fq='pre')
-                try:
-                    df = _tf.result(timeout=180)
-                except _TErr:
-                    print(f"JQData get_price timeout (180s), symbol={{symbol}}", flush=True)
-                    df = pd.DataFrame()
-                finally:
-                    _tp.shutdown(wait=False)
-            elif data_type == 'index_components':
-                stocks = jq.get_index_stocks(symbol)
-                df = pd.DataFrame({{'stock': stocks}})
-            else:
-                raise ValueError(f"unsupported data_type: {{data_type}}")
-            if df is not None and not df.empty:
-                try:
-                    df.to_parquet(_cache_path)
-                except OSError:
-                    pass
-            return df
-        finally:
-            jq.logout()
+_TS_CACHE_DIR = STOCK_DATA_DIR / "_ts_index_cache"
+{_TS_INDEX_HELPER_SRC}
 
 # 列过滤（由LLM自动推断）
 {_LOAD_COLS_DEF}
@@ -1617,14 +1579,23 @@ if __name__ == '__main__':
                             columns=pd.Index(STOCK_LIST, name=wide.columns.name))
         wide.attrs["factor_name"] = factor_name
         # 涨停剔除(DL)
-        _LU_PATH = DATA_DIR / "limit_up_daily.parquet"
-        if _LU_PATH.exists():
-            _lu_df = pd.read_parquet(_LU_PATH, columns=['trade_date', 'instrument'])
-            for _lu_dt, _lu_grp in _lu_df.groupby(_lu_df['trade_date'].dt.normalize()):
+        _LU_CANDIDATES = [
+            DATA_DIR / "limit_up_daily.parquet",
+            DATA_DIR / "stock_data" / "limit_up_daily.parquet",
+        ]
+        _LU_PATH = next((p for p in _LU_CANDIDATES if p.exists()), None)
+        if _LU_PATH is not None:
+            _lu_df = pd.read_parquet(_LU_PATH)
+            _lu_date_col = "datetime" if "datetime" in _lu_df.columns else "trade_date"
+            _lu_df[_lu_date_col] = pd.to_datetime(_lu_df[_lu_date_col])
+            for _lu_dt, _lu_grp in _lu_df.groupby(_lu_df[_lu_date_col].dt.normalize()):
                 if _lu_dt in wide.index:
                     _c = [str(x) for x in _lu_grp['instrument'] if str(x) in wide.columns]
                     if _c:
                         wide.loc[_lu_dt, _c] = np.nan
+            print(f"  涨停剔除: {_LU_PATH} ({_lu_df[_lu_date_col].nunique()} 天)", flush=True)
+        else:
+            print(f"  ⚠️ 未找到 limit_up_daily.parquet (DATA_DIR={DATA_DIR})", flush=True)
         # /涨停剔除
         # 统一格式：index→string日期, columns→int股票代码
         wide.index = wide.index.strftime('%Y-%m-%d')
@@ -1696,7 +1667,8 @@ if __name__ == '__main__':
     def _template_cache_key(template: str, lookback_days: int, cols_def: str) -> str:
         """基于模板内容+参数算 hash，保证不同进程 key 一致且可缓存到磁盘。"""
         raw = (template + "\x00" + str(lookback_days) + "\x00" + cols_def
-               + "\x00" + _COLLECT_COLS_SRC + "\x00" + _USER_ERR_REPORT_SRC)
+               + "\x00" + _COLLECT_COLS_SRC + "\x00" + _USER_ERR_REPORT_SRC
+               + "\x00" + _TS_INDEX_HELPER_SRC)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     @staticmethod
@@ -1738,6 +1710,7 @@ if __name__ == '__main__':
                 .replace('{_LOAD_MINUTE_STOCK}', _LOAD_MINUTE_STOCK_SRC)
                 .replace('{_COLLECT_COLS}', _COLLECT_COLS_SRC)
                 .replace('{_USER_ERR_REPORT}', _USER_ERR_REPORT_SRC)
+                .replace('{_TS_INDEX_HELPER_SRC}', _TS_INDEX_HELPER_SRC)
                 .replace('{lookback_days}', str(lookback_days)))
         if '{{' in base:
             base = base.replace('{{', '{').replace('}}', '}')
@@ -2100,7 +2073,13 @@ Factor code:
             import os
             import runpy
             from pathlib import Path
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+try:
+    from scripts.data_paths import DATA_ROOT
+except ImportError:
+    _env_root = os.environ.get("PAPER_FACTOR_DATA_ROOT", "").strip()
+    _g_root = Path("/mnt/g/paper-factor-data")
+    _d_root = Path("/mnt/d/paper-factor-data")
+    DATA_ROOT = Path(_env_root) if _env_root else (_g_root if (_g_root / "数据仓库").exists() else _d_root)
 
             import pandas as pd
 

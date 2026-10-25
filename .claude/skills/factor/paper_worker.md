@@ -1,5 +1,7 @@
 # 论文 agent 作业指导（一篇研报：定义 → 编码 → 复现报告）
 
+> **数据根目录**：先运行 `python3 scripts/claude_factor_helper.py data-root` 获取实际路径（本机 D 盘 `/mnt/d/paper-factor-data`；另一台电脑 G 盘自动识别）。下文所有 `/mnt/d/paper-factor-data` 均以该输出为准。
+
 你按 `/factor` 的流程编排**这一篇**研报，自己**不读原文、不写因子代码**。
 
 ---
@@ -46,10 +48,15 @@ Read `.claude/skills/factor/define_worker.md` 并严格照做，不做文件之�
 派发后**立刻结束回合**（本回合不再调用任何工具），等系统唤醒。被唤醒后核对定义是否落盘：
 
 ```bash
-ls /mnt/d/paper-factor-data/数据仓库/因子产出/extracted_reports/{DATE}/{报告名}.extracted.json
+python3 -c "
+import os
+p = '/mnt/d/paper-factor-data/数据仓库/因子产出/extracted_reports/{DATE}/{报告名}.extracted.json'
+s = float(open('/tmp/.factor_run_start').read())
+print('FRESH' if os.path.exists(p) and os.path.getmtime(p) >= s else 'STALE/MISSING')
+"
 ```
 
-文件不存在 → 直接跳到 Step 4 并带 error。存在 → 继续 Step 2。
+不是 `FRESH` → 直接跳到 Step 4 并带 error（**旧产物不算本次定义成功**）。`FRESH` → 继续 Step 2。
 
 ---
 
@@ -80,10 +87,24 @@ for f in d['factors']: print(f['name'], f['type'], f['lookback'])
 **收尾判据（每次唤醒后跑，只认这一条）：**
 
 ```bash
-N=$(ls /mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{报告名}/*/*.code.py \
-        /mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{报告名}/*/*.missing.json 2>/dev/null | wc -l)
+N=$(python3 -c "
+from pathlib import Path
+d = Path('/mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{报告名}')
+s = float(open('/tmp/.factor_run_start').read())
+n = 0
+if d.is_dir():
+    for sd in d.iterdir():
+        if not sd.is_dir(): continue
+        files = list(sd.glob('*.code.py')) + list(sd.glob('*.missing.json'))
+        if any(p.stat().st_mtime >= s for p in files): n += 1
+print(n)
+")
 echo "$N"; [ "$N" -ge {因子总数} ] && echo DONE || echo NOT-DONE
 ```
+
+> ⚠️ **只数本次运行写出的产物**（`mtime ≥ /tmp/.factor_run_start`）。同日重跑时，
+> 上一次的 `code.py` / `missing.json` 不算完成 —— 否则计数会提前达到总数，
+> 后面的因子会被静默跳过。
 
 - `NOT-DONE` → 从队列补派，**结束回合**（这条命令每次唤醒只跑一次，不要连续重跑）
 - `DONE` → **立即执行 Step 4**，不要再多等一轮

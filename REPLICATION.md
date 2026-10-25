@@ -6,6 +6,36 @@
 
 ---
 
+## 数据盘路径（D 盘 / G 盘）
+
+本仓库平时在 **D 盘**开发，另一台电脑的数据在 **G 盘**：
+
+| 机器 | Windows 路径 | WSL 路径 |
+|---|---|---|
+| 当前开发机 | `D:\paper-factor-data` | `/mnt/d/paper-factor-data` |
+| 另一台电脑 | `G:\paper-factor-data` | `/mnt/g/paper-factor-data` |
+
+`scripts/data_paths.py` 按以下顺序自动解析，另一台电脑 `git pull` 后**不用改代码**：
+
+1. `PAPER_FACTOR_DATA_ROOT` 环境变量（显式指定）
+2. 自动探测：G 盘存在 `数据仓库` → 用 G 盘
+3. 否则用 D 盘
+
+需要强制指定时：
+
+```bash
+export PAPER_FACTOR_DATA_ROOT=/mnt/g/paper-factor-data      # WSL
+# PowerShell: $env:PAPER_FACTOR_DATA_ROOT = "G:\paper-factor-data"
+```
+
+查看当前实际使用的数据根：
+
+```bash
+python scripts/claude_factor_helper.py data-root
+```
+
+---
+
 ## 复现需要什么
 
 | 东西 | 在哪 | 怎么获取 |
@@ -89,6 +119,7 @@ cp .env.example .env
 | `CHAT_MODEL` | 模型名（如 `openai/gpt-4o`） | 按需 |
 | `JQDATA_USERNAME` | 聚宽账号（分钟因子模板需要） | 分钟因子按需 |
 | `JQDATA_PASSWORD` | 聚宽密码 | 分钟因子按需 |
+| `TUSHARE_TOKEN` | Tushare token（指数行情/成分股/估值） | 指数类因子需要 |
 
 ---
 

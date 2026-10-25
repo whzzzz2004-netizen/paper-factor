@@ -21,8 +21,8 @@ def calc_factor_cross_section(all_data, trade_date):
 
 ## 额外可用数据（框架已注入，不是 parquet 列，**不算缺字段**）
 
-> `INDUSTRY_DICT` 由模板自动加载，函数内直接可用。它**不出现在 `show-columns` 输出里**，
-> 但属于合法可用数据——需要行业分类时**不要判缺列**。
+> `INDUSTRY_DICT` 与 `get_ts_index_data(...)` 由模板自动注入，函数内直接可用。它们**不出现在 `show-columns` 输出里**，
+> 但属于合法可用数据——需要行业分类 / 指数数据时**不要判缺列**。
 > `show-columns` 命令的输出末尾也会重复打印这一段，以那次输出为准。
 
 ### `INDUSTRY_DICT` — 申万一级行业分类
@@ -52,7 +52,33 @@ def calc_factor_cross_section(all_data, trade_date):
 > 只输出个股原始值，最后统一做。这里写示例是因为**行业分组本身是因子核心逻辑**
 > （如行业动量、行业轮动、行业偏离度）时需要用到 `INDUSTRY_DICT`，而非鼓励做后处理。
 
-**指数行情、指数成分股等其他在线数据本地不可用**，需要时按缺字段处理（写 `{name}.missing.json`），不要用相近数据代理。
+
+### `get_ts_index_data(symbol, data_type)` — Tushare 指数数据（行情 / 成分股 / 估值）
+
+首次调用联网下载并缓存为 parquet，之后读缓存。`symbol` 用 **Tushare 代码**（不是聚宽格式）：
+
+常用：`000300.SH`(沪深300)、`000905.SH`(中证500)、`000016.SH`(上证50)、`000852.SH`(中证1000)、
+`000906.SH`(中证800)、`000688.SH`(科创50)、`000001.SH`(上证指数)、`399001.SZ`(深证成指)、
+`399006.SZ`(创业板指)、`932000.CSI`(中证2000)。
+
+| data_type | 返回 | 说明 |
+|---|---|---|
+| `'price'` | DatetimeIndex 升序，列 `open/high/low/close/pre_close/change/pct_chg/vol/amount` | 指数日线行情 |
+| `'components'` | 列 `stock`(6位代码)/`weight` | 截至 `end_date` 最近一期（月末）成分股 |
+| `'valuation'` | 列 `pe/pe_ttm/pb/turnover_rate/total_mv/float_mv` 等 | 指数每日估值 |
+| `'global'` | 日线行情 | 全球指数（symbol 如 `HSI`/`SPX`） |
+
+```python
+idx = get_ts_index_data('000300.SH', 'price')               # 沪深300 行情
+stocks = get_ts_index_data('000905.SH', 'components')       # 中证500 成分股（截至 end_date）
+pe = get_ts_index_data('000300.SH', 'valuation')['pe_ttm']  # 沪深300 每日 PE_TTM
+```
+
+- 用途：市场收益、超额收益、Beta、相对强弱、CAPM、指数估值、成分股筛选
+- 需要 `TUSHARE_TOKEN` 环境变量（`.env` 已配置）
+- ⚠️ **前瞻约束**：默认 `end_date` 是本地数据最后交易日；按 T 日计算时必须传
+  `end_date=trade_date`，或自行截断 `idx[idx.index <= trade_date]`。成分股同理，
+  不要用今天的成分股回填历史（幸存者偏差）
 
 ## 特殊约束
 

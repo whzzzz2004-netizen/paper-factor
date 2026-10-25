@@ -1,19 +1,25 @@
 #!/bin/bash
 # ============================================================
-# 从仓库 drive_files/ 同步交付副本到 D:\paper-factor-data
+# 从仓库 drive_files/ 同步交付副本到数据根（D 盘 / G 盘自动识别）
 # 用法: bash sync_drive.sh
 #
 # 作用: 把 数据转换脚本(scripts) + 研报(papers) + 字段注册表(schema.json)
 #       复制到 D 盘数据根目录。老板/新机器 git clone 后跑一次即可。
 #
 # 可配环境变量:
-#   PAPER_FACTOR_DATA_ROOT  数据根目录 (默认 /mnt/d/paper-factor-data)
+#   PAPER_FACTOR_DATA_ROOT  数据根目录（默认自动识别：G 盘优先，再 D 盘）
 # ============================================================
 set -e
 
 # 仓库根 = 本脚本所在目录
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-DATA_ROOT="${PAPER_FACTOR_DATA_ROOT:-/mnt/d/paper-factor-data}"
+if [ -n "${PAPER_FACTOR_DATA_ROOT:-}" ]; then
+    DATA_ROOT="$PAPER_FACTOR_DATA_ROOT"
+elif [ -d /mnt/g/paper-factor-data/数据仓库 ]; then
+    DATA_ROOT=/mnt/g/paper-factor-data
+else
+    DATA_ROOT=/mnt/d/paper-factor-data
+fi
 
 echo "=========================================="
 echo " 同步 drive_files → $DATA_ROOT"

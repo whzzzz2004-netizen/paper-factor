@@ -1,5 +1,7 @@
 # Phase 2 · 第一步：字段核对（所有因子必读）
 
+> **数据根目录**：先运行 `python3 scripts/claude_factor_helper.py data-root` 获取实际路径（本机 D 盘 `/mnt/d/paper-factor-data`；另一台电脑 G 盘自动识别）。下文所有 `/mnt/d/paper-factor-data` 均以该输出为准。
+
 > 本文件只做一件事：**判断因子需要的字段在本地数据里是否齐全**。
 > 判完为止 —— 不缺字段才去读 `phase2_code.md` 写代码。
 
@@ -60,13 +62,13 @@ python scripts/claude_factor_helper.py show-columns --type daily_single
 
 **禁止的近似（一律判缺列，不得写代码）：**
 - ❌ 把缺失的列**假设成常数**（如"流通股本在窗口内不变，所以用 volume 代替换手率"）
-- ❌ 用语义相近的列**代理**目标列（如用 volume 代理 turnover、用成交量代理成交额）
+- ❌ 用语义相近的列**代理**目标列（如用 volume 代理 turnover、用市值代理自由流通市值）
 - ❌ 丢掉定义里的某个真实分量（如"总换手率 − 竞价换手率"只取总换手率）
 - ❌ 任何让因子数值与原文定义产生偏差的处理
 
-**允许的推导只有一种**：用清单内的列做**精确的**数学运算。判据是算出来的值与原文定义**逐点相等**，不是"大致相当"。例如 `close.pct_change()`、`close * factor`、`close / open - 1`。
+**允许的推导只有一种**：用清单内的列做**精确的**数学运算。判据是算出来的值与原文定义**逐点相等**，不是"大致相当"。例如 `close.pct_change()`、`close * factor`、`close / open - 1`。 分钟线的成交额也是精确推导：`amount = volume * close`（volume 股 × close 元），不算缺列。
 
-### ⚠️ 三种「看着像缺字段、其实不是」的情况
+### ⚠️ 四种「看着像缺字段、其实不是」的情况
 
 **① 时间点 / 滞后 / 滚动统计 —— 不是字段。**
 30 日前的价格就是 `close.shift(30)`，过去 20 日均量就是 `volume.rolling(20).mean()`。
@@ -79,30 +81,46 @@ python scripts/claude_factor_helper.py show-columns --type daily_single
 `cross_section` / `deep_learning` 模板给 `calc_factor_cross_section(all_data, trade_date)` 的
 `all_data` 就是**全市场 `{股票代码: DataFrame}`**（每只股票截至 T 日的窗口切片）。
 
-> 因此判缺列的依据**只能是「列」本身**（如 `成交额`、`自由流通市值`、指数行情），不能是
+**④ 分钟线成交额 —— 精确派生，不是缺字段。**
+分钟数据没有 `amount` 列，但 `amount = volume * close`（volume 单位股、close 单位元）是逐点精确的推导；判字段时**不要判缺列**，`--cols` 只写 `volume`（`close` 自动加载），不要把 `amount` 写进 `--cols`。
+
+> 因此判缺列的依据**只能是「列」本身**（如 北向资金、龙虎榜），不能是
 > 「历史价格」/「市值分组」/「全市场面板」这类由列或由模板推出的东西。
 > 写 `missing_fields` 时逐条自检：**这一项真的是一「列」吗？** 不是就删掉。
 
 ### 额外可用数据（不算缺字段）
 
-`show-columns` 输出末尾的「额外可用数据」段落也是合法数据源。当前只有一样：
+`show-columns` 输出末尾的「额外可用数据」段落也是合法数据源。当前有两样：
 
 - `INDUSTRY_DICT[股票代码]` → 申万一级行业名（如 `"银行I"`）。
   **需要「行业分类」时用它，永远不是缺列理由**；不要写进 `--cols`（它不是 parquet 列）。
-  用法见各 type 的 `knowledge/*.md`。
-
-**除 `INDUSTRY_DICT` 外的其他在线数据（指数行情、指数成分股、市场收益率等）本地不可用**，
-按缺字段处理，不要用相近数据代理。
+- `get_ts_index_data(symbol, data_type)` → Tushare 指数行情 / 成分股 / 估值
+  （如 `get_ts_index_data('000300.SH', 'price')`）。
+  **需要指数行情、基准收益、Beta、超额收益、指数成分股时用它，不是缺列理由**；
+  不要写进 `--cols`。历史回测按 T 日截断（见各 type 的 `knowledge/*.md`）。
 
 > 注意：**截面后处理**（排名/标准化/中性化）不属于缺字段，照常跳过、只输出个股原始值。
 > 但"缺某个字段"永远不能跳过或近似。
+
+### 分析师一致预期列的口径（2026-10-22 确认）
+
+`EPS_Predict` / `income_predict` / `netProfit_predict` 是分析师一致预期的
+**1 年期 + 2 年期合并值**（不是单期值）：
+
+- 定义里的 `EPS_fy1` 与 `EPS_fy2` **都映射到 `EPS_Predict`**；
+- 营收 FY1/FY2 预期都映射到 `income_predict`（按定义换算成每股口径）；
+- 净利润 FY1/FY2 预期都映射到 `netProfit_predict`。
+
+**不要因为“只有一列、没有 fy1/fy2 两列”判缺字段。**
+仍缺的只有：BVPS / 每股净资产**预测**（`质量因子5` 是实际每股净资产，不能当预测值代理）；
+Barra 暴露（如 `EARNVAR`）只用于评估，不是因子输入。
 
 ---
 
 ## 分支 A：字段齐全 → 继续读 phase2_code.md
 
 挑出对应的真实列名（如"复权收盘价"对应 `close` × `factor`），这些就是本因子的 `{cols}`。
-「行业分类」用 `INDUSTRY_DICT`（**不要**写进 `--cols`）。
+「行业分类」用 `INDUSTRY_DICT`、「指数数据」用 `get_ts_index_data(...)`（**都不要**写进 `--cols`）。
 
 **然后 Read `.claude/skills/factor/phase2_code.md`，按它写代码并跑测试。本文件到此结束。**
 
@@ -130,7 +148,7 @@ python scripts/claude_factor_helper.py show-columns --type daily_single
 }
 ```
 
-> ⚠️ `missing_fields` **只写真正不存在的基础列**（如 `成交额`、`自由流通市值`、`指数行情`）。
+> ⚠️ `missing_fields` **只写真正不存在的基础列**（如 北向资金、龙虎榜）。
 > 「历史价格」「30 日前收盘价」「市值分组」「全市场面板」这类一律删掉。
 
 然后直接返回。

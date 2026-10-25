@@ -1,5 +1,7 @@
 # /factor — 研报/文章因子端到端处理（三层派发架构）
 
+> **数据根目录**：先运行 `python3 scripts/claude_factor_helper.py data-root` 获取实际路径（本机 D 盘 `/mnt/d/paper-factor-data`；另一台电脑 G 盘自动识别）。下文所有 `/mnt/d/paper-factor-data` 均以该输出为准。
+
 ## 用法
 
 - `/factor` — 扫描 `/mnt/d/paper-factor-data/papers/inbox/`，处理所有未处理项
@@ -87,13 +89,30 @@ export FACTOR_N_WORKERS=2      # 峰值 1×2×6 = 12 job × 2 进程 = 24 进程
 ```bash
 python3 .claude/hooks/factor_gate.py on
 rm -f /tmp/.factor_probe_*     # 清上一轮的探测计数（每个因子超 6 次会被直接判失败）
+date +%s > /tmp/.factor_run_start   # 本次运行起点：收尾只统计 mtime ≥ 此刻的产物
 ```
+
+> ⚠️ **同一天重跑时，上一次留下的 `code.py` / `missing.json` / `复现报告.md` 不算本次结果**。
+> 运行起点写入 `/tmp/.factor_run_start`，Step 3 与各层子 agent 的磁盘核对都必须按它过滤 mtime。
 
 ```bash
 ls /mnt/d/paper-factor-data/papers/inbox/*.pdf /mnt/d/paper-factor-data/papers/inbox/*.md 2>/dev/null
 ```
 
 > ⚠️ **必须同时包含 `.md`**：只扫 `*.pdf` 会静默漏掉 Markdown 研报。
+
+**立刻把本批论文清单快照到 `/tmp/.factor_run_papers`**（Step 3 只认这份清单，
+不认归档后的 `done/{DATE}/` —— 那里可能混有同日更早批次的文件）：
+
+```bash
+python3 - <<'EOF'
+from pathlib import Path
+inbox = Path("/mnt/d/paper-factor-data/papers/inbox")
+names = sorted(p.stem for p in inbox.iterdir() if p.suffix.lower() in (".pdf", ".md"))
+Path("/tmp/.factor_run_papers").write_text("\n".join(names), encoding="utf-8")
+print(len(names), "papers")
+EOF
+```
 
 **队列排序**：含 "深度学习/GRU/TCN/LSTM/deep_learning" 的排末尾（模型训练类最慢）。
 
@@ -213,45 +232,60 @@ agent 可能返回格式不对、超时、或静默失败。**所有产物都落
 ```bash
 # 1) 磁盘核对：以 Step 0 扫到的 inbox 清单为基准逐篇对照
 #    （必须在归档之前跑；若已归档，改用 done/{DATE}/ 当基准）
+#    ⚠️ 只统计本次运行的产物（mtime ≥ /tmp/.factor_run_start）；同日重跑的旧产物一律不算
 python3 - <<'EOF'
-import os
+import os, json
 from pathlib import Path
 D = "{DATE}"
-root = Path("/mnt/d/paper-factor-data/papers")
-inbox = root / "inbox"
-base = inbox if (inbox.is_dir() and any(inbox.iterdir())) else root / "done" / D
+START = float(Path("/tmp/.factor_run_start").read_text().strip())
+snap = Path("/tmp/.factor_run_papers")
+if snap.exists() and snap.read_text().strip():
+    papers = [x for x in snap.read_text().splitlines() if x.strip()]
+else:
+    root = Path("/mnt/d/paper-factor-data/papers")
+    inbox = root / "inbox"
+    base = inbox if (inbox.is_dir() and any(inbox.iterdir())) else root / "done" / D
+    papers = sorted(p.stem for p in base.iterdir()
+                    if p.suffix.lower() in (".pdf", ".md")) if base.is_dir() else []
 ex = Path("/mnt/d/paper-factor-data/数据仓库/因子产出/extracted_reports") / D
 ts = Path("/mnt/d/paper-factor-data/数据仓库/因子产出/测试") / D
-papers = sorted(p.stem for p in base.iterdir()
-                if p.suffix.lower() in (".pdf", ".md")) if base.is_dir() else []
+
+def fresh(p):
+    return p.exists() and p.stat().st_mtime >= START
+
 defined = enc = mis = nov = repro = 0
 fails = []
 for r in papers:
-    if not (ex / f"{r}.extracted.json").exists():
+    ej = ex / f"{r}.extracted.json"
+    if not fresh(ej):
         fails.append((r, "定义失败")); continue
     defined += 1
+    try:
+        factors = [x["name"] for x in json.load(open(ej)).get("factors", []) if x.get("name")]
+    except Exception:
+        fails.append((r, "定义文件损坏")); continue
     d = ts / r
-    if not d.is_dir():
-        fails.append((r, "无产出目录")); continue
-    sub = [x for x in os.listdir(d) if os.path.isdir(d / x)]
-    ok = sum(1 for s in sub if (d / s / f"{s}.code.py").exists())
-    ms = sum(1 for s in sub if (d / s / f"{s}.missing.json").exists())
-    enc += ok; mis += ms; nov += len(sub) - ok - ms
-    if (d / "复现报告.md").exists(): repro += 1
+    for n in factors:
+        if fresh(d / n / f"{n}.code.py"): enc += 1
+        elif fresh(d / n / f"{n}.missing.json"): mis += 1
+        else: nov += 1
+    if fresh(d / "复现报告.md"): repro += 1
     else: fails.append((r, "缺复现报告"))
 print(f"论文={len(papers)} 定义={defined} 编码={enc} 缺字段={mis} 无产出={nov} 复现报告={repro}")
 print("失败清单: 无" if not fails else "失败清单: " + "; ".join(f"{w}={r}" for r, w in fails))
 EOF
 
-# 2) 兜底：补生成缺失的复现报告
+# 2) 兜底：补生成缺失或过期的复现报告
 python3 - <<'EOF'
 import os, subprocess
 from pathlib import Path
 D = "{DATE}"
+START = float(Path("/tmp/.factor_run_start").read_text().strip())
 ts = Path("/mnt/d/paper-factor-data/数据仓库/因子产出/测试") / D
 for r in sorted(os.listdir(ts)) if ts.is_dir() else []:
     d = ts / r
-    if d.is_dir() and not (d / "复现报告.md").exists():
+    rep = d / "复现报告.md"
+    if d.is_dir() and not (rep.exists() and rep.stat().st_mtime >= START):
         print("补生成复现报告:", r)
         subprocess.run(["python", "scripts/claude_factor_helper.py",
                         "write-repro-report", "--date", D, "--report", r])
@@ -276,6 +310,9 @@ python3 .claude/hooks/factor_gate.py off
 
 **磁盘核对与 agent 报数不一致时，以磁盘为准**，在该行末尾加 `*`，并在最后补一行
 `* 磁盘核对与 agent 报数不一致：{一句话}`。除此之外不加任何内容。
+
+> ⚠️ **只报告本次运行的结果**：`定义/编码/缺字段/无产出/复现报告` 全部按
+> `mtime ≥ /tmp/.factor_run_start` 统计。同日重跑时，上一次的产物既不算编码，也不算缺字段。
 
 > ⚠️ **跨午夜时先查 `{DATE+1}` 目录**。有就按 no-clobber + md5 合并回 `{DATE}`
 > （同名同 hash 去重，不同 hash 保留 `{DATE}` 版），再删空的 `{DATE+1}` 目录。

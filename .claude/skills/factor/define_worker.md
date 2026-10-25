@@ -1,5 +1,7 @@
 # 定义 agent 作业指导
 
+> **数据根目录**：先运行 `python3 scripts/claude_factor_helper.py data-root` 获取实际路径（本机 D 盘 `/mnt/d/paper-factor-data`；另一台电脑 G 盘自动识别）。下文所有 `/mnt/d/paper-factor-data` 均以该输出为准。
+
 读原文 → 挖出因子定义 → 写 `extracted.json` → 返回。因子编码不由你做。
 
 ---

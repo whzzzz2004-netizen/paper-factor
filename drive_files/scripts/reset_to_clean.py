@@ -21,12 +21,16 @@ reset_to_clean.py — 把旧版数据仓库清理到"干净起点"（配合新 g
 import argparse
 import glob
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
-DATA_ROOT = Path(r"D:\paper-factor-data")
+_env_root = os.environ.get("PAPER_FACTOR_DATA_ROOT", "").strip()
+_g_root = Path(r"G:\paper-factor-data")
+_d_root = Path(r"D:\paper-factor-data")
+DATA_ROOT = Path(_env_root) if _env_root else (_g_root if (_g_root / "数据仓库").exists() else _d_root)
 WH = DATA_ROOT / "数据仓库"
 RAW = DATA_ROOT / "原始数据"
 RAW_FUND_DAILY = RAW / "非行情" / "日线"

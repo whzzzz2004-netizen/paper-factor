@@ -37,6 +37,13 @@ LLM 驱动的量化因子挖掘系统。从研报 PDF / 文章提取因子定义
 
 ## 全新复现步骤
 
+> **数据盘说明（重要）**：数据根目录由 `scripts/data_paths.py` 统一解析，优先级：
+> `PAPER_FACTOR_DATA_ROOT` 环境变量 > 自动探测（G 盘优先）> D 盘。
+> 当前开发机数据在 D 盘：`/mnt/d/paper-factor-data`；
+> **另一台电脑数据在 G 盘**：`/mnt/g/paper-factor-data`（Windows 为 `G:\paper-factor-data`）。
+> 在 G 盘电脑上 `git pull` 后**不需要改任何路径**，脚本会自动识别；也可强制指定：
+> `export PAPER_FACTOR_DATA_ROOT=/mnt/g/paper-factor-data`。
+
 要在一台新电脑上完全复现这个项目，需要做以下事情：
 
 ### 第一步：克隆代码
@@ -95,6 +102,7 @@ pip install -r requirements.txt
 复制 `.env.example` 为 `.env`，填入：
 
 - **JQDATA_USERNAME / JQDATA_PASSWORD**：聚宽账号，分钟因子计算需要
+- **TUSHARE_TOKEN**：Tushare token，指数行情/成分股/估值数据需要（`get_ts_index_data`）
 - **FACTOR_DATA_DIR**：数据目录，默认指向本地 `/mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量`
 - **OPENAI_API_KEY / OPENAI_API_BASE**：LLM API，因子提取/审查用
 - **CHAT_MODEL**：使用的模型

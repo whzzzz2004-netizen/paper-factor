@@ -34,7 +34,16 @@ from pathlib import Path
 # Constants
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).parent.parent
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+# 让直接运行本脚本的 agent 也能拿到 .env 里的 TUSHARE_TOKEN 等变量
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env")
+except Exception:
+    pass
+try:
+    from scripts.data_paths import DATA_ROOT
+except ImportError:
+    from data_paths import DATA_ROOT
 LITERATURE_REPORTS_DIR = DATA_ROOT / "数据仓库" / "因子产出" / "测试"
 SCHEMA_FILE = DATA_ROOT / "schema.json"
 # 研报目录：inbox 是投放/处理区，done 是已处理归档（用户手动控制投放数量）
@@ -93,7 +102,26 @@ EXTRA_DATA_TEXT = """\
                                   用途：行业中性化、行业分组统计、行业内排名、行业动量/轮动。
                                   用法：industry = INDUSTRY_DICT.get(stock, "未知")
 
-注：需要指数行情 / 指数成分股等其他在线数据时，本地不可用；按缺字段处理即可。
+  get_ts_index_data(symbol, data_type='price', start_date='2018-01-01', end_date=None)
+                                  Tushare 指数数据，首次调用下载并缓存为 parquet，之后读缓存。
+                                  symbol 用 Tushare 代码：000300.SH(沪深300)、000905.SH(中证500)、
+                                    000016.SH(上证50)、000852.SH(中证1000)、000906.SH(中证800)、
+                                    000688.SH(科创50)、000001.SH(上证指数)、399001.SZ(深证成指)、
+                                    399006.SZ(创业板指)、932000.CSI(中证2000)
+                                  data_type='price'      → 日线行情，DatetimeIndex 升序，列
+                                                           open/high/low/close/pre_close/change/pct_chg/vol/amount
+                                  data_type='components' → 截至 end_date 最近一期成分股，列 stock(6位代码)/weight
+                                  data_type='valuation'  → 指数估值，列 pe/pe_ttm/pb/turnover_rate/total_mv/float_mv 等
+                                  data_type='global'     → 全球指数日线（symbol 如 HSI/SPX）
+                                  默认 end_date=本地数据最后交易日。历史回测请传 T 日，或自行截断
+                                    idx[idx.index <= trade_date]；成分股同理，防幸存者偏差。
+                                  用途：市场收益、超额收益、Beta、相对强弱、CAPM、指数估值、成分股筛选。
+                                  需要 TUSHARE_TOKEN 环境变量（.env 已配置）。
+"""
+
+MINUTE_EXTRA_TEXT = """\
+分钟派生字段（不是 parquet 列，不要写进 --cols）：
+  amount = volume * close    # volume 单位股、close 单位元；--cols 只写 volume（close 自动加载）
 """
 
 def _detect_data_dir() -> Path:
@@ -1253,6 +1281,12 @@ def cmd_write_repro_report(args):
 # ---------------------------------------------------------------------------
 # Subcommand: show-columns — 显示可用数据列
 # ---------------------------------------------------------------------------
+def cmd_data_root(args):
+    """打印当前机器实际使用的数据根目录（D 盘 / G 盘 / 环境变量覆盖）。"""
+    print(DATA_ROOT)
+    return 0
+
+
 def cmd_show_columns(args):
     """Show available columns in stock data parquet files with descriptions.
 
@@ -1280,6 +1314,7 @@ def cmd_show_columns(args):
             print(f"  {c:30s} {_desc_for_col(c)}")
         print()
         print(EXTRA_DATA_TEXT, end="")
+        print("\n" + MINUTE_EXTRA_TEXT, end="")
         return 0
 
     # 日线行情列 + 非行情列
@@ -1435,6 +1470,9 @@ def main():
     p_rr.add_argument("--date", required=True, help="Date subdirectory (YYYY-MM-DD)")
     p_rr.add_argument("--report", required=True, help="Report name")
 
+    # data-root
+    sub.add_parser("data-root", help="打印当前机器实际使用的数据根目录（G 盘自动识别）")
+
     # show-columns
     p_showcols = sub.add_parser("show-columns", help="Show available columns in stock data (--type minute 显示分钟线列)")
     p_showcols.add_argument("--type", default=None, help="Factor type: daily/minute/cross_section/deep_learning（决定展示日线+非行情列 还是 分钟线列）")
@@ -1472,6 +1510,7 @@ def main():
         "deploy-to-full": cmd_deploy_to_full,
         "save-extracted": cmd_save_extracted,
         "write-repro-report": cmd_write_repro_report,
+        "data-root": cmd_data_root,
         "show-columns": cmd_show_columns,
         "archive-inbox": cmd_archive_inbox,
     }

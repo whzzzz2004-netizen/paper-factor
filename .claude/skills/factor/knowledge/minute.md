@@ -1,5 +1,7 @@
 # 分钟因子模板
 
+> **数据根目录**：先运行 `python3 scripts/claude_factor_helper.py data-root` 获取实际路径（本机 D 盘 `/mnt/d/paper-factor-data`；另一台电脑 G 盘自动识别）。下文所有 `/mnt/d/paper-factor-data` 均以该输出为准。
+
 **所有分钟因子一律用 minute 模板**——包括分钟数据上的行业分位/排名等截面操作
 （模板内置可选的 `cross_section_transform` 钩子，见下）。没有第二个分钟模板。
 
@@ -61,6 +63,17 @@ def calc_factors_one_day(df, stock):
 - 多天数据用 `df.index.date` 分组
 - 字段可能随数据更新而变化，**不要凭记忆假定有哪些列**
 
+### 派生字段 `amount`（成交额）
+
+分钟数据没有 `amount` 列。需要成交额时，直接在函数内计算：
+
+```python
+amount = df['volume'] * df['close']   # volume 单位股，close 单位元
+```
+
+这是**精确推导**，不算缺列；`--cols` 里只写 `volume`（`close` 模板自动加载），
+**不要把 `amount` 写进 `--cols`**（它不是 parquet 列）。
+
 ## 分钟 · 市场数据模式（当因子需要全市场数据时）
 
 **Step 0：检查预计算文件（测试 + 全量都要）**
@@ -88,8 +101,8 @@ def calc_factors_one_day(df, stock):
 
 ## 额外可用数据（框架已注入，不是 parquet 列，**不算缺字段**）
 
-> `INDUSTRY_DICT` 由模板自动加载，函数内直接可用。它**不出现在 `show-columns --type minute` 输出里**，
-> 但属于合法可用数据——需要行业分类时**不要判缺列**。
+> `INDUSTRY_DICT` 与 `get_ts_index_data(...)` 由模板自动注入，函数内直接可用。它们**不出现在 `show-columns --type minute` 输出里**，
+> 但属于合法可用数据——需要行业分类 / 指数数据时**不要判缺列**。
 > 注：分钟线数据目录下没有 `industry.json`，模板会自动回退到同级的「日线」目录读取，已实测可用。
 
 - 字典：`INDUSTRY_DICT[股票代码] = 行业名`（如 `INDUSTRY_DICT["000001"] == "银行I"`）
@@ -97,15 +110,43 @@ def calc_factors_one_day(df, stock):
 - 用法：`industry = INDUSTRY_DICT.get(stock, "未知")`
 - 用途：行业中性化、行业分组统计、行业内排名、行业动量、行业轮动
 
-**指数行情、指数成分股等其他在线数据本地不可用**，按缺字段处理，不要用相近数据代理。
+
+### `get_ts_index_data(symbol, data_type)` — Tushare 指数数据（行情 / 成分股 / 估值）
+
+首次调用联网下载并缓存为 parquet，之后读缓存。`symbol` 用 **Tushare 代码**（不是聚宽格式）：
+
+常用：`000300.SH`(沪深300)、`000905.SH`(中证500)、`000016.SH`(上证50)、`000852.SH`(中证1000)、
+`000906.SH`(中证800)、`000688.SH`(科创50)、`000001.SH`(上证指数)、`399001.SZ`(深证成指)、
+`399006.SZ`(创业板指)、`932000.CSI`(中证2000)。
+
+| data_type | 返回 | 说明 |
+|---|---|---|
+| `'price'` | DatetimeIndex 升序，列 `open/high/low/close/pre_close/change/pct_chg/vol/amount` | 指数日线行情 |
+| `'components'` | 列 `stock`(6位代码)/`weight` | 截至 `end_date` 最近一期（月末）成分股 |
+| `'valuation'` | 列 `pe/pe_ttm/pb/turnover_rate/total_mv/float_mv` 等 | 指数每日估值 |
+| `'global'` | 日线行情 | 全球指数（symbol 如 `HSI`/`SPX`） |
+
+```python
+idx = get_ts_index_data('000300.SH', 'price')               # 沪深300 行情
+stocks = get_ts_index_data('000905.SH', 'components')       # 中证500 成分股（截至 end_date）
+pe = get_ts_index_data('000300.SH', 'valuation')['pe_ttm']  # 沪深300 每日 PE_TTM
+```
+
+- 用途：市场收益、超额收益、Beta、相对强弱、CAPM、指数估值、成分股筛选
+- 需要 `TUSHARE_TOKEN` 环境变量（`.env` 已配置）
+- ⚠️ **前瞻约束**：默认 `end_date` 是本地数据最后交易日；按 T 日计算时必须传
+  `end_date=trade_date`，或自行截断 `idx[idx.index <= trade_date]`。成分股同理，
+  不要用今天的成分股回填历史（幸存者偏差）
+- ⚠️ 返回的是**日频**数据，与分钟因子的时间粒度不同，需自行按日对齐
 
 ## 特殊约束
 
+- **分钟数据没有 `amount`**：成交额用 `df['volume'] * df['close']` 计算（volume 股 × close 元），不要写进 `--cols`
 1. **返回所有日期的值**：groupby('_date') 后每天都要出值，不能只取最后一天
 2. 返回 `pd.Series(index=date_series, values=values)`，不是 dict
 3. 日内涨跌用 `return` 列（不含隔夜跳空）
 4. 无复权概念，直接用 `close * factor`
-5. **禁止读日线 parquet 数据列**（分钟模板只提供分钟列）；但 `INDUSTRY_DICT` 是框架注入的额外数据，可以用
+5. **禁止读日线 parquet 数据列**（分钟模板只提供分钟列）；但 `INDUSTRY_DICT` / `get_ts_index_data(...)` 是框架注入的额外数据，可以用
 6. **禁止分钟级 for 循环**（用向量化操作）
 7. **字段只认 `show-columns --type minute` 输出**（外加上面的「额外可用数据」）：有则用；无但能由清单内的列精确推导则推导着用；其余判缺列。**缺字段不能近似、不能代理**，也不要去别处找
 

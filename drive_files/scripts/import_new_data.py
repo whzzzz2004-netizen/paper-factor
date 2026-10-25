@@ -43,8 +43,21 @@ import pyarrow.parquet as pq
 # 1. 路径与常量
 # ═══════════════════════════════════════════════════════════════════════
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_ROOT = Path(os.environ.get("PAPER_FACTOR_DATA_ROOT",
-                                r"D:\paper-factor-data" if os.name == "nt" else "/mnt/d/paper-factor-data"))
+def _default_data_root() -> Path:
+    env = os.environ.get("PAPER_FACTOR_DATA_ROOT", "").strip()
+    if env:
+        return Path(env).expanduser()
+    if os.name == "nt":
+        candidates = (Path(r"G:\paper-factor-data"), Path(r"D:\paper-factor-data"))
+    else:
+        candidates = (Path("/mnt/g/paper-factor-data"), Path("/mnt/d/paper-factor-data"))
+    for candidate in candidates:
+        if (candidate / "数据仓库").is_dir() or (candidate / "schema.json").is_file():
+            return candidate
+    return candidates[-1]
+
+
+DATA_ROOT = _default_data_root()
 WH = "数据仓库"
 
 # 项目仓库（prompts.yaml 所属）：环境变量 > repo_path.txt > 数据根
@@ -481,17 +494,21 @@ def inspect_file(path: Path, hint: Optional[str], load: bool = False) -> FileInf
 # 4. 写入助手
 # ═══════════════════════════════════════════════════════════════════════
 def merge_stock(dst: Path, df: pd.DataFrame):
-    """合并单只股票到 per-stock（按日期去重，新数据优先）。
+    """合并单只股票到 per-stock（按日期对齐，新值优先，保留其他列）。
 
-    策略：新列（原数据中不存在）只保留源真实的日期值，绝不 ffill 填充——
-    源数据没有该日期 → 保持 NaN；若后续更新补齐了这些日期，增量合并时
-    会用新值覆盖 NaN（reindex/combine 天然支持）。
+    关键：只更新 df 里出现的列。旧实现用 concat + duplicated(keep="last")，
+    新批次只带自己的列，会把其他批次的列在重叠日期整行覆盖成 NaN（已实测）。
     """
     df = df.sort_index()
     if dst.exists():
         old = pd.read_parquet(dst)
-        combined = pd.concat([old, df])
-        combined = combined[~combined.index.duplicated(keep="last")]
+        combined = old.reindex(old.index.union(df.index))
+        for col in df.columns:
+            if col in combined.columns:
+                # 新值非空则覆盖旧值；新值为空时保留旧值
+                combined[col] = df[col].combine_first(combined[col])
+            else:
+                combined[col] = df[col]
         combined = combined.sort_index()
         pq.write_table(pa.Table.from_pandas(combined), dst)
     else:
@@ -1136,6 +1153,7 @@ def do_import(dry_run: bool = False) -> int:
 
     factor_infos, minute_factor_infos, minute_infos = [], [], []
     daily_path = None
+    daily_data = None
 
     # ── 分拣 ──
     for info in inspections:

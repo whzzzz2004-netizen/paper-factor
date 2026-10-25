@@ -157,12 +157,12 @@ nodes:
       - 成长因子
     requires: []
     content: |-
-      当前 paper_factor 本地数据包括：日频价量数据（daily_pv.h5）、分钟频价量数据（minute_pv.h5）、111 个预计算的基本面因子（存储在 daily_pv.h5 中）、申万一级行业分类数据（industry.json）、以及可通过聚宽接口按需下载的指数数据。
+      当前 paper_factor 本地数据包括：日频价量数据（daily_pv.h5）、分钟频价量数据（minute_pv.h5）、111 个预计算的基本面因子（存储在 daily_pv.h5 中）、申万一级行业分类数据（industry.json）、以及可通过 Tushare 接口按需获取的指数数据。
       日频可用列：$open, $close, $high, $low, $volume, $factor, $pct_chg, $pre_close, $turnover_rate。
       分钟频可用列：$open, $close, $high, $low, $volume, $vwap, $factor, $return。
       基本面因子列名格式：$盈利因子1~$盈利因子14, $价值因子1~$价值因子12, $成长因子1~$成长因子16, $运营因子1~$运营因子22, $杠杆因子1~$杠杆因子8, $质量因子1~$质量因子15, $现金流因子1~$现金流因子9, $其他因子1~$其他因子13, $股本因子1~$股本因子5, $动量因子1~$动量因子3, $特殊因子1~$特殊因子4。
       行业分类：使用 INDUSTRY_DICT[stock] 获取股票所属申万一级行业（如 "银行I"、"食品饮料I"）。
-      指数数据：使用 get_jq_data(symbol, 'price') 获取指数行情，symbol 为聚宽格式（如 '000905.XSHG' 为中证500）。
+      指数数据：使用 get_ts_index_data(symbol, 'price') 获取指数行情，symbol 为 Tushare 格式（如 '000905.SH' 为中证500）。
       当论文因子依赖本地不存在的数据时，正确做法是跳过该因子并报告缺失的数据，而不是用无关代理变量替代。
 
   industry_classification:
@@ -208,15 +208,16 @@ nodes:
     requires:
       - local_data_discipline
     content: |-
-      指数数据通过聚宽（JoinQuant）接口按需下载，首次调用后自动缓存为 parquet 文件。
-      框架提供 get_jq_data(symbol, data_type) 函数，获取指数行情用 get_jq_data(symbol, 'price')。
-      symbol 使用聚宽格式：'000905.XSHG'=中证500, '000300.XSHG'=沪深300, '000001.XSHG'=上证指数, '399006.XSHE'=创业板指。
-      返回 DataFrame，列：open, close, high, low, volume, money。
-      用途：市场收益、超额收益、Beta、相对强弱、CAPM 模型等需要基准指数的因子。
-      注意：首次调用需要联网下载，后续调用直接读缓存，无网络开销。
+      指数数据通过 Tushare 接口按需获取，首次调用后自动缓存为 parquet 文件。
+      框架提供 get_ts_index_data(symbol, data_type) 函数，获取指数行情用 get_ts_index_data(symbol, 'price')。
+      symbol 使用 Tushare 格式：'000905.SH'=中证500, '000300.SH'=沪深300, '000001.SH'=上证指数, '399006.SZ'=创业板指, '932000.CSI'=中证2000。
+      data_type='price' 返回 DatetimeIndex 升序的 DataFrame，列 open/high/low/close/pre_close/change/pct_chg/vol/amount。
+      data_type='components' 返回成分股 stock(6位代码)/weight；data_type='valuation' 返回 pe/pe_ttm/pb/turnover_rate 等。
+      用途：市场收益、超额收益、Beta、相对强弱、CAPM、指数估值、成分股筛选。
+      注意：默认 end_date=本地数据最后交易日；历史回测必须按 T 日截断，成分股同理防幸存者偏差。
 
-  jqdata_fallback:
-    title: 聚宽通用数据获取
+  tushare_fallback:
+    title: Tushare 指数数据获取
     aliases:
       - 成分股
       - 指数成分
@@ -227,10 +228,9 @@ nodes:
       - 板块成分
       - 指数列表
       - 股票列表
-      - 聚宽
-      - JoinQuant
-      - jqdatasdk
-      - 聚宽数据
+      - Tushare
+      - tushare
+      - tushare pro
       - 在线数据
       - 联网获取
       - 下载数据
@@ -244,8 +244,9 @@ nodes:
     requires:
       - local_data_discipline
     content: |-
-      当因子需要本地数据中不存在的字段或标的时，可使用 get_jq_data(symbol, data_type) 通过聚宽在线获取并自动缓存。
-      - get_jq_data('000905.XSHG', 'index_components') 返回中证500成分股列表
-      - get_jq_data('600519.XSHG', 'price') 返回个股行情（本地无此标的时使用）
+      当因子需要本地数据中不存在的指数数据时，可使用 get_ts_index_data(symbol, data_type) 通过 Tushare 在线获取并自动缓存。
+      - get_ts_index_data('000905.SH', 'components') 返回中证500成分股列表
+      - get_ts_index_data('000300.SH', 'valuation') 返回沪深300指数估值
+      - get_ts_index_data('000300.SH', 'price') 返回指数行情
       - 优先检查本地缓存，已有则跳过下载。
-      - 需要 JQ_USER / JQ_PASS 环境变量（已注入 Docker 容器）。
+      - 需要 TUSHARE_TOKEN 环境变量。

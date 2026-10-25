@@ -23,7 +23,10 @@ except ImportError:
     from scripts.evaluate_factor import load_full_data_label, compute_decile_returns, to_factor_long_series
 
 PROJECT_ROOT = Path(__file__).parent.parent
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+try:
+    from scripts.data_paths import DATA_ROOT
+except ImportError:
+    from data_paths import DATA_ROOT
 FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量")))
 
 

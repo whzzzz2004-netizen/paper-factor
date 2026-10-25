@@ -1,5 +1,7 @@
 # Phase 2 · 第二步：写核心函数 + 跑测试（字段已确认齐全）
 
+> **数据根目录**：先运行 `python3 scripts/claude_factor_helper.py data-root` 获取实际路径（本机 D 盘 `/mnt/d/paper-factor-data`；另一台电脑 G 盘自动识别）。下文所有 `/mnt/d/paper-factor-data` 均以该输出为准。
+
 > **前提**：你已按 `phase2_check.md` 跑过 `show-columns`，确认字段齐全，并挑出了本因子的 `{cols}`。
 > **不要重复跑 show-columns。**
 
@@ -79,7 +81,13 @@ def calc_factor_series(df, stock):
 - 禁止 `transform('count')` → 用 `transform('size')`；禁止 `rolling.apply(lambda)`
 - 布尔序列 `shift()` 后必须 `fillna(False)`；`np.inf` / `-np.inf` → `np.nan`
 - **禁止分钟级 for 循环**（用向量化操作）
+- **分钟线没有 `amount`**：成交额用 `df['volume'] * df['close']`（volume 股 × close 元）；`--cols` 只写 `volume`，不要写 `amount`
 - **`INDUSTRY_DICT[股票代码]` = 申万一级行业名**，需要「行业分类」时用它（不写进 `--cols`）
+- **`get_ts_index_data(symbol, data_type)` = Tushare 指数数据**：`'price'`(行情)、`'components'`(成分股)、
+  `'valuation'`(PE/PB 等)、`'global'`(全球指数)，如 `get_ts_index_data('000300.SH', 'price')`；
+  常用代码 `000300.SH`(沪深300)、`000905.SH`(中证500)、`000016.SH`(上证50)、`000852.SH`(中证1000)、
+  `399006.SZ`(创业板指)、`932000.CSI`(中证2000)。需要指数数据时用它（不写进 `--cols`）；
+  **历史回测必须传 `end_date=trade_date` 或自行截断** `idx[idx.index <= trade_date]`（成分股同理）
 
 ---
 
