@@ -132,7 +132,8 @@ Barra 暴露（如 `EARNVAR`）只用于评估，不是因子输入。
 **不要写代码，不要跑 test-and-export，不要 deploy-to-full。**
 
 用 Write 工具写 `{name}.missing.json`（**完整路径**，目录不存在时先创建）：
-`/mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.missing.json`
+`<数据根>/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.missing.json`
+（数据根用 `python scripts/claude_factor_helper.py data-root` 获取）
 
 ```json
 {

@@ -79,10 +79,11 @@ while 还有未派的篇 or in_flight 非空:
 python3 - <<'EOF'
 import os
 from pathlib import Path
+from scripts.data_paths import DATA_ROOT
 D = "{DATE}"
 START = float(Path("/tmp/.factor_run_start").read_text().strip())
 REPORTS = ["报告名1", "报告名2", ...]   # 本批全部篇目
-ts = Path("/mnt/d/paper-factor-data/数据仓库/因子产出/测试") / D
+ts = DATA_ROOT / "数据仓库" / "因子产出" / "测试" / D
 
 def fresh(p):
     return p.exists() and p.stat().st_mtime >= START

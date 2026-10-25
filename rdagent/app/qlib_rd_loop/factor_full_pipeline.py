@@ -22,7 +22,9 @@ from pathlib import Path
 
 # ── 路径常量（与 scripts/full.py 保持一致） ──
 PROJECT_ROOT = Path(__file__).resolve().parents[3]  # rdagent/app/qlib_rd_loop/ → project root
-DATA_ROOT = Path("/mnt/d/paper-factor-data")
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from scripts.data_paths import DATA_ROOT
 
 # 数据目录自动检测（多路径降级）
 def _detect_data_dir() -> Path:

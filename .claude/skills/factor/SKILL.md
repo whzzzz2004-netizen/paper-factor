@@ -4,8 +4,8 @@
 
 ## 用法
 
-- `/factor` — 扫描 `/mnt/d/paper-factor-data/papers/inbox/`，处理所有未处理项
-- `/factor /mnt/d/paper-factor-data/papers/inbox/某篇.pdf` — 处理单个 PDF
+- `/factor` — 扫描数据根下的 `papers/inbox/`（默认 D 盘；G 盘自动识别），处理所有未处理项
+- `/factor <数据根>/papers/inbox/某篇.pdf` — 处理单个 PDF
 
 ### 研报目录：inbox（处理区） / done（归档区）
 
@@ -96,7 +96,8 @@ date +%s > /tmp/.factor_run_start   # 本次运行起点：收尾只统计 mtime
 > 运行起点写入 `/tmp/.factor_run_start`，Step 3 与各层子 agent 的磁盘核对都必须按它过滤 mtime。
 
 ```bash
-ls /mnt/d/paper-factor-data/papers/inbox/*.pdf /mnt/d/paper-factor-data/papers/inbox/*.md 2>/dev/null
+DR=$(python3 scripts/claude_factor_helper.py data-root)
+ls "$DR"/papers/inbox/*.pdf "$DR"/papers/inbox/*.md 2>/dev/null
 ```
 
 > ⚠️ **必须同时包含 `.md`**：只扫 `*.pdf` 会静默漏掉 Markdown 研报。
@@ -107,7 +108,8 @@ ls /mnt/d/paper-factor-data/papers/inbox/*.pdf /mnt/d/paper-factor-data/papers/i
 ```bash
 python3 - <<'EOF'
 from pathlib import Path
-inbox = Path("/mnt/d/paper-factor-data/papers/inbox")
+from scripts.data_paths import DATA_ROOT
+inbox = DATA_ROOT / "papers" / "inbox"
 names = sorted(p.stem for p in inbox.iterdir() if p.suffix.lower() in (".pdf", ".md"))
 Path("/tmp/.factor_run_papers").write_text("\n".join(names), encoding="utf-8")
 print(len(names), "papers")
@@ -118,20 +120,32 @@ EOF
 
 **数据完整性预检（跳过会导致后续跑全量而非测试数据）：**
 ```bash
-python3 -c "import json; sl=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试/stock_data/daily/stock_list.json')); td=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试/stock_data/daily/trade_dates.json')); print(f'日线测试: {len(sl)}只×{len(td)}天')"
-python3 -c "import json; sl=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试/stock_data/stock_list.json')); td=json.load(open('/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试/stock_data/trade_dates.json')); print(f'分钟测试: {len(sl)}只×{len(td)}天')"
+python3 - <<'EOF'
+import json
+from scripts.data_paths import DATA_ROOT
+for label, sub in [
+    ("日线测试", "数据仓库/行情数据/日线/测试/stock_data/daily"),
+    ("分钟测试", "数据仓库/行情数据/分钟线/测试/stock_data"),
+]:
+    base = DATA_ROOT / sub
+    sl = json.load(open(base / "stock_list.json"))
+    td = json.load(open(base / "trade_dates.json"))
+    print(f"{label}: {len(sl)}只×{len(td)}天")
+EOF
 ```
 日线/分钟都必须是 300只×300天，否则**先修复数据再继续**。
 
 **全市场数据（如全市场分钟收益率）需预计算市场代理文件**，检查两个目录：
 ```bash
-ls /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试/stock_data/minute_by_date/market_minute_return.parquet
-ls /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量/stock_data/minute_by_date/market_minute_return.parquet
+DR=$(python3 scripts/claude_factor_helper.py data-root)
+ls "$DR"/数据仓库/行情数据/分钟线/测试/stock_data/minute_by_date/market_minute_return.parquet
+ls "$DR"/数据仓库/行情数据/分钟线/全量/stock_data/minute_by_date/market_minute_return.parquet
 ```
 缺失就跑（测试 + 全量都要）：
 ```bash
-python /mnt/d/paper-factor-data/scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试"
-python /mnt/d/paper-factor-data/scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量"
+DR=$(python3 scripts/claude_factor_helper.py data-root)
+python scripts/precompute_market_proxy.py --data-dir "$DR/数据仓库/行情数据/分钟线/测试"
+python scripts/precompute_market_proxy.py --data-dir "$DR/数据仓库/行情数据/分钟线/全量"
 ```
 
 ---
@@ -236,19 +250,20 @@ agent 可能返回格式不对、超时、或静默失败。**所有产物都落
 python3 - <<'EOF'
 import os, json
 from pathlib import Path
+from scripts.data_paths import DATA_ROOT
 D = "{DATE}"
 START = float(Path("/tmp/.factor_run_start").read_text().strip())
 snap = Path("/tmp/.factor_run_papers")
 if snap.exists() and snap.read_text().strip():
     papers = [x for x in snap.read_text().splitlines() if x.strip()]
 else:
-    root = Path("/mnt/d/paper-factor-data/papers")
+    root = DATA_ROOT / "papers"
     inbox = root / "inbox"
     base = inbox if (inbox.is_dir() and any(inbox.iterdir())) else root / "done" / D
     papers = sorted(p.stem for p in base.iterdir()
                     if p.suffix.lower() in (".pdf", ".md")) if base.is_dir() else []
-ex = Path("/mnt/d/paper-factor-data/数据仓库/因子产出/extracted_reports") / D
-ts = Path("/mnt/d/paper-factor-data/数据仓库/因子产出/测试") / D
+ex = DATA_ROOT / "数据仓库" / "因子产出" / "extracted_reports" / D
+ts = DATA_ROOT / "数据仓库" / "因子产出" / "测试" / D
 
 def fresh(p):
     return p.exists() and p.stat().st_mtime >= START
@@ -279,9 +294,10 @@ EOF
 python3 - <<'EOF'
 import os, subprocess
 from pathlib import Path
+from scripts.data_paths import DATA_ROOT
 D = "{DATE}"
 START = float(Path("/tmp/.factor_run_start").read_text().strip())
-ts = Path("/mnt/d/paper-factor-data/数据仓库/因子产出/测试") / D
+ts = DATA_ROOT / "数据仓库" / "因子产出" / "测试" / D
 for r in sorted(os.listdir(ts)) if ts.is_dir() else []:
     d = ts / r
     rep = d / "复现报告.md"

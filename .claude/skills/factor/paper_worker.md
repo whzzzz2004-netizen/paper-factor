@@ -50,7 +50,8 @@ Read `.claude/skills/factor/define_worker.md` 并严格照做，不做文件之�
 ```bash
 python3 -c "
 import os
-p = '/mnt/d/paper-factor-data/数据仓库/因子产出/extracted_reports/{DATE}/{报告名}.extracted.json'
+from scripts.data_paths import DATA_ROOT
+p = DATA_ROOT / '数据仓库' / '因子产出' / 'extracted_reports' / '{DATE}' / '{报告名}.extracted.json'
 s = float(open('/tmp/.factor_run_start').read())
 print('FRESH' if os.path.exists(p) and os.path.getmtime(p) >= s else 'STALE/MISSING')
 "
@@ -65,7 +66,8 @@ print('FRESH' if os.path.exists(p) and os.path.getmtime(p) >= s else 'STALE/MISS
 ```bash
 python -c "
 import json
-d=json.load(open('/mnt/d/paper-factor-data/数据仓库/因子产出/extracted_reports/{DATE}/{报告名}.extracted.json'))
+from scripts.data_paths import DATA_ROOT
+d=json.load(open(DATA_ROOT / '数据仓库' / '因子产出' / 'extracted_reports' / '{DATE}' / '{报告名}.extracted.json'))
 print(len(d['factors']))
 for f in d['factors']: print(f['name'], f['type'], f['lookback'])
 "
@@ -89,7 +91,8 @@ for f in d['factors']: print(f['name'], f['type'], f['lookback'])
 ```bash
 N=$(python3 -c "
 from pathlib import Path
-d = Path('/mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{报告名}')
+from scripts.data_paths import DATA_ROOT
+d = DATA_ROOT / '数据仓库' / '因子产出' / '测试' / '{DATE}' / '{报告名}'
 s = float(open('/tmp/.factor_run_start').read())
 n = 0
 if d.is_dir():
@@ -145,7 +148,8 @@ Read `.claude/skills/factor/phase2_code.md`，按其说明写核心函数并跑 
 - 函数名: daily→calc_factor_series, minute→calc_factors_one_day, cross_section→calc_factor_cross_section, deep_learning→train_model
 - lookback: {lookback}
 - 报告名: {报告名}
-- 因子定义来源: /mnt/d/paper-factor-data/数据仓库/因子产出/extracted_reports/{DATE}/{报告名}.extracted.json
+- 因子定义来源: <数据根>/数据仓库/因子产出/extracted_reports/{DATE}/{报告名}.extracted.json
+  （数据根用 `python scripts/claude_factor_helper.py data-root` 获取）
   （取 `factors` 里 name=="{name}" 的条目。**不要读该文件里的其他因子，也不要读别的文件**）
 
 完成后**只返回这一行 JSON，前后不加任何文字**：

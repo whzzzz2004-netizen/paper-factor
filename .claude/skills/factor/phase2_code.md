@@ -118,7 +118,7 @@ echo "exit=$?"      # 124 = 超时被杀
 
 ```bash
 python scripts/claude_factor_helper.py deploy-to-full \
-  --code /mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py \
+  --code "$(python3 scripts/claude_factor_helper.py data-root)/数据仓库/因子产出/测试/{DATE}/{report_name}/{name}/{name}.code.py" \
   --date {DATE}
 ```
 > deploy-to-full 的 `--code` 用上面这个路径，**不要**多套一层 `{name}` 目录。

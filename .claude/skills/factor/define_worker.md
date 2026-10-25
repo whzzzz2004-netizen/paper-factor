@@ -78,7 +78,8 @@
 
 ```bash
 python scripts/claude_factor_helper.py save-extracted --name "{报告名}" --date {DATE} < /tmp/{DATE}_{报告名}_factors.json
-# 期望输出：OK: /mnt/d/paper-factor-data/数据仓库/因子产出/extracted_reports/{DATE}/{报告名}.extracted.json
+# 期望输出：OK: <数据根>/数据仓库/因子产出/extracted_reports/{DATE}/{报告名}.extracted.json
+# 数据根用 python scripts/claude_factor_helper.py data-root 查询
 ```
 
 ---

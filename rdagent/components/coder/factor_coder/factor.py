@@ -609,8 +609,8 @@ def _resolve_daily_dir():
     _cands = [
         DATA_DIR / "stock_data" / "daily",
         DATA_DIR.parent.parent / "日线" / DATA_DIR.name / "stock_data" / "daily",
-        Path("/mnt/d/paper-factor-data/数据仓库/行情数据/日线/全量/stock_data/daily"),
-        Path("/mnt/d/paper-factor-data/数据仓库/行情数据/日线/测试/stock_data/daily"),
+        Path({str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily")!r}),
+        Path({str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "测试" / "stock_data" / "daily")!r}),
     ]
     for _c in _cands:
         if _c.exists():

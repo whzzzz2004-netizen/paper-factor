@@ -78,14 +78,16 @@ amount = df['volume'] * df['close']   # volume 单位股，close 单位元
 
 **Step 0：检查预计算文件（测试 + 全量都要）**
 ```bash
-ls /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试/stock_data/minute_by_date/market_minute_return.parquet
-ls /mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量/stock_data/minute_by_date/market_minute_return.parquet
+DR=$(python3 scripts/claude_factor_helper.py data-root)
+ls "$DR"/数据仓库/行情数据/分钟线/测试/stock_data/minute_by_date/market_minute_return.parquet
+ls "$DR"/数据仓库/行情数据/分钟线/全量/stock_data/minute_by_date/market_minute_return.parquet
 ```
 
 **Step 1：缺失就立即预计算（先跑再写函数！两个目录都要跑）**
 ```bash
-python /mnt/d/paper-factor-data/scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/测试"
-python /mnt/d/paper-factor-data/scripts/precompute_market_proxy.py --data-dir "/mnt/d/paper-factor-data/数据仓库/行情数据/分钟线/全量"
+DR=$(python3 scripts/claude_factor_helper.py data-root)
+python scripts/precompute_market_proxy.py --data-dir "$DR/数据仓库/行情数据/分钟线/测试"
+python scripts/precompute_market_proxy.py --data-dir "$DR/数据仓库/行情数据/分钟线/全量"
 ```
 
 **Step 2：模块级加载（一次性，不要在逐日函数内重复读取）**
