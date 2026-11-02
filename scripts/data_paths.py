@@ -6,10 +6,11 @@
 
 优先级：
   1. 环境变量 PAPER_FACTOR_DATA_ROOT（显式指定，最可靠）
-  2. 自动探测：G 盘存在数据仓库则用 G，否则用 D
+  2. 自动探测：D 盘存在数据仓库则用 D，否则用 G
   3. 默认 D 盘
 
-这样另一台电脑 git pull 后无需改任何路径，脚本会自动落到 G 盘。
+当前 Windows 机器直接使用 D:\\paper-factor-data；另一台电脑若没有 D 盘数据，
+会自动回退到 G:\\paper-factor-data。
 """
 
 from __future__ import annotations
@@ -19,9 +20,10 @@ from pathlib import Path
 
 
 def _candidates() -> tuple[Path, Path]:
+    """当前 Windows 机器优先 D 盘；D 盘没有数据时回退 G 盘。"""
     if os.name == "nt":
-        return Path(r"G:\paper-factor-data"), Path(r"D:\paper-factor-data")
-    return Path("/mnt/g/paper-factor-data"), Path("/mnt/d/paper-factor-data")
+        return Path(r"D:\paper-factor-data"), Path(r"G:\paper-factor-data")
+    return Path("/mnt/d/paper-factor-data"), Path("/mnt/g/paper-factor-data")
 
 
 def resolve_data_root() -> Path:
@@ -29,11 +31,11 @@ def resolve_data_root() -> Path:
     if env:
         return Path(env).expanduser()
 
-    g_drive, d_drive = _candidates()
-    for candidate in (g_drive, d_drive):
+    first, second = _candidates()
+    for candidate in (first, second):
         if (candidate / "数据仓库").is_dir() or (candidate / "schema.json").is_file():
             return candidate
-    return d_drive
+    return first
 
 
 DATA_ROOT = resolve_data_root()

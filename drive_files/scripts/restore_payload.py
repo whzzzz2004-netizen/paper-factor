@@ -22,7 +22,7 @@ from pathlib import Path
 _env_root = os.environ.get("PAPER_FACTOR_DATA_ROOT", "").strip()
 _g_root = Path(r"G:\paper-factor-data")
 _d_root = Path(r"D:\paper-factor-data")
-DATA_ROOT = Path(_env_root) if _env_root else (_g_root if (_g_root / "数据仓库").exists() else _d_root)
+DATA_ROOT = Path(_env_root) if _env_root else (_d_root if (_d_root / "数据仓库").exists() else _g_root)
 PAYLOAD = DATA_ROOT / "scripts" / "deploy_payload"
 
 

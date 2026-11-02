@@ -21,6 +21,10 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 MAIN = SCRIPT_DIR / "import_new_data.py"
 
+# 数据根 = scripts 的上一级（本机 D:\paper-factor-data，复制到 G 盘则为 G:\...）。
+# 显式设置后，import_new_data.py 不再依赖盘符猜测。
+os.environ.setdefault("PAPER_FACTOR_DATA_ROOT", str(SCRIPT_DIR.parent))
+
 
 def run_py(args: list) -> int:
     cmd = [sys.executable, str(MAIN)] + args

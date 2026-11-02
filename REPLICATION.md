@@ -8,24 +8,41 @@
 
 ## 数据盘路径（D 盘 / G 盘）
 
-本仓库平时在 **D 盘**开发，另一台电脑的数据在 **G 盘**：
+本机数据在 **D 盘**，另一台电脑的数据在 **G 盘**：
 
 | 机器 | Windows 路径 | WSL 路径 |
 |---|---|---|
 | 当前开发机 | `D:\paper-factor-data` | `/mnt/d/paper-factor-data` |
 | 另一台电脑 | `G:\paper-factor-data` | `/mnt/g/paper-factor-data` |
 
-`scripts/data_paths.py` 按以下顺序自动解析，另一台电脑 `git pull` 后**不用改代码**：
+数据导入脚本按以下顺序自动解析：
 
 1. `PAPER_FACTOR_DATA_ROOT` 环境变量（显式指定）
-2. 自动探测：G 盘存在 `数据仓库` → 用 G 盘
-3. 否则用 D 盘
+2. 自动探测：**D 盘存在 `数据仓库` → 用 D 盘**
+3. 否则用 G 盘
+
+所以 **Windows 原生导入**直接在本机运行：
+
+```bat
+D:\paper-factor-data\scripts\getdata.bat
+```
+
+或在 `D:\paper-factor-data\scripts` 下：
+
+```bat
+python getdata.py
+```
 
 需要强制指定时：
 
+```bat
+set PAPER_FACTOR_DATA_ROOT=G:\paper-factor-data
+```
+
+WSL：
+
 ```bash
-export PAPER_FACTOR_DATA_ROOT=/mnt/g/paper-factor-data      # WSL
-# PowerShell: $env:PAPER_FACTOR_DATA_ROOT = "G:\paper-factor-data"
+export PAPER_FACTOR_DATA_ROOT=/mnt/g/paper-factor-data
 ```
 
 查看当前实际使用的数据根：
@@ -34,9 +51,12 @@ export PAPER_FACTOR_DATA_ROOT=/mnt/g/paper-factor-data      # WSL
 python scripts/claude_factor_helper.py data-root
 ```
 
-> ⚠️ 如果另一台电脑的 `.env` 里还写着 `/mnt/d/...` 的 `FACTOR_DATA_DIR` /
-> `RDAGENT_FACTOR_DATA_DIR`，请改成 `/mnt/g/...` 或直接删除这两行，
-> 否则旧路径会覆盖自动探测。
+> ⚠️ 如果 `.env` 里还写着旧盘的 `FACTOR_DATA_DIR` / `RDAGENT_FACTOR_DATA_DIR`，
+> 请改成当前数据根或直接删除这两行，否则旧路径会覆盖自动探测。
+>
+> Windows 原生导入不依赖 bash/WSL；`repo_path.txt` 若仍指向 WSL 仓库路径，
+> `getdata` 会跳过“刷新提示词”，不影响数据导入。需要刷新提示词时，
+> 设置 `PAPER_FACTOR_REPO` 为 Windows 仓库路径，或修改 `repo_path.txt`。
 
 ---
 

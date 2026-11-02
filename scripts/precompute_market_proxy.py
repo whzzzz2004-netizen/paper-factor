@@ -20,7 +20,7 @@ def _default_data_root() -> Path:
     env = os.environ.get("PAPER_FACTOR_DATA_ROOT", "").strip()
     if env:
         return Path(env).expanduser()
-    for candidate in (Path("/mnt/g/paper-factor-data"), Path("/mnt/d/paper-factor-data")):
+    for candidate in (Path("/mnt/d/paper-factor-data"), Path("/mnt/g/paper-factor-data")):
         if (candidate / "数据仓库").is_dir() or (candidate / "schema.json").is_file():
             return candidate
     return Path("/mnt/d/paper-factor-data")

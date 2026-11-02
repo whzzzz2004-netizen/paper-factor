@@ -15,10 +15,10 @@ set -e
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -n "${PAPER_FACTOR_DATA_ROOT:-}" ]; then
     DATA_ROOT="$PAPER_FACTOR_DATA_ROOT"
-elif [ -d /mnt/g/paper-factor-data/数据仓库 ]; then
-    DATA_ROOT=/mnt/g/paper-factor-data
-else
+elif [ -d /mnt/d/paper-factor-data/数据仓库 ]; then
     DATA_ROOT=/mnt/d/paper-factor-data
+else
+    DATA_ROOT=/mnt/g/paper-factor-data
 fi
 
 echo "=========================================="

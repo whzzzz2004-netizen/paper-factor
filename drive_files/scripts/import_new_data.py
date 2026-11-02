@@ -55,10 +55,12 @@ def _default_data_root() -> Path:
     env = os.environ.get("PAPER_FACTOR_DATA_ROOT", "").strip()
     if env:
         return Path(env).expanduser()
+    # 当前 Windows 机器的数据在 D 盘；另一台电脑在 G 盘。
+    # D 盘没有数据时会自动回退到 G 盘，也可用 PAPER_FACTOR_DATA_ROOT 覆盖。
     if os.name == "nt":
-        candidates = (Path(r"G:\paper-factor-data"), Path(r"D:\paper-factor-data"))
+        candidates = (Path(r"D:\paper-factor-data"), Path(r"G:\paper-factor-data"))
     else:
-        candidates = (Path("/mnt/g/paper-factor-data"), Path("/mnt/d/paper-factor-data"))
+        candidates = (Path("/mnt/d/paper-factor-data"), Path("/mnt/g/paper-factor-data"))
     for candidate in candidates:
         if (candidate / "数据仓库").is_dir() or (candidate / "schema.json").is_file():
             return candidate
@@ -98,7 +100,7 @@ FULL_MINUTE_STOCK_LIST = FULL_MINUTE / "stock_list.json"
 MINUTE_SUBDIR_TRADE_DATES = FULL_MINUTE_BY_DATE / "trade_dates.json"
 MINUTE_SUBDIR_STOCK_LIST = FULL_MINUTE_BY_DATE / "stock_list.json"
 
-SCHEMA_FILE = PROJECT_ROOT / "schema.json"
+SCHEMA_FILE = DATA_ROOT / "schema.json"
 FACTOR_FIELD_SCHEMA_PATHS = [
     DATA_ROOT / WH / "行情数据" / "日线" / "全量" / "factor_field_schema.json",
     DATA_ROOT / WH / "行情数据" / "日线" / "测试" / "factor_field_schema.json",
@@ -1325,7 +1327,8 @@ def update_prompts(schema: dict = None) -> str:
     rel = "rdagent/components/coder/factor_coder/prompts.yaml"
     full = PROJECT_REPO / rel
     if not full.exists():
-        return "提示词：跳过（仓库未同步，找不到 prompts.yaml）"
+        return (f"提示词：跳过（找不到 {full}）。"
+                "Windows 下请把 repo_path.txt 或 PAPER_FACTOR_REPO 设为仓库路径。")
     content = full.read_text(encoding="utf-8")
     changed = False
     for start, end, text in (("<!-- DAILY_COLUMNS -->", "<!-- /DAILY_COLUMNS -->", daily),

@@ -1,14 +1,20 @@
-# DEPLOY 部署说明 — 给另一台机器的 Claude
+# DEPLOY 部署说明 — Windows 原生数据导入
+
+> **Windows 原生运行**：数据根优先 `D:\paper-factor-data`，D 盘没有数据时回退
+> `G:\paper-factor-data`。本机直接双击/运行 `D:\paper-factor-data\scripts\getdata.bat`；
+> 不依赖 WSL/bash。需要指定数据根时设置 `PAPER_FACTOR_DATA_ROOT`。
 
 目标：把数据仓库从**旧版状态**（含大量空基本面列、价值因子1/2、旧注册）迁移到**新版 getdata 机制**（域自治增量、无 ffill、只保留真实截面因子）。
 
 ## 一、要复制的（一次性）
 
-把本文件夹 `scripts\` **完整**复制到目标机的 **`G:\paper-factor-data\scripts\`**。
+把本文件夹 `scripts\` **完整**复制到目标机的 `<数据根>\scripts\`
+（本机为 `D:\paper-factor-data\scripts\`；另一台为 `G:\paper-factor-data\scripts\`）。
 
 scripts 下包含：
 - `import_new_data.py` — 新版导入引擎（核心）
 - `getdata.py` — 一键入口
+- `getdata.bat` — Windows 原生一键入口
 - `reset_to_clean.py` — 清理旧版数据的脚本
 - `deploy_payload/` — 关键的**元数据 json 备份**（见下）
 

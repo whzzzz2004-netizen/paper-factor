@@ -11,10 +11,10 @@ REPO_DIR="$HOME/paper-factor"
 # 数据根目录：另一台电脑在 G 盘；G 盘有数据仓库就优先用 G，否则用 D。
 if [ -n "${PAPER_FACTOR_DATA_ROOT:-}" ]; then
     DATA_ROOT="$PAPER_FACTOR_DATA_ROOT"
-elif [ -d /mnt/g/paper-factor-data/数据仓库 ]; then
-    DATA_ROOT=/mnt/g/paper-factor-data
-else
+elif [ -d /mnt/d/paper-factor-data/数据仓库 ]; then
     DATA_ROOT=/mnt/d/paper-factor-data
+else
+    DATA_ROOT=/mnt/g/paper-factor-data
 fi
 
 echo "=========================================="

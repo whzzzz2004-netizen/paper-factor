@@ -18,7 +18,7 @@ except ImportError:
     _env_root = os.environ.get("PAPER_FACTOR_DATA_ROOT", "").strip()
     _g_root = Path("/mnt/g/paper-factor-data")
     _d_root = Path("/mnt/d/paper-factor-data")
-    DATA_ROOT = Path(_env_root) if _env_root else (_g_root if (_g_root / "数据仓库").exists() else _d_root)
+    DATA_ROOT = Path(_env_root) if _env_root else (_d_root if (_d_root / "数据仓库").exists() else _g_root)
 
 from typing import Any, Tuple, Union
 
@@ -2079,7 +2079,7 @@ except ImportError:
     _env_root = os.environ.get("PAPER_FACTOR_DATA_ROOT", "").strip()
     _g_root = Path("/mnt/g/paper-factor-data")
     _d_root = Path("/mnt/d/paper-factor-data")
-    DATA_ROOT = Path(_env_root) if _env_root else (_g_root if (_g_root / "数据仓库").exists() else _d_root)
+    DATA_ROOT = Path(_env_root) if _env_root else (_d_root if (_d_root / "数据仓库").exists() else _g_root)
 
             import pandas as pd
 
