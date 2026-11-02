@@ -35,7 +35,7 @@ def main() -> int:
     p.add_argument("--summary", action="store_true", help="仅打印总结")
     p.add_argument("--update-prompts", action="store_true", help="仅更新提示词")
     p.add_argument("--rebuild-trade-dates", action="store_true",
-                   help="仅重建权威交易日历（日线 per-stock 实际 ∪ 分钟 per-date），不导入数据")
+                   help="仅分别重建日线/分钟交易日历（不合并），不导入数据")
     args = p.parse_args()
 
     if args.check:
@@ -53,7 +53,7 @@ def main() -> int:
     steps = [
         ("扫描检查", ["--check"]),
         ("导入数据", []),
-        ("重建权威日历", ["--rebuild-trade-dates"]),
+        ("分别重建日线/分钟日历", ["--rebuild-trade-dates"]),
         ("刷新提示词", ["--update-prompts"]),
         ("结果总结", ["--summary"]),
     ]
