@@ -221,6 +221,33 @@ def test_minute_new_column_existing_date():
         sb.close()
 
 
+def test_minute_existing_standard_file_skips_fast():
+    sb = Sandbox()
+    try:
+        stamps = ["2026-01-01 09:31", "2026-01-01 09:32"]
+        base = _minute({"open": [1, 1], "high": [1, 1], "low": [1, 1], "close": [1, 1],
+                        "volume": [10, 10]}, stamps)
+        sb.write_minute("20260101", base)
+        sb.set_minute_lists(["20260101"], ["000001"])
+        flat = pd.DataFrame({
+            "symbol": ["000001", "000001"],
+            "trade_date": stamps,
+            "date": ["2026-01-01", "2026-01-01"],
+            "open": [1, 1], "high": [1, 1], "low": [1, 1], "close": [1, 1],
+            "volume": [10, 10],
+        })
+        _write_parquet(flat, sb.raw / "分钟线/20260101.parquet")
+
+        sb.run()
+        df = pd.read_parquet(sb.minute_full / "minute_by_date/20260101.parquet")
+        assert df.columns.tolist() == ["open", "high", "low", "close", "volume"]
+        schema = json.loads((sb.root / "schema.json").read_text())
+        assert not schema["minute"]["columns"]
+        print("✅ 分钟：日期已存在且无新列时走快速检查，不加载整份数据")
+    finally:
+        sb.close()
+
+
 def test_minute_flat_format_drops_date_columns():
     sb = Sandbox()
     try:
@@ -369,6 +396,7 @@ def main():
         test_daily_new_stock_and_column,
         test_daily_new_column_backfills_history,
         test_minute_new_column_existing_date,
+        test_minute_existing_standard_file_skips_fast,
         test_minute_flat_format_drops_date_columns,
         test_minute_new_date_keeps_base_columns,
         test_minute_partial_new_date_rejected,

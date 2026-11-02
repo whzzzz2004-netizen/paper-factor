@@ -726,6 +726,68 @@ def import_daily_data(info: FileInfo, state: dict) -> DomainResult:
     )
 
 
+def _has_new_minute_columns(columns: list) -> bool:
+    """按 header 判断分钟文件是否含标准列之外的新列。"""
+    data_cols = set(columns) - {"symbol", "instrument", "datetime", "trade_date", "date", "time"}
+    return bool(data_cols - MINUTE_EXPECTED_COLS - INTERNAL_COLS)
+
+
+def quick_minute_single_date(path: Path, columns: list) -> Optional[str]:
+    """用 parquet 行组统计判断文件是否只覆盖一个日期；是则返回 YYYYMMDD。
+
+    分钟原始文件标准命名是 YYYYMMDD.parquet。若统计信息显示 min/max 同一天，
+    无需读取任何数据列就能确认整份文件属于该日期。
+    """
+    date_col = next((c for c in ("datetime", "trade_date", "date") if c in columns), None)
+    if date_col is None:
+        return None
+    try:
+        pf = pq.ParquetFile(path)
+        col_idx = pf.schema_arrow.names.index(date_col)
+        mins, maxs = [], []
+        for i in range(pf.metadata.num_row_groups):
+            stats = pf.metadata.row_group(i).column(col_idx).statistics
+            if stats is None or not stats.has_min_max:
+                return None
+            mins.append(stats.min)
+            maxs.append(stats.max)
+        if not mins:
+            return None
+        lo = pd.Timestamp(min(mins)).normalize()
+        hi = pd.Timestamp(max(maxs)).normalize()
+        return lo.strftime("%Y%m%d") if lo == hi else None
+    except Exception:
+        return None
+
+
+def quick_minute_dates(path: Path, columns: list) -> list[str]:
+    """只读时间列/索引，返回文件内实际日期（YYYYMMDD）。
+
+    用于快速跳过“日期已存在且无新列”的分钟文件，避免把整份 OHLCV 读进内存。
+    """
+    dt = None
+    try:
+        idx = pd.read_parquet(path, columns=[]).index
+        if isinstance(idx, pd.MultiIndex) and "datetime" in (idx.names or []):
+            dt = pd.DatetimeIndex(idx.get_level_values("datetime"))
+        elif isinstance(idx, pd.DatetimeIndex):
+            dt = idx
+    except Exception:
+        pass
+
+    if dt is None:
+        date_col = next((c for c in ("datetime", "trade_date", "date") if c in columns), None)
+        if date_col is None:
+            return []
+        try:
+            series = pd.read_parquet(path, columns=[date_col])[date_col]
+            dt = pd.DatetimeIndex(parse_dates(series))
+        except Exception:
+            return []
+
+    return sorted({pd.Timestamp(x).strftime("%Y%m%d") for x in dt if pd.notna(x)})
+
+
 def prepare_minute_frame(df: pd.DataFrame, path: Path) -> pd.DataFrame:
     """把分钟源文件整理成 MultiIndex [instrument, datetime]。
 
@@ -797,6 +859,25 @@ def import_minute_file(info: FileInfo, minute_dates: set, minute_stocks: set, st
     - 测试数据只合并新列，不新增日期。
     """
     fdate = date_from_filename(info.path.name)
+    header_has_new_cols = _has_new_minute_columns(info.columns)
+
+    # 最快路径：parquet 统计信息表明整份文件只属于一个日期，且该日期已存在、
+    # header 也没有新列 → 连数据列都不用读。
+    single_date = quick_minute_single_date(info.path, info.columns)
+    if single_date and not header_has_new_cols:
+        if (FULL_MINUTE_BY_DATE / f"{single_date}.parquet").exists():
+            minute_dates.add(single_date)
+            return DomainResult(
+                message=f"分钟 {info.path.name}: 已存在且无新列，跳过（元数据检查）")
+
+    # 次快路径：多日期文件/无统计信息时，只读时间列确认所有日期都已存在。
+    quick_dates = quick_minute_dates(info.path, info.columns)
+    if quick_dates and not header_has_new_cols:
+        all_exist = all((FULL_MINUTE_BY_DATE / f"{d}.parquet").exists() for d in quick_dates)
+        if all_exist:
+            minute_dates.update(quick_dates)
+            return DomainResult(message=f"分钟 {info.path.name}: 已存在且无新列，跳过（快速检查）")
+
     try:
         df = prepare_minute_frame(load_file(info.path), info.path)
     except Exception as e:
