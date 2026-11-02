@@ -25,6 +25,15 @@ MAIN = SCRIPT_DIR / "import_new_data.py"
 # 显式设置后，import_new_data.py 不再依赖盘符猜测。
 os.environ.setdefault("PAPER_FACTOR_DATA_ROOT", str(SCRIPT_DIR.parent))
 
+# Windows 控制台默认可能是 GBK，直接输出 ✅/⚠️ 会 UnicodeEncodeError。
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+if os.name == "nt":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 
 def run_py(args: list) -> int:
     cmd = [sys.executable, str(MAIN)] + args

@@ -1,0 +1,2 @@
+# Windows 批处理固定 CRLF，避免 git 把 \r 当成行尾空白
+*.bat text eol=crlf

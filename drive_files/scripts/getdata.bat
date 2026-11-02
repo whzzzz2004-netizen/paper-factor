@@ -1,5 +1,7 @@
 @echo off
 setlocal
+chcp 65001 >nul
+set PYTHONIOENCODING=utf-8
 cd /d "%~dp0"
 
 rem Windows 原生数据导入入口：不依赖 WSL/bash。

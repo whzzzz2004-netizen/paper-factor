@@ -126,6 +126,20 @@ FACTOR_BATCH_SIZE = 4
 # ═══════════════════════════════════════════════════════════════════════
 # 2. 通用工具
 # ═══════════════════════════════════════════════════════════════════════
+def _configure_console():
+    """Windows 控制台可能是 GBK；日志里有 ✅/⚠️，先切到 UTF-8 防止编码报错。"""
+    if os.name != "nt":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+_configure_console()
+
+
 def log(msg: str):
     print(msg, flush=True)
 
