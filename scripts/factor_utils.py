@@ -30,6 +30,86 @@ except ImportError:
     from data_paths import DATA_ROOT
 
 
+# ── 分钟因子全量起点 ──
+# 分钟数据从 2018 年起，全量算全历史耗时翻倍且早期数据关注度低；
+# 默认只跑 2022 年以来（可用 FACTOR_MINUTE_FULL_START_DATE 覆盖）。
+# 分钟模板原生支持 FACTOR_INCREMENTAL_START_DATE：全量运行时从起点前固定
+# 120 个交易日开始取数做 warm-up，保证 2022 年初的因子值不是 NaN；
+# 最终宽表再由 trim_df_start() 裁到起点。
+MINUTE_FULL_START_DATE = os.environ.get("FACTOR_MINUTE_FULL_START_DATE", "2022-01-01")
+# 全量分钟因子统一的 warm-up 交易日数（模板 LOOKBACK_DAYS 上限即 120）
+MINUTE_FULL_WARMUP_DAYS = "120"
+
+# 各因子 LOOKBACK_DAYS 不同（1/20/90/120…），模板按「起点 - LOOKBACK_DAYS」
+# 截断 TRADE_DATES，会让每个因子看到的数据窗口起点不同。共享 chunk 缓存时，
+# 窗口缩小会改写 manifest、窗口再放大会把已有日期当新文件重复追加进 .inc.pq。
+# 全量运行时把 warm-up 固定成同一常量，保证所有因子的 _FILES 完全一致。
+_MINUTE_WARMUP_RE = re.compile(
+    r"(searchsorted\(pd\.Timestamp\(_INC_START\)\)\s*-\s*)LOOKBACK_DAYS"
+)
+
+
+def patch_minute_warmup(code_text: str) -> str:
+    """把分钟代码的 warm-up 改成环境变量可覆写的固定天数（默认保持原行为）。
+
+    仅在设置 FACTOR_MINUTE_WARMUP_DAYS 时生效，因此增量运行（不设该变量）
+    仍按各因子的 LOOKBACK_DAYS 截断，行为不变。
+    """
+    return _MINUTE_WARMUP_RE.sub(
+        r'\1(int(os.environ["FACTOR_MINUTE_WARMUP_DAYS"]) '
+        r'if os.environ.get("FACTOR_MINUTE_WARMUP_DAYS") else LOOKBACK_DAYS)',
+        code_text,
+    )
+
+
+def minute_chunk_dir_for_start(minute_data_dir: Path, start_date: str) -> Path | None:
+    """返回分钟因子全量起点专属的 chunk 缓存目录。
+
+    共享缓存 `_minute_chunks` 是按「全历史」分片的：截断 TRADE_DATES 后仍会复用
+    全历史分片，`calc_factor_series` 拿到的仍是 2018 年起的完整序列，计算量不减；
+    而且模板会用截断后的文件列表重写共享 manifest，之后跑全历史会把旧数据
+    重复追加进 `.inc.pq`。所以非全历史起点使用独立目录
+    `_minute_chunks_{YYYYMMDD}`（首次运行重建一次，后续因子复用）。
+
+    起点覆盖全历史（<= 首个交易日）时返回 None，沿用默认共享目录。
+    """
+    mb = Path(minute_data_dir) / "stock_data" / "minute_by_date"
+    try:
+        dates = json.loads((mb / "trade_dates.json").read_text())
+        first = pd.Timestamp(dates[0])
+        start = pd.Timestamp(start_date)
+    except Exception:
+        return None
+    if start <= first:
+        return None
+    return mb / f"_minute_chunks_{start.strftime('%Y%m%d')}"
+
+
+def trim_df_start(df: pd.DataFrame, start_date: str) -> pd.DataFrame:
+    """把宽表日期索引裁到 start_date 及以后（分钟因子全量产出用）。
+
+    索引不是日期（或无法解析）时原样返回；裁剪后为空也原样返回，
+    避免把异常结果写成空 parquet。
+    """
+    if df.empty:
+        return df
+    idx = df.index
+    if not isinstance(idx, pd.DatetimeIndex):
+        if not (pd.api.types.is_object_dtype(idx) or pd.api.types.is_string_dtype(idx)):
+            return df
+        try:
+            idx = pd.DatetimeIndex(pd.to_datetime(idx))
+        except Exception:
+            return df
+    try:
+        mask = idx >= pd.Timestamp(start_date)
+    except Exception:
+        return df
+    if bool(mask.all()) or not bool(mask.any()):
+        return df
+    return df.loc[mask]
+
+
 def load_trade_dates(data_dir: Path) -> list[str]:
     """从数据目录读取交易日列表"""
     for p in [

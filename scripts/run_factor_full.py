@@ -36,6 +36,24 @@ try:
     from scripts.data_paths import DATA_ROOT
 except ImportError:
     from data_paths import DATA_ROOT
+try:
+    from scripts.factor_utils import (
+        MINUTE_FULL_START_DATE,
+        MINUTE_FULL_WARMUP_DAYS,
+        detect_factor_type,
+        minute_chunk_dir_for_start,
+        patch_minute_warmup,
+        trim_df_start,
+    )
+except ImportError:
+    from factor_utils import (  # type: ignore
+        MINUTE_FULL_START_DATE,
+        MINUTE_FULL_WARMUP_DAYS,
+        detect_factor_type,
+        minute_chunk_dir_for_start,
+        patch_minute_warmup,
+        trim_df_start,
+    )
 
 def _detect_data_dir() -> Path:
     candidates = [
@@ -50,11 +68,6 @@ def _detect_data_dir() -> Path:
 
 FULL_DATA_DIR = _detect_data_dir()
 OUTPUT_BASE = DATA_ROOT / "数据仓库" / "因子产出" / "全量"
-def detect_factor_type(code_path: Path) -> str:
-    code = code_path.read_text()
-    if any(k in code for k in ('MINUTE_DATA_DIR', 'MINUTE_BY_DATE_DIR', 'minute_pv', 'calc_factors_one_day')):
-        return "minute"
-    return "daily"
 
 
 def run_locally(code_path: Path, workspace: Path, data_dir: Path, timeout: int = 7200, factor_type: str = "daily") -> Path | None:
@@ -64,9 +77,29 @@ def run_locally(code_path: Path, workspace: Path, data_dir: Path, timeout: int =
     env["FACTOR_DATA_DIR"] = str(data_dir)
     env["HDF5_USE_FILE_LOCKING"] = "FALSE"
     env["FACTOR_LOOKBACK_CAP"] = "99999"
-    # 日线因子限制4核，避免多因子并行时loky进程过多导致OOM
-    if factor_type == "daily":
+    # 非分钟因子限制4核，避免多因子并行时loky进程过多导致OOM
+    if factor_type != "minute":
         env.setdefault("FACTOR_N_WORKERS", "4")
+    # 全量分钟因子默认只跑 2022 以来：模板据此截断 TRADE_DATES
+    if factor_type == "minute":
+        env["FACTOR_INCREMENTAL_START_DATE"] = MINUTE_FULL_START_DATE
+        env["FACTOR_MINUTE_WARMUP_DAYS"] = MINUTE_FULL_WARMUP_DAYS
+        # 统一下载窗口：不同 LOOKBACK_DAYS 的因子必须看到同一批文件，
+        # 否则共享 chunk 缓存会被反复改写、旧日期重复追加
+        factor_py = workspace / "factor.py"
+        _txt = factor_py.read_text(encoding="utf-8")
+        _patched = patch_minute_warmup(_txt)
+        if _patched != _txt:
+            factor_py.write_text(_patched, encoding="utf-8")
+            print(f"  分钟 warm-up 已统一为固定 {MINUTE_FULL_WARMUP_DAYS} 天")
+        # 起点专属 chunk 缓存：共享缓存是全历史分片，复用则计算量不减
+        chunk_dir = minute_chunk_dir_for_start(data_dir, MINUTE_FULL_START_DATE)
+        if chunk_dir is not None:
+            env["FACTOR_MINUTE_CHUNK_DIR"] = str(chunk_dir)
+            print(f"  分钟 chunk 缓存: {chunk_dir} (起点 {MINUTE_FULL_START_DATE})")
+            if not (chunk_dir / "_manifest.json").exists():
+                print("  💡 目标 chunk 缓存不存在，模板将逐日预分片（较慢）；"
+                      "可先运行 python scripts/prebuild_minute_chunks.py")
     print(f"  本地运行中... (数据: {data_dir})")
     result = subprocess.run(
         [sys.executable, "factor.py"],
@@ -97,6 +130,16 @@ def run_locally(code_path: Path, workspace: Path, data_dir: Path, timeout: int =
     else:
         print(f"  ❌ 未找到输出 parquet 文件")
         return None
+    # 分钟因子：起点前的固定 warm-up 窗口只用于预热，不写进最终结果
+    if factor_type == "minute":
+        try:
+            df = pd.read_parquet(output)
+            trimmed = trim_df_start(df, MINUTE_FULL_START_DATE)
+            if trimmed is not df:
+                trimmed.to_parquet(output)
+                print(f"  ✂️ 结果裁剪至 {MINUTE_FULL_START_DATE} 起: {trimmed.shape[0]} 行")
+        except Exception as e:
+            print(f"  ⚠️ 裁剪结果起始日期失败: {e}")
     return output
 
 
@@ -164,7 +207,7 @@ def main():
         print(f"❌ 代码文件不存在: {code_path}")
         return 1
 
-    factor_type = detect_factor_type(code_path)
+    factor_type = detect_factor_type(code_path.read_text(encoding="utf-8"))
     print(f"因子类型: {factor_type}")
 
     if factor_type == "minute":

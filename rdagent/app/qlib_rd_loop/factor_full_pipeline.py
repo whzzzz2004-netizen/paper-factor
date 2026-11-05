@@ -25,6 +25,22 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]  # rdagent/app/qlib_rd_loop/ 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from scripts.data_paths import DATA_ROOT
+try:
+    from scripts.factor_utils import (
+        MINUTE_FULL_START_DATE,
+        MINUTE_FULL_WARMUP_DAYS,
+        minute_chunk_dir_for_start,
+        patch_minute_warmup,
+        trim_df_start,
+    )
+except ImportError:  # 直接以 rdagent 包导入时的兜底
+    from factor_utils import (
+        MINUTE_FULL_START_DATE,
+        MINUTE_FULL_WARMUP_DAYS,
+        minute_chunk_dir_for_start,
+        patch_minute_warmup,
+        trim_df_start,
+    )
 
 # 数据目录自动检测（多路径降级）
 def _detect_data_dir() -> Path:
@@ -247,6 +263,14 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
         code_dst.write_text(_patched)
         print(f"  🔧 CHUNK_SIZE 已修补为环境变量可配置", flush=True)
 
+    # 统一 warm-up 窗口：不同 LOOKBACK_DAYS 的因子共用 2022 chunk 缓存时，
+    # 窗口忽大忽小会让 manifest 反复改写、旧日期被重复追加进 .inc.pq。
+    _old_code = code_dst.read_text()
+    _patched = patch_minute_warmup(_old_code)
+    if _patched != _old_code:
+        code_dst.write_text(_patched)
+        print(f"  🔧 分钟 warm-up 已统一为固定 {MINUTE_FULL_WARMUP_DAYS} 天", flush=True)
+
     # 清除旧结果
     chk_dir = factor_dir / "checkpoints"
     if chk_dir.exists():
@@ -260,7 +284,21 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
         if p.exists():
             p.unlink()
 
+    minute_data_dir = DATA_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量"
     env = os.environ.copy()
+    # 全量分钟因子默认只跑 2022 以来：模板据此截断 TRADE_DATES
+    # （起点前固定 120 个交易日做 warm-up，最终宽表再裁到起点）。
+    env["FACTOR_INCREMENTAL_START_DATE"] = MINUTE_FULL_START_DATE
+    env["FACTOR_MINUTE_WARMUP_DAYS"] = MINUTE_FULL_WARMUP_DAYS
+    # 用起点专属的 chunk 缓存：共享缓存是全历史分片，复用的话计算量不会减半，
+    # 还会把共享 manifest 改写成截断后的文件列表。
+    _chunk_dir = minute_chunk_dir_for_start(minute_data_dir, MINUTE_FULL_START_DATE)
+    if _chunk_dir is not None:
+        env["FACTOR_MINUTE_CHUNK_DIR"] = str(_chunk_dir)
+        print(f"  分钟 chunk 缓存: {_chunk_dir} (起点 {MINUTE_FULL_START_DATE})", flush=True)
+        if not (_chunk_dir / "_manifest.json").exists():
+            print("  💡 目标 chunk 缓存不存在，模板将逐日预分片（较慢）；"
+                  "可先运行 python scripts/prebuild_minute_chunks.py", flush=True)
 
     for attempt in range(2):
         if attempt > 0:
@@ -270,7 +308,6 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
             env["FACTOR_CHUNK_SIZE"] = "15"
             env["FACTOR_N_WORKERS"] = "1"
 
-        minute_data_dir = DATA_ROOT / "数据仓库" / "行情数据" / "分钟线" / "全量"
         if minute_data_dir.exists():
             env["FACTOR_DATA_DIR"] = str(minute_data_dir)
         elif FULL_DATA_DIR != Path("."):
@@ -320,6 +357,12 @@ def run_minute_factor(factor_name: str, factor_dir: Path, code_path: Path) -> bo
 
         if result_parquet.exists():
             df = pd_read_parquet(result_parquet)
+            # 起点前的固定 warm-up 窗口只用于预热，不写进最终结果
+            _trimmed = trim_df_start(df, MINUTE_FULL_START_DATE)
+            if _trimmed is not df:
+                _trimmed.to_parquet(result_parquet)
+                print(f"  ✂️ 结果裁剪至 {MINUTE_FULL_START_DATE} 起: "
+                      f"{_trimmed.shape[0]} 行", flush=True)
 
             cleanup_workers(factor_name)
             return True

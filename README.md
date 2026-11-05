@@ -26,7 +26,7 @@ LLM 驱动的量化因子挖掘系统。从研报 PDF / 文章提取因子定义
           └── {factor}.code.py       # 自动部署的全量代码
         │
         ▼  [run_all / run_factor_full]
-  全量计算（5435只×全历史）+ 评估/绘图/Barra
+  全量计算（5435只×全历史；分钟因子仅 2022 起）+ 评估/绘图/Barra
   输出: 因子产出/全量/{DATE}/{report}/{factor}/
           ├── {factor}.parquet       # 全量结果
           ├── {factor}.decile.png    # 十分组收益图
@@ -208,6 +208,23 @@ python scripts/run_factor_full.py \
 
 含评估 + 十分组图 + Barra + LLM审查。
 
+> **分钟因子全量只跑 2022 年以来**（分钟数据虽从 2018 年起）。起点前统一取
+> 120 个交易日做 warm-up（固定窗口，保证不同 `LOOKBACK_DAYS` 的因子共用同一份
+> chunk 缓存而不会反复改写 manifest），最终 parquet 裁剪到 2022-01-01 起。
+> 需要改起点时设置环境变量 `FACTOR_MINUTE_FULL_START_DATE=YYYY-MM-DD`
+> （例如临时要跑全历史就设为 `2018-01-01`）。
+>
+> 2022 起跑会使用独立的 chunk 缓存 `_minute_chunks_20220101`（实测 16.9GB）：
+> 全历史共享缓存 `_minute_chunks` 仍保留，两者互不覆盖。首次使用起点缓存时，
+> **建议先执行一次快速预建**（从全历史缓存按日期行组过滤，实测约 11 分钟；
+> 否则模板会逐日重新预分片，约 40–60 分钟）：
+> ```bash
+> python scripts/prebuild_minute_chunks.py            # 默认 2022-01-01
+> python scripts/prebuild_minute_chunks.py --start 2023-01-01
+> ```
+> 预建完成后所有分钟因子复用该缓存（单个因子实测计算 ~52s）；目标缓存已有效时
+> 脚本自动跳过。
+
 **批量：**
 
 ```bash
@@ -254,7 +271,7 @@ python scripts/run_all.py --dry-run          # 仅查看计划
 | 指标 | 测试 | 全量 |
 |------|------|------|
 | 股票数 | 300 只 | 5435 只 |
-| 天数 | 300 天 | 全历史（~2027 天） |
+| 天数 | 300 天 | 2022 以来（~1130 天） |
 | 数据大小 | 8.2GB | 35GB |
 | 运行时间 | 几十秒 | 几十分钟 |
 

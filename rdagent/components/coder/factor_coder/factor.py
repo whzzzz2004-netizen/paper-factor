@@ -609,9 +609,10 @@ def _resolve_daily_dir():
     _cands = [
         DATA_DIR / "stock_data" / "daily",
         DATA_DIR.parent.parent / "日线" / DATA_DIR.name / "stock_data" / "daily",
-        Path({str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量" / "stock_data" / "daily")!r}),
-        Path({str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "测试" / "stock_data" / "daily")!r}),
     ]
+    _root = os.environ.get("PAPER_FACTOR_DATA_ROOT", "").strip()
+    if _root:
+        _cands.append(Path(_root) / "数据仓库" / "行情数据" / "日线" / DATA_DIR.name / "stock_data" / "daily")
     for _c in _cands:
         if _c.exists():
             return _c
