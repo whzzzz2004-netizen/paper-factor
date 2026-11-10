@@ -77,15 +77,25 @@ def factor_date_dir(factor_dir: Path) -> Path:
     return d
 
 
-def prune_empty_dirs(root: Path) -> None:
-    """删除 root 下的空目录（自底向上，不删 root 本身）。"""
+def prune_empty_dirs(root: Path, min_age_sec: int = 60) -> None:
+    """删除 root 下的空目录（自底向上，不删 root 本身）。
+
+    只清理创建/变更超过 min_age_sec 的目录：避免与并发的 /factor deploy
+    抢跑——对方刚 mkdir 的空因子目录还没写文件，不能被这里删掉。
+    因子归档时的空目录由 promote_to_completed 立即清理，不依赖本函数。
+    """
     root = Path(root)
     if not root.is_dir():
         return
-    dirs = sorted((d for d in root.rglob("*") if d.is_dir()),
-                  key=lambda p: len(p.parts), reverse=True)
-    for d in dirs:
+    now = time.time()
+    dirs = [d for d in root.rglob("*") if d.is_dir()]
+    # 先快照 mtime：删除子目录会刷新父目录 mtime，逐层 stat 会让整条空链
+    # 被误判为“刚创建”而清不掉。
+    mtimes = {d: d.stat().st_mtime for d in dirs}
+    for d in sorted(dirs, key=lambda p: len(p.parts), reverse=True):
         try:
+            if now - mtimes[d] < min_age_sec:
+                continue
             d.rmdir()
         except OSError:
             pass
