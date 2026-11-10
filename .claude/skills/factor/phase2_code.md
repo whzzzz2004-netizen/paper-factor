@@ -27,6 +27,10 @@
 > `calc_factor_cross_section(all_data, trade_date)`。若分配的是 `daily` 却确实需要同行数据，
 > **不要自己改模板**——在返回值里报 failure，说明"类型与定义不符"，由上游纠正。
 >
+> **③ 研报给的是市场级择时信号（每天一个分数，全市场共用）？** 这**不是**本库的因子：
+> 因子必须逐股票取值。不要算一个标量再广播给所有股票，直接报 failure / 超出范围，
+> 由上游把该条排除。
+>
 > 拿不准就往上报，不要靠翻源码猜。**去 grep/读 `rdagent/.../factor.py` 或 helper 源码
 > 找答案是被硬拦截的无效探索。**
 
@@ -122,6 +126,8 @@ python scripts/claude_factor_helper.py deploy-to-full \
   --date {DATE}
 ```
 > deploy-to-full 的 `--code` 用上面这个路径，**不要**多套一层 `{name}` 目录。
+> 部署目标是 `因子产出/全量/{DATE}/未完成/{report}/{name}/`；后续 `/all` 算完并
+> 通过检验后会自动移到同日期 `已完成/`，无需手工搬目录。
 
 ### 想验证假设？用 `--dry-run`，不要造假报告名
 

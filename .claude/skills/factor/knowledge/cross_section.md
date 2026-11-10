@@ -8,6 +8,11 @@ def calc_factor_cross_section(all_data, trade_date):
     # 返回: dict {股票代码: {"因子名": 值}}
 ```
 
+> ⚠️ **必须是逐股票因子**：同一天不同股票的因子值必须不同。禁止把市场级时序信号
+> （如全市场拥挤度、择时分数）算成一个标量再广播给所有股票——这种输出截面方差为 0，
+> 截面 IC/RankIC 无定义，十分组只能按代码顺序硬拆，结果是噪声。
+> 若研报只给出市场级择时信号，按「超出范围」报告，不要硬塞进 cross_section。
+
 **窗口行数**：每只股票的 DataFrame 共 `lookback + 1` 行，**最后一行 = T 日**。
 所以 `close.pct_change(lookback)` / `close.shift(lookback)` 在末尾恰好有值，
 `iloc[0]` 是 T-lookback 日、`iloc[-1]` 是 T 日。**不要**写 `len(df) < lookback + 1` 之类的

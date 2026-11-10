@@ -183,7 +183,7 @@ python /mnt/d/paper-factor-data/scripts/import_new_data.py              # 执行
 ## 常见问题
 
 **Q: 只想看已有因子结果，不跑计算？**
-A: 直接看 `/mnt/d/paper-factor-data/数据仓库/因子产出/全量/{DATE}/{report}/{factor}/` 下的 `.parquet` 和 `.decile.png`。
+A: 直接看 `/mnt/d/paper-factor-data/数据仓库/因子产出/全量/{DATE}/已完成/{report}/{factor}/` 下的 `.parquet` 和 `.decile.png`（还没算完的在同日期 `未完成/` 下）。
 
 **Q: 跑 `/factor` 需要研报 PDF 吗？**
 A: 需要（放到 `/mnt/d/paper-factor-data/papers/inbox/`，支持 `.pdf` 和 `.md`）。
@@ -193,3 +193,49 @@ A: 本项目不提供原始数据。需要从已有数据源（如聚宽、Tusha
 
 **Q: 测试数据为什么是 300 只×300 天？**
 A: 固定不变。测试数据只用于验证因子代码逻辑正确性，不用于最终结果。全量计算使用全量数据目录（5435 只×全历史）。
+
+### WSL 跑全量因子时终端闪退
+
+**症状**：跑 `run_all.py` / `run_factor_full.py` 时，WSL 里的 Ubuntu 终端窗口突然关闭，Windows 本身还在。
+
+**先分清两种情况**：
+- 所有 WSL 终端一起关闭 → 多半是 WSL 虚拟机被 Windows 终止（内存超限）。
+- 只有当前任务/窗口消失，其他终端正常 → 多半是 Claude Code 的后台任务回收器杀了后台 shell。
+
+**常见原因**（按可能性排序）：
+
+1. **WSL 内存被跑满**：截面因子每个 worker 会缓存全市场约 10GB；WSL2 默认最多使用 Windows 内存的约 50%，超出后 Windows 可能直接停掉整个发行版。默认 `FACTOR_FULL_N_WORKERS=4` 在 16GB/32GB 机器上都可能超限。
+2. **Claude Code 后台任务回收器**：后台 shell + 内存压力 + 长时间无真人交互时，会静默杀掉后台任务。2026-09-25 的跑批就是这样在 54 分钟被杀掉的。
+3. **磁盘写满**：WSL 的 vhdx 或数据盘（D/G）空间不足，写入 parquet 时失败，终端退出。
+4. **GPU 驱动崩溃**：深度学习因子训练时驱动异常，桌面/终端可能直接退出。
+
+**排查（WSL 内）**：
+
+```bash
+free -h
+dmesg -T | grep -iE 'oom|out of memory|killed process' | tail -20
+df -h / /mnt/d /mnt/g 2>/dev/null
+grep -n "PRESSURE_REAP\|FACTOR_FULL_N_WORKERS" ~/.claude/settings.json
+```
+
+**排查（Windows PowerShell）**：
+
+```powershell
+Get-Content $env:USERPROFILE\.wslconfig
+Get-CimInstance Win32_OperatingSystem | Select TotalVisibleMemorySize,FreePhysicalMemory
+Get-WinEvent -LogName System -MaxEvents 100 |
+  Where-Object { $_.Message -match 'WSL|vmmem|memory' } |
+  Select TimeCreated,Message
+```
+
+**修复**：
+
+- 按机器内存设置 worker 数（截面因子单 worker 约 10GB）：
+  - 16GB 内存：`FACTOR_FULL_N_WORKERS=1`
+  - 32GB 内存：`FACTOR_FULL_N_WORKERS=2`
+- 关闭后台任务回收器：`CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1`
+- 以上两项写入 `~/.claude/settings.json` 的 `env`，重启 Claude Code CLI 生效。
+- 在 `%USERPROFILE%\.wslconfig` 给 WSL 留足内存（例如 32GB 机器设 `memory=24GB`），但不要超过物理内存的 75%。
+- 清理 WSL vhdx 和数据盘空间；深度学习因子异常时检查 `nvidia-smi` 与 `dmesg` 里的 GPU Xid 错误。
+
+> 本机实测：2026-09-25 的 `run_all.py` 跑到第 19 个截面因子时被杀（无内核 OOM，cgroup 峰值 30.75GB/31.2GB）。设置上述两项后重跑，49/49 成功。

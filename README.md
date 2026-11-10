@@ -22,15 +22,16 @@ LLM 驱动的量化因子挖掘系统。从研报 PDF / 文章提取因子定义
           ├── {factor}.code.py       # 自包含代码
           ├── {factor}.parquet       # 测试结果
           └── {factor}.meta.json
-  输出: 因子产出/全量/{DATE}/{report}/{factor}/
-          └── {factor}.code.py       # 自动部署的全量代码
+  输出: 因子产出/全量/{DATE}/未完成/{report}/{factor}/
+          └── {factor}.code.py       # 自动部署的全量代码（待计算）
         │
         ▼  [run_all / run_factor_full]
   全量计算（5435只×全历史；分钟因子仅 2022 起）+ 评估/绘图/Barra
-  输出: 因子产出/全量/{DATE}/{report}/{factor}/
+  完成后自动转移到 同日期下的 已完成/
+  输出: 因子产出/全量/{DATE}/已完成/{report}/{factor}/
           ├── {factor}.parquet       # 全量结果
           ├── {factor}.decile.png    # 十分组收益图
-          └── {factor}.meta.json     # 含IC/IR/Barra等评估指标
+          └── {factor}.meta.json     # 含IC/IR/换手率/Barra等评估指标
 ```
 
 ---
@@ -124,8 +125,8 @@ python -c "from pathlib import Path; d=Path('/mnt/d/paper-factor-data/数据仓�
 # 检查 workspace 符号链接
 ls -la workspace/factor_implementation_source_data
 
-# 跑一个测试因子
-python scripts/run_factor_full.py "/mnt/d/paper-factor-data/数据仓库/因子产出/全量/20260810/GRU量价趋势预测因子/GRUPriceVolumePredictor/GRUPriceVolumePredictor.code.py"
+# 跑一个测试因子（代码已在全量目录内时原地写回）
+python scripts/run_factor_full.py "/mnt/d/paper-factor-data/数据仓库/因子产出/全量/{DATE}/未完成/{report}/{factor}/{factor}.code.py"
 ```
 
 ---
@@ -149,7 +150,9 @@ python scripts/run_factor_full.py "/mnt/d/paper-factor-data/数据仓库/因子�
 ├── barra_model/                                    # Barra风险模型数据
 └── 因子产出/
     ├── 测试/{DATE}/...                             # 测试因子产出
-    └── 全量/{DATE}/...                             # 全量因子产出
+    └── 全量/{DATE}/
+        ├── 未完成/{report}/{factor}/               # 已部署、待全量计算/检验
+        └── 已完成/{report}/{factor}/               # 全量计算+检验完成
 ```
 
 ## 数据目录选择策略
@@ -187,7 +190,9 @@ python /mnt/d/paper-factor-data/scripts/import_new_data.py --dry-run  # 预览�
 **Phase 1：提取** — 并行读取研报 → 定义因子（name, type, lookback, formulation）
 **Phase 2：编码+部署** — 每个因子写核心函数 → `test-and-export`（300只测试数据验证）→ 测试通过后立即 `deploy-to-full` 到全量目录
 
-输出到 `/mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/` 和 `/mnt/d/paper-factor-data/数据仓库/因子产出/全量/{DATE}/`
+输出到 `/mnt/d/paper-factor-data/数据仓库/因子产出/测试/{DATE}/` 和
+`/mnt/d/paper-factor-data/数据仓库/因子产出/全量/{DATE}/未完成/`；
+全量计算 + 检验（评估/绘图/Barra）完成后自动移到同日期下的 `已完成/`。
 
 ### 全量计算
 
@@ -203,10 +208,11 @@ python scripts/claude_factor_helper.py deploy-to-full \
 
 ```bash
 python scripts/run_factor_full.py \
-  /mnt/d/paper-factor-data/数据仓库/因子产出/全量/{DATE}/{report}/{factor}/{factor}.code.py
+  /mnt/d/paper-factor-data/数据仓库/因子产出/全量/{DATE}/未完成/{report}/{factor}/{factor}.code.py
 ```
 
-含评估 + 十分组图 + Barra + LLM审查。
+含评估 + 十分组图 + Barra + LLM审查。全部完成后，因子目录自动移到
+`全量/{DATE}/已完成/{report}/{factor}/`。
 
 > **分钟因子全量只跑 2022 年以来**（分钟数据虽从 2018 年起）。起点前统一取
 > 120 个交易日做 warm-up（固定窗口，保证不同 `LOOKBACK_DAYS` 的因子共用同一份
@@ -283,7 +289,7 @@ python scripts/run_all.py --dry-run          # 仅查看计划
 
 ```bash
 python scripts/claude_factor_helper.py test-and-export ...           # 测试+导出
-python scripts/claude_factor_helper.py deploy-to-full ...            # 部署全量
+python scripts/claude_factor_helper.py deploy-to-full ...            # 部署到 全量/{DATE}/未完成/
 ```
 
 ### 数据导入
@@ -314,6 +320,10 @@ python /mnt/d/paper-factor-data/scripts/import_new_data.py                   # �
 - 深度学习：`torch`（GPU 可选）
 
 **不依赖 Docker。** 执行后端为 `local`。
+
+> **WSL 跑全量因子时终端闪退？** 先看 `REPLICATION.md` 的
+> 「WSL 跑全量因子时终端闪退」：按内存设置 `FACTOR_FULL_N_WORKERS`，
+> 并在 `~/.claude/settings.json` 关闭后台任务回收器。
 
 ---
 

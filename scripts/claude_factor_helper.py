@@ -876,14 +876,21 @@ def cmd_trigger_full(args):
 
     sys.path.insert(0, str(PROJECT_ROOT))
     from rdagent.app.qlib_rd_loop.factor_full_pipeline import (
-        FULL_OUTPUT_BASE, detect_factor_type_from_code, run_full_pipeline,
+        FULL_OUTPUT_BASE, STATUS_COMPLETED, STATUS_PENDING,
+        detect_factor_type_from_code, output_date_from_path, run_full_pipeline,
     )
 
     factor_type = detect_factor_type_from_code(code_path.read_text())
-    output_dir = FULL_OUTPUT_BASE / report_name / factor_name
+    date_str = output_date_from_path(code_path)
+    output_dir = (FULL_OUTPUT_BASE / date_str / STATUS_PENDING
+                  / report_name / factor_name)
 
-    # 检查全量是否已存在
-    if (output_dir / f"{factor_name}.parquet").exists():
+    # 检查全量是否已存在（未完成或已完成均可视为已有结果）
+    _existing_dirs = [
+        output_dir,
+        FULL_OUTPUT_BASE / date_str / STATUS_COMPLETED / report_name / factor_name,
+    ]
+    if any((d / f"{factor_name}.parquet").exists() for d in _existing_dirs):
         print(f"  全量结果已存在，跳过计算", flush=True)
         status = "success"
     else:
@@ -929,8 +936,12 @@ def cmd_run_full(args):
         output_dir = Path(args.output).resolve()
     else:
         sys.path.insert(0, str(PROJECT_ROOT))
-        from rdagent.app.qlib_rd_loop.factor_full_pipeline import FULL_OUTPUT_BASE
-        output_dir = FULL_OUTPUT_BASE / report_name / factor_name
+        from rdagent.app.qlib_rd_loop.factor_full_pipeline import (
+            FULL_OUTPUT_BASE, STATUS_PENDING, output_date_from_path,
+        )
+        date_str = args.date or output_date_from_path(code_path)
+        output_dir = (FULL_OUTPUT_BASE / date_str / STATUS_PENDING
+                      / report_name / factor_name)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -982,6 +993,18 @@ def cmd_run_full(args):
         source_excerpt=source_excerpt,
     )
 
+    # 流水线成功后会从「未完成」自动移到「已完成」，报告实际目录
+    if ok and not Path(output_dir).exists():
+        from rdagent.app.qlib_rd_loop.factor_full_pipeline import (
+            STATUS_COMPLETED, STATUS_PENDING,
+        )
+        _status_dir = Path(output_dir).parent.parent
+        if _status_dir.name == STATUS_PENDING:
+            _completed = (_status_dir.parent / STATUS_COMPLETED
+                          / Path(output_dir).parent.name / Path(output_dir).name)
+            if _completed.exists():
+                output_dir = _completed
+
     output = {
         "status": "success" if ok else "failed",
         "factor_name": factor_name,
@@ -1013,10 +1036,11 @@ def cmd_wait_full(args):
 def cmd_deploy_to_full(args):
     """Deploy tested factor to full-scale directory: copy code, patch DATA_DIR, inherit meta.
 
-    Copies .code.py from 因子产出/测试/<report>/<factor>/ to
-    因子产出/全量/<report>/<factor>/, patches DATA_DIR from _1000 → full path,
-    and copies/creates meta.json with pipeline_status='deployed'.
-    Does NOT run full computation.
+    Copies .code.py from 因子产出/测试/<date>/<report>/<factor>/ to
+    因子产出/全量/<date>/未完成/<report>/<factor>/, patches DATA_DIR from
+    _1000 → full path, and copies/creates meta.json with
+    pipeline_status='deployed'.
+    Does NOT run full computation. 全量计算 + 检验完成后由流水线自动移到「已完成」。
     """
     code_path = Path(args.code).resolve()
     if not code_path.exists():
@@ -1034,11 +1058,13 @@ def cmd_deploy_to_full(args):
         return 1
     report_name = report_dir.name
 
-    # Target: 因子产出/全量/[<date>/]<report>/<factor>/  （默认当天日期）
+    # Target: 因子产出/全量/<date>/未完成/<report>/<factor>/  （默认当天日期）
     sys.path.insert(0, str(PROJECT_ROOT))
-    from rdagent.app.qlib_rd_loop.factor_full_pipeline import FULL_OUTPUT_BASE
+    from rdagent.app.qlib_rd_loop.factor_full_pipeline import (
+        FULL_OUTPUT_BASE, STATUS_PENDING,
+    )
     date_str = args.date or __import__("datetime").datetime.now().strftime("%Y-%m-%d")
-    full_base = FULL_OUTPUT_BASE / date_str
+    full_base = FULL_OUTPUT_BASE / date_str / STATUS_PENDING
     full_factor_dir = full_base / report_name / factor_name
     full_factor_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1452,7 +1478,8 @@ def main():
     p_run.add_argument("--code", required=True, help="Factor .code.py file path")
     p_run.add_argument("--factor-name", required=True, help="Factor name")
     p_run.add_argument("--report-name", required=True, help="Report name (used for output directory structure)")
-    p_run.add_argument("--output", default=None, help="Output directory (default: 因子产出/全量/<report>/<factor>/)")
+    p_run.add_argument("--output", default=None, help="Output directory (default: 因子产出/全量/<date>/未完成/<report>/<factor>/)")
+    p_run.add_argument("--date", default=None, help="Date subdirectory (YYYY-MM-DD)，默认从代码路径推断或当天")
     p_run.add_argument("--type", default=None, help="Factor type (auto-detected if omitted): daily, minute, cross_section, deep_learning")
     p_run.add_argument("--description", default=None, help="Factor description")
     p_run.add_argument("--formulation", default=None, help="Factor formulation")

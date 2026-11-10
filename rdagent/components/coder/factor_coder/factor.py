@@ -1494,6 +1494,38 @@ if __name__ == '__main__':
         all_records = []
         _has_predict_batch = 'predict_batch' in dir()
 
+        # ── 可选：特征缓存快路径 ──
+        # 用户定义 compute_features(df) 与 predict_batch_from_features(model, feature_data, td) 时启用。
+        # compute_features 每只股票只算一次（必须因果：每行只依赖 <= 当日的数据），
+        # 逐日预测只做窗口切片，避免每天对全市场重算特征。
+        _has_feature_cache = ('compute_features' in dir()) and ('predict_batch_from_features' in dir())
+        _feature_data = {{}}
+        if _has_feature_cache:
+            print("  特征缓存: compute_features 每只股票只计算一次（必须因果）", flush=True)
+            for _stock, _df in all_data.items():
+                try:
+                    _fd = compute_features(_df)
+                    if _fd is not None and len(_fd):
+                        _feature_data[_stock] = _fd
+                except Exception:
+                    pass
+            print(f"  特征缓存就绪: {len(_feature_data)}/{len(all_data)} 只", flush=True)
+            if not _feature_data:
+                _has_feature_cache = False
+
+        def _append_pb_results(_pb_result, _td):
+            if isinstance(_pb_result, tuple) and len(_pb_result) == 2:
+                _fname, _results = _pb_result
+                for _stock, _val in _results.items():
+                    all_records.append({{"trade_date": str(_td.date()), "instrument": _stock, _fname: _val}})
+            else:
+                for _stock, _val in _pb_result.items():
+                    if isinstance(_val, dict):
+                        all_records.append({{"trade_date": str(_td.date()), "instrument": _stock, **_val}})
+                    else:
+                        # {{stock: scalar}} → 用 "factor" 占位，下游 auto-detect 会从 DataFrame 列名确定因子名
+                        all_records.append({{"trade_date": str(_td.date()), "instrument": _stock, "factor": _val}})
+
         # 按年份分组训练 + 推理，每年度只训练一次
         _year_groups = {{}}
         for i, td in enumerate(_td_index):
@@ -1530,6 +1562,11 @@ if __name__ == '__main__':
                 if (_batch_idx + 1) % 200 == 0 or (_batch_idx + 1) == len(_date_idxs):
                     print(f"    {_batch_idx+1}/{len(_date_idxs)}", flush=True)
 
+                # 快路径：特征已按股票缓存，逐日只做按日期切片
+                if _has_feature_cache:
+                    _append_pb_results(predict_batch_from_features(model, _feature_data, td), td)
+                    continue
+
                 # 准备当日数据切片
                 data_for_predict = {{}}
                 for stock, df in all_data.items():
@@ -1549,18 +1586,7 @@ if __name__ == '__main__':
 
                 if _has_predict_batch:
                     # returns (factor_name, {stock: value}) or {stock: {factor: value}}
-                    _pb_result = predict_batch(model, data_for_predict, td)
-                    if isinstance(_pb_result, tuple) and len(_pb_result) == 2:
-                        _fname, _results = _pb_result
-                        for stock, val in _results.items():
-                            all_records.append({{"trade_date": str(td.date()), "instrument": stock, _fname: val}})
-                    else:
-                        for stock, val in _pb_result.items():
-                            if isinstance(val, dict):
-                                all_records.append({{"trade_date": str(td.date()), "instrument": stock, **val}})
-                            else:
-                                # {stock: scalar} → 用 "factor" 占位，下游 auto-detect 会从 DataFrame 列名确定因子名
-                                all_records.append({{"trade_date": str(td.date()), "instrument": stock, "factor": val}})
+                    _append_pb_results(predict_batch(model, data_for_predict, td), td)
                 else:
                     # Fallback: per-stock predict — only accepts dict return
                     for stock, df in data_for_predict.items():
@@ -1621,6 +1647,8 @@ if __name__ == '__main__':
         "train_model",
         "predict",
         "predict_batch",
+        "compute_features",
+        "predict_batch_from_features",
         "calc_factors_one_day",
     }
     # DL 模板的模型类定义（如 GRUPredictor、SimpleModel 等）也属于用户代码

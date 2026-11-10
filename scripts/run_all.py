@@ -2,11 +2,16 @@
 """
 一键全量流水线：扫描指定日期下所有因子，逐个跑全量/增量。
 
+目录结构（新）:
+  因子产出/全量/<date>/未完成/<report>/<factor>/   ← deploy 默认落在未完成
+  因子产出/全量/<date>/已完成/<report>/<factor>/   ← 全量计算 + 检验完成后自动移入
+  旧结构 因子产出/全量/<date>/<report>/<factor>/ 仍兼容扫描，历史结果不迁移。
+
 流程（一次性，不做自动重扫）:
-  扫描全量因子产出目录 下所有因子:
+  扫描该日期下「未完成 / 已完成 / 旧结构」所有因子:
     ├─ 无 .parquet → 全量计算
     ├─ 有 .parquet 但日期落后 → 增量补算（只算新日期，merge 回全量 parquet）
-    └─ 已最新 → 跳过
+    └─ 已最新 → 跳过（已在未完成且检验齐全的会自动归档到已完成）
   逐个跑完 → 打印汇总。要补跑失败的因子，再执行一次即可（成功的会跳过）。
 
 用法:
@@ -56,115 +61,123 @@ except ImportError:
     from data_paths import DATA_ROOT
 
 # ── 路径（仅本地） ──
+# 新结构：全量/<date>/<未完成|已完成>/<report>/<factor>/
+# 旧结构：全量/<date>/<report>/<factor>/（历史结果保留原样，仍可扫描）
 OUTPUT_BASE = DATA_ROOT / "数据仓库" / "因子产出" / "全量"
+STATUS_PENDING = "未完成"
+STATUS_COMPLETED = "已完成"
 FULL_DATA_DIR = Path(os.environ.get("FACTOR_DATA_DIR", str(DATA_ROOT / "数据仓库" / "行情数据" / "日线" / "全量")))
+
+
+def factor_date_dir(factor_dir: Path) -> Path:
+    """因子目录的日期目录：兼容 全量/<date>/<状态>/<report>/<factor> 与旧结构。"""
+    d = Path(factor_dir).parent.parent
+    if d.name in (STATUS_PENDING, STATUS_COMPLETED):
+        d = d.parent
+    return d
 
 
 # ── 扫描 ──
 
-def find_pending_factors(report_filter: str | None, force: bool, base_dir: Path | None = None) -> list[dict]:
+def find_pending_factors(report_filter: str | None, force: bool,
+                         base_dir: Path | None = None) -> list[dict]:
     """
-    返回待处理因子列表，每项含 {report, factor, code_path, output_dir, meta_path, parquet_path, status}
+    返回待处理因子列表，每项含 {report, factor, code_path, output_dir,
+    meta_path, parquet_path, status, location}
+
     status: "pending" (无 parquet), "stale" (有 parquet 但日期老), "current" (已最新)
+    location: "未完成" / "已完成" / None（旧结构）
     """
     base = base_dir or OUTPUT_BASE
     if not base.exists():
         return []
 
     factors = []
+    seen: set[tuple[str, str]] = set()
     trade_dates = None  # 延迟加载
 
-    report_dirs = sorted(d for d in base.iterdir() if d.is_dir())
-    if report_filter:
-        report_dirs = [d for d in report_dirs if report_filter in d.name]
+    # 扫描顺序即去重优先级：未完成 → 已完成 → 旧结构
+    roots: list[tuple[Path, str | None]] = []
+    for location in (STATUS_PENDING, STATUS_COMPLETED):
+        root = base / location
+        if root.is_dir():
+            roots.append((root, location))
+    roots.append((base, None))
 
-    for report_dir in report_dirs:
-        report_name = report_dir.name
-        factor_dirs = sorted(d for d in report_dir.iterdir() if d.is_dir())
-        for factor_dir in factor_dirs:
-            factor_name = factor_dir.name
-            code_path = factor_dir / f"{factor_name}.code.py"
-            parquet_path = factor_dir / f"{factor_name}.parquet"
-            meta_path = factor_dir / f"{factor_name}.meta.json"
+    for root, location in roots:
+        report_dirs = sorted(d for d in root.iterdir() if d.is_dir())
+        if location is None:
+            # 旧结构根目录：跳过新结构的状态子目录
+            report_dirs = [d for d in report_dirs
+                           if d.name not in (STATUS_PENDING, STATUS_COMPLETED)]
+        if report_filter:
+            report_dirs = [d for d in report_dirs if report_filter in d.name]
 
-            if not code_path.exists():
-                continue
+        for report_dir in report_dirs:
+            report_name = report_dir.name
+            factor_dirs = sorted(d for d in report_dir.iterdir() if d.is_dir())
+            for factor_dir in factor_dirs:
+                factor_name = factor_dir.name
+                code_path = factor_dir / f"{factor_name}.code.py"
+                parquet_path = factor_dir / f"{factor_name}.parquet"
+                meta_path = factor_dir / f"{factor_name}.meta.json"
 
-            # 强制重跑 → 直接标记 pending
-            if force:
-                factors.append({
-                    "report": report_name,
-                    "factor": factor_name,
-                    "code_path": code_path,
-                    "output_dir": factor_dir,
-                    "parquet_path": parquet_path,
-                    "meta_path": meta_path,
-                    "status": "pending",
-                })
-                continue
-
-            # 无 parquet → pending
-            if not parquet_path.exists():
-                factors.append({
-                    "report": report_name,
-                    "factor": factor_name,
-                    "code_path": code_path,
-                    "output_dir": factor_dir,
-                    "parquet_path": parquet_path,
-                    "meta_path": meta_path,
-                    "status": "pending",
-                })
-                continue
-
-            # 有 parquet → 检查日期（只读 index，避免为取末日日期而全量读入 90MB parquet）
-            try:
-                last_date = pd.Timestamp(pd.read_parquet(parquet_path, columns=[]).index.max())
-            except Exception:
-                # 损坏 → 重跑
-                factors.append({
-                    "report": report_name,
-                    "factor": factor_name,
-                    "code_path": code_path,
-                    "output_dir": factor_dir,
-                    "parquet_path": parquet_path,
-                    "meta_path": meta_path,
-                    "status": "pending",
-                })
-                continue
-
-            # 延迟加载 trade_dates
-            if trade_dates is None:
-                try:
-                    trade_dates = load_trade_dates(FULL_DATA_DIR)
-                except Exception as e:
-                    print(f"  ⚠️ 无法读取 trade_dates: {e}")
+                if not code_path.exists():
                     continue
-            latest_date = pd.Timestamp(trade_dates[-1])
 
-            if latest_date <= last_date:
-                # 已最新
-                factors.append({
+                key = (report_name, factor_name)
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                item = {
                     "report": report_name,
                     "factor": factor_name,
                     "code_path": code_path,
                     "output_dir": factor_dir,
                     "parquet_path": parquet_path,
                     "meta_path": meta_path,
-                    "status": "current",
-                })
-            else:
-                # 需要增量
-                factors.append({
-                    "report": report_name,
-                    "factor": factor_name,
-                    "code_path": code_path,
-                    "output_dir": factor_dir,
-                    "parquet_path": parquet_path,
-                    "meta_path": meta_path,
-                    "status": "stale",
-                    "last_date": last_date,
-                    "latest_date": latest_date,
-                })
+                    "status": "",
+                    "location": location,
+                }
+
+                # 强制重跑 → 直接标记 pending
+                if force:
+                    item["status"] = "pending"
+                    factors.append(item)
+                    continue
+
+                # 无 parquet → pending
+                if not parquet_path.exists():
+                    item["status"] = "pending"
+                    factors.append(item)
+                    continue
+
+                # 有 parquet → 检查日期（只读 index，避免为取末日日期而全量读入 90MB parquet）
+                try:
+                    last_date = pd.Timestamp(pd.read_parquet(parquet_path, columns=[]).index.max())
+                except Exception:
+                    # 损坏 → 重跑
+                    item["status"] = "pending"
+                    factors.append(item)
+                    continue
+
+                # 延迟加载 trade_dates
+                if trade_dates is None:
+                    try:
+                        trade_dates = load_trade_dates(FULL_DATA_DIR)
+                    except Exception as e:
+                        print(f"  ⚠️ 无法读取 trade_dates: {e}")
+                        continue
+                latest_date = pd.Timestamp(trade_dates[-1])
+
+                if latest_date <= last_date:
+                    item["status"] = "current"
+                else:
+                    item["status"] = "stale"
+                    item["last_date"] = last_date
+                    item["latest_date"] = latest_date
+                factors.append(item)
 
     return factors
 
@@ -181,7 +194,7 @@ def _resolve_type(item: dict, code_text: str | None = None) -> str:
     deploy-to-full 记进 meta.json，那是最可信的来源；定义阶段的 extracted.json
     次之；代码检测只作最后兜底。
     """
-    date_str = item["output_dir"].parent.parent.name  # 全量/{date}/{report}/{factor}
+    date_str = factor_date_dir(item["output_dir"]).name
     if date_str not in _AUTH_TYPES_CACHE:
         try:
             _AUTH_TYPES_CACHE[date_str] = load_authoritative_types(date_str)
@@ -307,6 +320,13 @@ def run_incremental_for_factor(item: dict) -> dict:
     #    让因子目录看着就和全新计算的一样（无中间产物残留）
     cleanup_parquet_backup(parquet_path)
 
+    # 7. 计算 + 检验完成 → 若在「未完成」则自动归档到「已完成」
+    try:
+        from rdagent.app.qlib_rd_loop.factor_full_pipeline import promote_to_completed
+        promote_to_completed(output_dir, factor_name)
+    except Exception as e:
+        print(f"  ⚠️ 归档到{STATUS_COMPLETED}失败: {e}")
+
     print(f"  ✅ [增量] {report_name}/{factor_name} 完成")
     result["status"] = "success"
     result["new_dates"] = max(0, combined.shape[0] - len(existing_df))
@@ -373,6 +393,18 @@ def main():
 
     # ── Step 2: 扫描该日期下所有因子（一次） ──
     pending = find_pending_factors(args.report, args.force, base_dir=scan_base)
+
+    # 已算完并通过检验、但仍留在「未完成」的因子 → 自动归档到「已完成」
+    for p in pending:
+        if p["status"] == "current" and p.get("location") == STATUS_PENDING:
+            try:
+                from rdagent.app.qlib_rd_loop.factor_full_pipeline import promote_to_completed
+                if promote_to_completed(p["output_dir"], p["factor"]):
+                    print(f"📦 [归档] {p['report']}/{p['factor']} → {STATUS_COMPLETED}",
+                          flush=True)
+            except Exception as e:
+                print(f"  ⚠️ 归档失败 {p['report']}/{p['factor']}: {e}", flush=True)
+
     todo = [p for p in pending if p["status"] in ("pending", "stale")]
 
     if not todo:

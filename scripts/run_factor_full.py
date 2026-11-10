@@ -6,17 +6,21 @@
   python scripts/run_factor_full.py <factor_code.py> [--output-dir <dir>]
 
 输出 (每个因子一个子目录):
-  因子产出/全量/<report>/<factor_name>/
+  因子产出/全量/<date>/未完成/<report>/<factor_name>/
     ├── factor_name.parquet       # 全量因子值
     ├── factor_name.code.py       # 因子代码
     ├── factor_name.meta.json     # 元数据 (含评估指标)
     ├── factor_name.decile.png    # 十分组收益图
     └── factor_name.report.md     # 原始研报信息
+
+计算 + 评估/绘图/Barra 全部完成后，目录自动移到 同日期下的 已完成/。
+（代码已在全量目录内时原地写回，不做二次搬移。）
 """
 
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -68,6 +72,17 @@ def _detect_data_dir() -> Path:
 
 FULL_DATA_DIR = _detect_data_dir()
 OUTPUT_BASE = DATA_ROOT / "数据仓库" / "因子产出" / "全量"
+STATUS_PENDING = "未完成"
+STATUS_COMPLETED = "已完成"
+_DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _output_date_from_path(path: Path) -> str:
+    """从路径中取最近的日期目录，取不到则用今天。"""
+    for part in reversed(Path(path).parts):
+        if _DATE_DIR_RE.match(part):
+            return part
+    return datetime.now().strftime("%Y-%m-%d")
 
 
 def run_locally(code_path: Path, workspace: Path, data_dir: Path, timeout: int = 7200, factor_type: str = "daily") -> Path | None:
@@ -77,9 +92,10 @@ def run_locally(code_path: Path, workspace: Path, data_dir: Path, timeout: int =
     env["FACTOR_DATA_DIR"] = str(data_dir)
     env["HDF5_USE_FILE_LOCKING"] = "FALSE"
     env["FACTOR_LOOKBACK_CAP"] = "99999"
-    # 非分钟因子限制4核，避免多因子并行时loky进程过多导致OOM
+    # 非分钟因子默认4核，避免多因子并行时loky进程过多导致OOM；
+    # 可用 FACTOR_FULL_N_WORKERS 降载（截面因子每个 worker 都会缓存全市场数据）
     if factor_type != "minute":
-        env.setdefault("FACTOR_N_WORKERS", "4")
+        env.setdefault("FACTOR_N_WORKERS", os.environ.get("FACTOR_FULL_N_WORKERS", "4"))
     # 全量分钟因子默认只跑 2022 以来：模板据此截断 TRADE_DATES
     if factor_type == "minute":
         env["FACTOR_INCREMENTAL_START_DATE"] = MINUTE_FULL_START_DATE
@@ -238,12 +254,18 @@ def main():
     if args.output_dir:
         factor_dir = Path(args.output_dir)
     else:
-        # per-factor 结构: literature_reports/<reoport>/<factor>/<factor>.code.py
-        if code_path.parent.name == factor_name:
-            report_dir = code_path.parent.parent.name
-        else:
-            report_dir = code_path.parent.name  # 旧结构 fallback
-        factor_dir = OUTPUT_BASE / report_dir / factor_name
+        # 代码已在全量目录里（单跑验证）→ 原地写回，不另建目录
+        try:
+            Path(os.path.abspath(code_path)).relative_to(Path(os.path.abspath(OUTPUT_BASE)))
+            factor_dir = code_path.parent
+        except ValueError:
+            # 测试目录结构: 测试/<date>/<report>/<factor>/<factor>.code.py
+            if code_path.parent.name == factor_name:
+                report_dir = code_path.parent.parent.name
+            else:
+                report_dir = code_path.parent.name  # 旧结构 fallback
+            date_str = _output_date_from_path(code_path)
+            factor_dir = OUTPUT_BASE / date_str / STATUS_PENDING / report_dir / factor_name
 
     factor_dir.mkdir(parents=True, exist_ok=True)
     print(f"输出目录: {factor_dir}")
@@ -361,9 +383,30 @@ def main():
     # --- 阶段4: LLM 审查已取消（老板要求）→ 直接接受，不写 llm_review 字段 ---
     meta = json.loads(meta_path.read_text())
 
+    # 全量计算 + 评估/绘图/Barra 都完成 → 标记完成，并从「未完成」移到「已完成」
+    try:
+        from rdagent.app.qlib_rd_loop.factor_full_pipeline import (
+            STATUS_COMPLETED, is_factor_output_complete, promote_to_completed,
+        )
+        if is_factor_output_complete(factor_dir, factor_name):
+            meta["pipeline_status"] = "completed"
+        else:
+            print(f"  ⚠️ 检验产物不完整（parquet/评估/decile.png），保留在{STATUS_PENDING}")
+    except Exception as e:
+        print(f"  ⚠️ 检查检验产物失败: {e}")
+        STATUS_COMPLETED = promote_to_completed = None
+
     # 更新 meta.json
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
+
+    if promote_to_completed is not None:
+        try:
+            new_dir = promote_to_completed(factor_dir, factor_name)
+            if new_dir is not None:
+                factor_dir = new_dir
+        except Exception as e:
+            print(f"  ⚠️ 归档到{STATUS_COMPLETED}失败: {e}")
 
     print(f"\n{'='*50}")
     print(f"✅ 全部完成! 因子: {factor_name}")

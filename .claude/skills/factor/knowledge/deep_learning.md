@@ -9,6 +9,31 @@ def predict_batch(model, data_dict, trade_date):
     """GPU批量推理 → 返回 (factor_name, {stock: value})。所有股票拼接为一个大batch。"""
 ```
 
+## 特征缓存快路径（强烈推荐，逐日全市场预测必用）
+
+逐日对全市场调用 `predict_batch` 时，最大开销不是 GPU，而是**每天对每只股票重复计算特征**
+（实测 300 只样本：模板切片 0.004s/天，`predict_batch` 0.30s/天，其中几乎全是特征重算）。
+如果因子定义了下面两个函数，框架会自动启用快路径：每只股票的特征**只算一次**，
+逐日预测只做按日期切片，实测小样本 **0.275s/天 → 0.023s/天（约 12×）**，结果逐位一致。
+
+```python
+def compute_features(df):
+    """输入单只股票全历史原始数据，返回特征 DataFrame（index 为日期）。
+    必须因果：每一行只能使用 <= 该行日期的数据；框架会在全历史上只算一次。"""
+    ...
+
+def predict_batch_from_features(model, feature_data, trade_date):
+    """feature_data = {stock: 全历史特征 DataFrame}。
+    内部按 feature_data[stock][index <= trade_date] 取最后 WINDOW 行，
+    标准化后堆叠成 batch 送 GPU。返回 (factor_name, {stock: value})。"""
+    ...
+```
+
+- 两个函数必须同时定义，否则框架回退到旧的 `predict_batch` 逐日重算路径。
+- `compute_features` 里**不要**用全样本统计量（如全历史均值/分位数）做归一化；这类操作必须放到
+  `predict_batch_from_features` 的「截至当日窗口」内完成，否则会引入未来信息。
+- 特征缓存是每只股票一份全历史 DataFrame，约占用 1GB 级内存；对全市场可接受。
+
 ## 函数签名（旧版 — 兼容回退）
 
 ```python
@@ -19,9 +44,11 @@ def predict(model, df, trade_date, stock):
 ## 框架行为
 
 - 框架按年份分组交易日，**每年只调用一次 `train_model`**（不再是每交易日一次）
-- `predict_batch` 接收所有股票的数据切片 `{stock: DataFrame}`，应在内部堆叠为一个 batch tensor 调用 `model(batch)`
+- 若同时定义了 `compute_features` + `predict_batch_from_features`，框架先对每只股票全历史
+  计算一次特征，之后每个交易日只调用 `predict_batch_from_features`（快路径）
+- 否则 `predict_batch` 接收所有股票的数据切片 `{stock: DataFrame}`，应在内部堆叠为一个 batch tensor 调用 `model(batch)`
 - 如果用户函数定义了 `predict_batch`，框架优先使用；否则回退到旧版逐股票 `predict`
-- `predict_batch` 返回 `(factor_name_string, {stock_code: float_value})`
+- `predict_batch` / `predict_batch_from_features` 返回 `(factor_name_string, {stock_code: float_value})`
 
 ## 可用数据列（同日线）
 

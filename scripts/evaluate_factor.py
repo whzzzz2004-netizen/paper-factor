@@ -9,6 +9,7 @@
   - IC mean, std, IR (Pearson)
   - Rank IC mean, std, IR (Spearman)
   - 十分组收益 (D1~D10) + 多空收益 (D1-D10)
+  - 换手率 (单边/日频调仓，D1 / D10 / 多空，日均 + 年化×252)
   - 结果写入 meta.json 和 eval_results.json
 """
 
@@ -51,11 +52,26 @@ def load_full_data_label(data_dir: Path) -> pd.DataFrame:
     return combined.set_index(["trade_date", "instrument"]).sort_index()
 
 
+def _one_way_turnover(prev_w: pd.Series, cur_w: pd.Series) -> float:
+    """单边换手率：0.5 * Σ|w_t - w_{t-1}|（等权组合，日频调仓）。"""
+    idx = prev_w.index.union(cur_w.index)
+    diff = cur_w.reindex(idx, fill_value=0.0) - prev_w.reindex(idx, fill_value=0.0)
+    return float(0.5 * diff.abs().sum())
+
+
 def compute_decile_returns(merged: pd.DataFrame) -> dict:
-    """计算十分组收益"""
+    """计算十分组收益 + 换手率（单边、等权、日频调仓）。
+
+    换手率定义：
+      - D1 / D10：等权多头组合，0.5 * Σ|w_t - w_{t-1}|；
+      - long_short：D1 多头 + D10 空头（各腿等权），同样按权重差计算；
+      - 年化 = 日均单边换手率 * 252。
+    """
     dates = merged.index.get_level_values("trade_date").unique().sort_values()
     decile_returns = {f"D{i}": [] for i in range(1, 11)}
     ls_returns = []
+    turnover_samples = {"D1": [], "D10": [], "long_short": []}
+    prev_weights = None
 
     for dt in dates:
         try:
@@ -77,6 +93,23 @@ def compute_decile_returns(merged: pd.DataFrame) -> dict:
         d10 = g.loc[g["decile"] == 9, "ret_next"].mean()
         if not math.isnan(d1) and not math.isnan(d10):
             ls_returns.append(float(d1) - float(d10))
+
+        # 等权组合权重（仅用于换手率）
+        d1_names = g.index[g["decile"] == 0]
+        d10_names = g.index[g["decile"] == 9]
+        if len(d1_names) > 0 and len(d10_names) > 0:
+            w1 = pd.Series(1.0 / len(d1_names), index=d1_names, dtype=float)
+            w10 = pd.Series(1.0 / len(d10_names), index=d10_names, dtype=float)
+            wls = pd.concat([w1, -w10])
+            if prev_weights is not None:
+                turnover_samples["D1"].append(_one_way_turnover(prev_weights["D1"], w1))
+                turnover_samples["D10"].append(_one_way_turnover(prev_weights["D10"], w10))
+                turnover_samples["long_short"].append(
+                    _one_way_turnover(prev_weights["long_short"], wls)
+                )
+            prev_weights = {"D1": w1, "D10": w10, "long_short": wls}
+        else:
+            prev_weights = None
 
     result = {}
     for k, v in decile_returns.items():
@@ -101,6 +134,21 @@ def compute_decile_returns(merged: pd.DataFrame) -> dict:
         result["long_short_sharpe"] = None
         result["long_short_days"] = 0
         result["long_short_max_drawdown"] = None
+
+    # 换手率（单边、日频调仓；年化按 252 个交易日）
+    for label, key in (("d1", "D1"), ("d10", "D10"), ("long_short", "long_short")):
+        s = pd.Series(turnover_samples[key]).dropna()
+        if len(s) > 0:
+            daily = float(s.mean())
+            result[f"turnover_{label}_daily"] = daily
+            result[f"turnover_{label}_annual"] = daily * 252.0
+            result[f"turnover_{label}_days"] = int(len(s))
+        else:
+            result[f"turnover_{label}_daily"] = None
+            result[f"turnover_{label}_annual"] = None
+            result[f"turnover_{label}_days"] = 0
+    # 兼容单值读取：默认用多空组合年化换手
+    result["turnover_annual"] = result.get("turnover_long_short_annual")
 
     return result
 
@@ -252,6 +300,15 @@ def main():
     print(f"  Sharpe:   {result.get('long_short_sharpe', 'N/A')}")
     print(f"  Max DD:   {result.get('long_short_max_drawdown', 'N/A')}")
     print(f"  天数:     {result.get('long_short_days', 0)}")
+    print(f"\n换手率 (单边/日频调仓，年化×252):")
+    for label in ("d1", "d10", "long_short"):
+        ann = result.get(f"turnover_{label}_annual")
+        day = result.get(f"turnover_{label}_daily")
+        name = {"d1": "D1 ", "d10": "D10", "long_short": "多空"}[label]
+        if isinstance(ann, float) and isinstance(day, float):
+            print(f"  {name}: 日均={day:.4f}, 年化={ann:.2f}x")
+        else:
+            print(f"  {name}: N/A")
     print(f"{'='*50}")
 
     # 保存结果到meta.json

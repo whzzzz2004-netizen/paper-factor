@@ -55,7 +55,13 @@ def _detect_data_dir() -> Path:
     return Path(".")
 
 # 输出目录：默认本地
+# 全量目录结构：FULL_OUTPUT_BASE/<date>/<未完成|已完成>/<report>/<factor>/
+# 旧结构 FULL_OUTPUT_BASE/<date>/<report>/<factor>/ 仍兼容读取（历史结果不迁移）。
 FULL_OUTPUT_BASE = DATA_ROOT / "数据仓库" / "因子产出" / "全量"
+
+STATUS_PENDING = "未完成"
+STATUS_COMPLETED = "已完成"
+_DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 try:
     _detected = _detect_data_dir()
@@ -66,7 +72,102 @@ BARRA_DIR = Path(os.environ.get("PAPER_FACTOR_BARRA_DIR",
                                  str(DATA_ROOT / "数据仓库" / "barra_model")))
 
 EXPECTED_ROWS = 2027
-DEFAULT_N_WORKERS = 4  # 日线/截面因子4核
+# 日线/截面因子并行核数。截面因子每个 worker 都会缓存全市场股票数据，
+# 4 核在长时间全量运行中容易把 WSL 内存推高；可用 FACTOR_FULL_N_WORKERS=2 降载。
+DEFAULT_N_WORKERS = int(os.environ.get("FACTOR_FULL_N_WORKERS", "4"))
+
+
+# ── 全量目录状态（未完成/已完成）──
+
+
+def factor_output_date(factor_dir: Path) -> str:
+    """从因子目录推导日期。
+
+    兼容两种结构：
+      全量/<date>/<未完成|已完成>/<report>/<factor>/
+      全量/<date>/<report>/<factor>/（旧结构）
+    """
+    d = Path(factor_dir).parent.parent
+    if d.name in (STATUS_PENDING, STATUS_COMPLETED):
+        d = d.parent
+    return d.name if _DATE_DIR_RE.match(d.name) else ""
+
+
+def output_date_from_path(path: Path) -> str:
+    """从任意代码/结果路径中取最近的日期目录，取不到则用今天。"""
+    for part in reversed(Path(path).parts):
+        if _DATE_DIR_RE.match(part):
+            return part
+    return time.strftime("%Y-%m-%d")
+
+
+def _full_output_parts(factor_dir: Path) -> tuple[str | None, str, str, str] | None:
+    """解析全量因子目录，返回 (状态, 日期, 研报, 因子)；不在全量目录下返回 None。
+
+    状态为 STATUS_PENDING / STATUS_COMPLETED；旧结构返回的状态为 None。
+    """
+    target = Path(os.path.abspath(factor_dir))
+    base = Path(os.path.abspath(FULL_OUTPUT_BASE))
+    try:
+        parts = target.relative_to(base).parts
+    except ValueError:
+        return None
+    if len(parts) >= 4 and parts[1] in (STATUS_PENDING, STATUS_COMPLETED) \
+            and _DATE_DIR_RE.match(parts[0]):
+        return parts[1], parts[0], parts[2], parts[3]
+    if len(parts) == 3 and _DATE_DIR_RE.match(parts[0]):
+        return None, parts[0], parts[1], parts[2]
+    return None
+
+
+def is_factor_output_complete(factor_dir: Path, factor_name: str | None = None) -> bool:
+    """全量计算 + 检验是否都已完成：parquet、评估结果、decile.png 三者齐全。"""
+    factor_dir = Path(factor_dir)
+    factor_name = factor_name or factor_dir.name
+    parquet = factor_dir / f"{factor_name}.parquet"
+    decile = factor_dir / f"{factor_name}.decile.png"
+    meta_path = factor_dir / f"{factor_name}.meta.json"
+    if not parquet.is_file() or parquet.stat().st_size == 0:
+        return False
+    if not decile.is_file():
+        return False
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return bool(meta.get("evaluation"))
+
+
+def promote_to_completed(factor_dir: Path, factor_name: str | None = None,
+                         require_artifacts: bool = True) -> Path | None:
+    """把「未完成」里已算完并通过检验的因子移到同日期下的「已完成」。
+
+    旧结构（全量/<date>/<report>/<factor>）保持原样，不做迁移。
+    返回移动后的目录；未移动则返回 None。
+    """
+    info = _full_output_parts(factor_dir)
+    if info is None:
+        return None
+    status, date_str, report_name, factor = info
+    if status == STATUS_COMPLETED:
+        return Path(factor_dir)
+    if status != STATUS_PENDING:
+        return None  # 历史旧结构不动
+
+    factor_dir = Path(factor_dir)
+    if require_artifacts and not is_factor_output_complete(factor_dir, factor_name or factor):
+        print(f"  ⚠️ 检验产物不完整，保留在{STATUS_PENDING}: "
+              f"{report_name}/{factor}", flush=True)
+        return None
+
+    target = FULL_OUTPUT_BASE / date_str / STATUS_COMPLETED / report_name / factor
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.move(str(factor_dir), str(target))
+    print(f"  📦 已完成检验，转移至{STATUS_COMPLETED}: {target}", flush=True)
+    return target
+
 
 # ── 工具函数 ──
 
@@ -394,12 +495,14 @@ def _load_test_meta(factor_dir: Path, factor_name: str) -> dict:
     按因子名补全 description/formulation/source_excerpt/cols→variables。
     """
     lit = DATA_ROOT / "数据仓库" / "因子产出" / "测试"
+    report_name = factor_dir.parent.name
+    date_str = factor_output_date(factor_dir)
     meta = {}
-    candidates = [
-        lit / factor_dir.parent.parent.name / factor_dir.parent.name
-        / factor_name / f"{factor_name}.meta.json",
-        lit / factor_dir.parent.name / factor_name / f"{factor_name}.meta.json",
-    ]
+    candidates = []
+    if date_str:
+        candidates.append(lit / date_str / report_name / factor_name
+                          / f"{factor_name}.meta.json")
+    candidates.append(lit / report_name / factor_name / f"{factor_name}.meta.json")
     for c in candidates:
         if c.exists():
             try:
@@ -423,8 +526,6 @@ def _load_test_meta(factor_dir: Path, factor_name: str) -> dict:
     # 描述字段或 variables 仍为空 → 从 extracted_reports 提取 JSON 补全
     if (not meta.get("factor_description") or not meta.get("factor_formulation")
             or not meta.get("variables")):
-        report_name = factor_dir.parent.name
-        date_str = factor_dir.parent.parent.name if factor_dir.parent.parent.name.isdigit() else ""
         _lit = DATA_ROOT / "数据仓库" / "因子产出" / "extracted_reports"
         extract_candidates = []
         if date_str:
@@ -589,15 +690,17 @@ def post_process(factor_name: str, factor_dir: Path, factor_type: str,
             pass
     meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
 
-    # 复制原始报告
-    src_report = factor_dir.parent.parent / "literature_reports" / factor_dir.parent.name / factor_name / f"{factor_name}.report.md"
-    # 回退：在测试输出目录查找
-    if not src_report.exists():
-        alt = (DATA_ROOT / "数据仓库" / "因子产出" / "测试"
-               / factor_dir.parent.name / factor_name / f"{factor_name}.report.md")
-        if alt.exists():
-            src_report = alt
-    if src_report.exists():
+    # 复制原始报告（测试目录按日期分组，兼容无日期旧结构）
+    report_name = factor_dir.parent.name
+    date_str = factor_output_date(factor_dir)
+    test_base = DATA_ROOT / "数据仓库" / "因子产出" / "测试"
+    report_candidates = [
+        factor_dir.parent.parent / "literature_reports" / report_name / factor_name / f"{factor_name}.report.md",
+        test_base / date_str / report_name / factor_name / f"{factor_name}.report.md" if date_str else None,
+        test_base / report_name / factor_name / f"{factor_name}.report.md",
+    ]
+    src_report = next((p for p in report_candidates if p is not None and p.exists()), None)
+    if src_report is not None:
         shutil.copy(src_report, factor_dir / f"{factor_name}.report.md")
 
     return True
@@ -794,6 +897,9 @@ def run_full_pipeline(
             meta = {}
         meta["pipeline_status"] = "completed"
         meta_path_full.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+
+        # 7. 全量计算 + 评估/绘图/Barra 都完成 → 自动从「未完成」移到「已完成」
+        promote_to_completed(output_dir, factor_name)
         return True
 
     except Exception as e:
@@ -891,7 +997,9 @@ class FullPipelineExecutor:
         print(f"[FullPipeline] {report_name}/{factor_name}", flush=True)
         print(f"{'=' * 60}", flush=True)
 
-        factor_dir = FULL_OUTPUT_BASE / report_name / factor_name
+        date_str = output_date_from_path(code_path)
+        factor_dir = (FULL_OUTPUT_BASE / date_str / STATUS_PENDING
+                      / report_name / factor_name)
 
         # 检查是否已存在完整结果
         full_parquet = factor_dir / f"{factor_name}.parquet"
