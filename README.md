@@ -151,7 +151,7 @@ python scripts/run_factor_full.py "/mnt/d/paper-factor-data/数据仓库/因子�
 └── 因子产出/
     ├── 测试/{DATE}/...                             # 测试因子产出
     └── 全量/{DATE}/
-        ├── 未完成/{report}/{factor}/               # 已部署、待全量计算/检验
+        ├── 未完成/{report}/{factor}/               # 已部署、待全量计算/检验（空目录自动清理）
         └── 已完成/{report}/{factor}/               # 全量计算+检验完成
 ```
 

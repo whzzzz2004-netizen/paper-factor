@@ -77,6 +77,20 @@ def factor_date_dir(factor_dir: Path) -> Path:
     return d
 
 
+def prune_empty_dirs(root: Path) -> None:
+    """删除 root 下的空目录（自底向上，不删 root 本身）。"""
+    root = Path(root)
+    if not root.is_dir():
+        return
+    dirs = sorted((d for d in root.rglob("*") if d.is_dir()),
+                  key=lambda p: len(p.parts), reverse=True)
+    for d in dirs:
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+
+
 # ── 扫描 ──
 
 def find_pending_factors(report_filter: str | None, force: bool,
@@ -405,6 +419,10 @@ def main():
             except Exception as e:
                 print(f"  ⚠️ 归档失败 {p['report']}/{p['factor']}: {e}", flush=True)
 
+    # 归档后「未完成/<report>/」「未完成/」可能已空，清理掉（下次 deploy 会自动重建）
+    if not args.dry_run:
+        prune_empty_dirs(scan_base)
+
     todo = [p for p in pending if p["status"] in ("pending", "stale")]
 
     if not todo:
@@ -453,6 +471,9 @@ def main():
             print(f"   [{f['status']}] {f['report']}/{f['factor']}"
                   f"{' — ' + f['error'] if f['error'] else ''}")
     print(f"📄 进度明细: {PROGRESS_PATH}", flush=True)
+
+    # 跑完后清理空的「未完成/」及各研报目录
+    prune_empty_dirs(scan_base)
 
     return 0 if total_fail == 0 else 1
 

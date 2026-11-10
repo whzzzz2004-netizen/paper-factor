@@ -138,6 +138,24 @@ def is_factor_output_complete(factor_dir: Path, factor_name: str | None = None) 
     return bool(meta.get("evaluation"))
 
 
+def _prune_empty_dirs(start: Path, stop: Path) -> None:
+    """自底向上删除空目录，直到 stop（不删除 stop 本身）。
+
+    例如因子从「未完成/<report>/<factor>」移走后，report 目录和未完成根目录
+    若已为空就一并删除；还有别的因子/研报时 rmdir 失败，立即停止。
+    """
+    cur = Path(start)
+    stop = Path(stop)
+    if stop not in cur.parents:
+        return
+    while cur != stop:
+        try:
+            cur.rmdir()
+        except OSError:
+            break
+        cur = cur.parent
+
+
 def promote_to_completed(factor_dir: Path, factor_name: str | None = None,
                          require_artifacts: bool = True) -> Path | None:
     """把「未完成」里已算完并通过检验的因子移到同日期下的「已完成」。
@@ -166,6 +184,8 @@ def promote_to_completed(factor_dir: Path, factor_name: str | None = None,
         shutil.rmtree(target)
     shutil.move(str(factor_dir), str(target))
     print(f"  📦 已完成检验，转移至{STATUS_COMPLETED}: {target}", flush=True)
+    # 清理移动后留下的空 report / 未完成 目录（保留日期目录）
+    _prune_empty_dirs(factor_dir.parent, FULL_OUTPUT_BASE / date_str)
     return target
 
 
