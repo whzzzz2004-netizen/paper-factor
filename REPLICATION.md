@@ -234,7 +234,9 @@ Get-WinEvent -LogName System -MaxEvents 100 |
   - 16GB 内存：`FACTOR_FULL_N_WORKERS=1`
   - 32GB 内存：`FACTOR_FULL_N_WORKERS=2`
 - 关闭后台任务回收器：`CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1`
-- 以上两项写入 `~/.claude/settings.json` 的 `env`，重启 Claude Code CLI 生效。
+- 这两项已写进本仓库的 `.claude/settings.json` → `env`，另一台机器 `git pull` 后
+  重启 Claude Code CLI 即自动生效。若那台机器内存小于 32GB，把
+  `FACTOR_FULL_N_WORKERS` 改成 `1`（16GB）或先按 24GB 档验证。
 - 在 `%USERPROFILE%\.wslconfig` 给 WSL 留足内存（例如 32GB 机器设 `memory=24GB`），但不要超过物理内存的 75%。
 - 清理 WSL vhdx 和数据盘空间；深度学习因子异常时检查 `nvidia-smi` 与 `dmesg` 里的 GPU Xid 错误。
 
